@@ -1,5 +1,7 @@
 # Omarchroma
 
+![Omarchroma showcase banner](assets/showcase-banner.png)
+
 **Change your Omarchy theme once and let the rest of your desktop follow.**
 
 Omarchroma is an Omarchy service and bar widget that carries the active
@@ -11,6 +13,22 @@ In the bar it stays simple: one palette icon. Click it to open a compact
 framework menu with per-framework on/off toggles and a refresh-enabled action;
 automatic synchronization happens in the background whenever the Omarchy theme
 changes for frameworks that are switched on.
+
+## Showcase
+
+Omarchroma carries one Omarchy palette across desktop applications, browser
+content, toolkit widgets, and app-specific styles.
+
+![Purple theme synchronized across browser, Files, terminal, and KDE Connect](screenshots/theme-purple.png)
+
+The bar widget exposes each integration as a toggle. Turning a framework on
+refreshes it immediately; turning it off keeps future theme changes from
+touching that framework.
+
+| Theme | What it shows |
+|---|---|
+| ![Green theme synchronized across desktop apps](screenshots/theme-green.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a green Omarchy palette. |
+| ![Blue theme synchronized across desktop apps](screenshots/theme-blue.png) | The same app set following a blue palette after an Omarchy theme change. |
 
 ## Install
 
@@ -45,11 +63,11 @@ applications do not abruptly lose their last synchronized appearance.
 
 | Dependency | Why | Where it comes from |
 |---|---|---|
-| Omarchy 4 (Quattro) shell | plugin host, theme palette, and event hook | ships with Omarchy |
 | `adw-gtk-theme` | GTK 3 compatibility with GTK 4/libadwaita | Arch package; installed by `install.sh` |
 | `python-plyvel` | safe Dark Reader LevelDB updates | Arch package; installed by `install.sh` |
-| Python 3 | configuration and palette generation | ships with Arch |
-| `jq` | browser and synchronization state handling | ships with Omarchy |
+
+Everything else Omarchroma uses ships with Omarchy or the base system it
+provides.
 
 Omarchroma does not install Kvantum, `qt5ct`, or `qt6ct`. Omarchy intentionally
 uses `QT_QPA_PLATFORMTHEME=gtk3` so ordinary Qt 5 and Qt 6 widgets inherit the
@@ -115,6 +133,7 @@ modified while the browser is running; the update is marked
 ~/.config/YouTube Music/omarchroma.css
 ~/.local/share/color-schemes/Omarchroma.colors
 ~/.local/share/omarchroma/dark-reader-theme.json
+~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
 ```
 
