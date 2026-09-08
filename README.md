@@ -1,6 +1,6 @@
 # Omarchroma
 
-![Omarchroma showcase banner](assets/showcase-banner.png)
+![Omarchroma showcase banner](preview.png)
 
 **Change your Omarchy theme once and let the rest of your desktop follow.**
 
@@ -19,7 +19,7 @@ changes for frameworks that are switched on.
 Omarchroma carries one Omarchy palette across desktop applications, browser
 content, toolkit widgets, and app-specific styles.
 
-![Purple theme synchronized across browser, Files, terminal, and KDE Connect](screenshots/theme-purple.png)
+![Tokyo Night theme synchronized across browser, Files, terminal, and KDE Connect](screenshots/tokyo-night.png)
 
 The bar widget exposes each integration as a toggle. Turning a framework on
 refreshes it immediately; turning it off keeps future theme changes from
@@ -27,14 +27,14 @@ touching that framework.
 
 | Theme | What it shows |
 |---|---|
-| ![Green theme synchronized across desktop apps](screenshots/theme-green.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a green Omarchy palette. |
-| ![Blue theme synchronized across desktop apps](screenshots/theme-blue.png) | The same app set following a blue palette after an Omarchy theme change. |
+| ![Custom Primeval Dawn theme synchronized across desktop apps](screenshots/custom-primeval-dawn.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a custom Primeval Dawn palette. |
+| ![Nord theme synchronized across desktop apps](screenshots/nord.png) | The same app set following a Nord palette after an Omarchy theme change. |
 
 ## Install
 
 ```bash
 omarchy plugin add https://github.com/NobleDoodle/omarchroma
-~/.config/omarchy/plugins/omarchroma/install.sh --enable
+~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/install.sh --enable
 ```
 
 The first command installs the plugin through Omarchy. The second installs its
@@ -46,13 +46,13 @@ The shell hot-reloads; no restart is required. To install without adding the
 bar icon:
 
 ```bash
-~/.config/omarchy/plugins/omarchroma/install.sh
+~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/install.sh
 ```
 
 ## Removal
 
 ```bash
-~/.config/omarchy/plugins/omarchroma/uninstall.sh
+~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/uninstall.sh
 ```
 
 The uninstaller removes the plugin, commands, hook, and bar integration.
@@ -150,9 +150,9 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | Pear Desktop toggle on | enable and refresh Pear Desktop's stylesheet |
 | any framework toggle off | disable that framework for manual, service, and theme-hook sync |
 | Refresh enabled | refresh every currently enabled supported framework |
-| `omarchy-shell omarchroma open` | open the framework refresh menu over IPC |
-| `omarchy-shell omarchroma refresh` | open the framework refresh menu over IPC |
-| `omarchy-shell omarchroma-service sync` | invoke the background service over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework refresh menu over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma refresh` | open the framework refresh menu over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | invoke the background service over IPC |
 
 ## CLI
 

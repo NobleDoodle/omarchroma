@@ -5,7 +5,7 @@ import qs.Ui
 
 BarWidget {
   id: root
-  moduleName: "omarchroma"
+  moduleName: "io.github.nobledoodle.omarchroma"
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item
@@ -46,7 +46,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "omarchroma"
+    target: "io.github.nobledoodle.omarchroma"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function show(): void { root.open() }
