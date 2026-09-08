@@ -26,7 +26,7 @@ Item {
   }
 
   IpcHandler {
-    target: "omarchroma-service"
+    target: "io.github.nobledoodle.omarchroma-service"
 
     function sync(): void {
       root.syncColors()

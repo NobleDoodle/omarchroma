@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLUGIN_ID="omarchroma"
+PLUGIN_ID="io.github.nobledoodle.omarchroma"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HOOK="$HOME/.config/omarchy/hooks/theme-set.d/omarchroma"
 
