@@ -7,7 +7,7 @@
 Omarchroma is an Omarchy service and bar widget that carries the active
 Omarchy palette into applications that do not otherwise follow it completely.
 It synchronizes GTK and GNOME, Qt and KDE Frameworks, Dark Reader in the
-default Chromium-based browser, and Pear Desktop/YouTube Music.
+default Chromium- or Firefox-family browser, and Pear Desktop/YouTube Music.
 
 In the bar it stays simple: one palette icon. Click it to open a compact
 framework menu with per-framework on/off toggles and a refresh-enabled action;
@@ -41,8 +41,9 @@ The first command installs the plugin through Omarchy. The second installs its
 commands and native `theme-set` hook, adds missing dependencies, configures
 Dark Reader for the default browser, enables the service, and places the
 palette icon in the right bar section immediately before the power widget. If
-Dark Reader is already installed in the active browser profile, Omarchroma
-leaves extension installation unmanaged and only synchronizes its settings.
+Dark Reader is already installed in the active browser profile on first
+install, Omarchroma leaves extension installation unmanaged and only
+synchronizes its settings.
 
 The shell hot-reloads; no restart is required. To install without adding the
 bar icon:
@@ -70,7 +71,7 @@ matching the sync path's LevelDB safety rule.
 | Dependency | Why | Where it comes from |
 |---|---|---|
 | `adw-gtk-theme` | GTK 3 compatibility with GTK 4/libadwaita | Arch package; installed by `install.sh` |
-| `python-plyvel` | safe Dark Reader LevelDB updates | Arch package; installed by `install.sh` |
+| `python-plyvel` | safe Chromium Dark Reader LevelDB updates | Arch package; installed by `install.sh` |
 
 Everything else Omarchroma uses ships with Omarchy or the base system it
 provides.
@@ -86,12 +87,12 @@ manifest.json                    service + bar-widget plugin manifest
 BarWidget.qml                    palette button and manual sync action
 Service.qml                      startup and one-minute recovery sync
 bin/omarchroma-sync              synchronization orchestrator
-bin/omarchroma-dark-reader       browser/profile detection and LevelDB updater
+bin/omarchroma-dark-reader       browser/profile detection and Dark Reader updater
 bin/omarchroma-state             snapshot and restore helper
 hooks/omarchroma                 native theme-set hook
 lib/sync-gtk-theme               GTK 3/4 and libadwaita palette generator
 lib/sync-qt-kde-theme            Qt/KDE color-scheme generator
-assets/dark-reader-policy.json   managed Dark Reader extension policy
+assets/dark-reader-policy.json   managed Chromium Dark Reader extension policy
 assets/pear-theme.css.template   Pear Desktop stylesheet template
 install.sh                       standalone installer
 uninstall.sh                     integration cleanup
@@ -125,11 +126,20 @@ supports:
 - Brave
 - Vivaldi
 - Microsoft Edge
+- Firefox
+- Firefox Developer Edition
+- LibreWolf
+- Waterfox
+- Floorp
+- Zen Browser
 
-It installs Dark Reader through the browser's managed-extension policy and
-updates the extension's active Chromium profile. Dark Reader's LevelDB is never
-modified while the browser is running; the update is marked
-`pending-browser-exit` and retried after the browser closes.
+For Chromium-family browsers, Omarchroma installs Dark Reader through the
+browser's managed-extension policy and updates the extension's active profile
+LevelDB. For Firefox-family browsers, it installs Dark Reader through the
+browser's `policies.json` when needed and updates the active profile's
+`storage-sync-v2.sqlite` settings for `addon@darkreader.org`. Browser extension
+settings are never modified while the target browser is running; the update is
+marked `pending-browser-exit` and retried after the browser closes.
 
 ## Files written
 

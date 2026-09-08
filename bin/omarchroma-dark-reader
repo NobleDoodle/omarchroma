@@ -1,56 +1,115 @@
 #!/usr/bin/env python3
 import argparse
 import base64
+import configparser
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
-EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
+CHROMIUM_EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
+FIREFOX_EXTENSION_ID = "addon@darkreader.org"
 
 BROWSERS = {
     "helium.desktop": {
         "name": "Helium",
+        "family": "chromium",
         "config": "~/.config/net.imput.helium",
         "executables": ["helium", "helium-browser"],
         "policy": "/etc/chromium/policies/managed",
     },
     "chromium.desktop": {
         "name": "Chromium",
+        "family": "chromium",
         "config": "~/.config/chromium",
         "executables": ["chromium"],
         "policy": "/etc/chromium/policies/managed",
     },
     "google-chrome.desktop": {
         "name": "Google Chrome",
+        "family": "chromium",
         "config": "~/.config/google-chrome",
         "executables": ["chrome", "google-chrome"],
         "policy": "/etc/opt/chrome/policies/managed",
     },
     "google-chrome-stable.desktop": {
         "name": "Google Chrome",
+        "family": "chromium",
         "config": "~/.config/google-chrome",
         "executables": ["chrome", "google-chrome-stable"],
         "policy": "/etc/opt/chrome/policies/managed",
     },
     "brave-browser.desktop": {
         "name": "Brave",
+        "family": "chromium",
         "config": "~/.config/BraveSoftware/Brave-Browser",
         "executables": ["brave", "brave-browser"],
         "policy": "/etc/brave/policies/managed",
     },
     "vivaldi-stable.desktop": {
         "name": "Vivaldi",
+        "family": "chromium",
         "config": "~/.config/vivaldi",
         "executables": ["vivaldi-bin", "vivaldi-stable"],
         "policy": "/etc/chromium/policies/managed",
     },
     "microsoft-edge.desktop": {
         "name": "Microsoft Edge",
+        "family": "chromium",
         "config": "~/.config/microsoft-edge",
         "executables": ["msedge", "microsoft-edge"],
         "policy": "/etc/opt/edge/policies/managed",
+    },
+    "firefox.desktop": {
+        "name": "Firefox",
+        "family": "firefox",
+        "config": "~/.mozilla/firefox",
+        "executables": ["firefox"],
+        "policy": "/usr/lib/firefox/distribution/policies.json",
+    },
+    "firefox-developer-edition.desktop": {
+        "name": "Firefox Developer Edition",
+        "family": "firefox",
+        "config": "~/.mozilla/firefox",
+        "executables": ["firefox-developer-edition", "firefox"],
+        "policy": "/usr/lib/firefox-developer-edition/distribution/policies.json",
+    },
+    "librewolf.desktop": {
+        "name": "LibreWolf",
+        "family": "firefox",
+        "config": "~/.librewolf",
+        "executables": ["librewolf"],
+        "policy": "/usr/lib/librewolf/distribution/policies.json",
+    },
+    "waterfox.desktop": {
+        "name": "Waterfox",
+        "family": "firefox",
+        "config": "~/.waterfox",
+        "executables": ["waterfox"],
+        "policy": "/usr/lib/waterfox/distribution/policies.json",
+    },
+    "floorp.desktop": {
+        "name": "Floorp",
+        "family": "firefox",
+        "config": "~/.floorp",
+        "executables": ["floorp"],
+        "policy": "/usr/lib/floorp/distribution/policies.json",
+    },
+    "zen-browser.desktop": {
+        "name": "Zen Browser",
+        "family": "firefox",
+        "config": "~/.zen",
+        "executables": ["zen", "zen-browser"],
+        "policy": "/usr/lib/zen-browser/distribution/policies.json",
+    },
+    "zen.desktop": {
+        "name": "Zen Browser",
+        "family": "firefox",
+        "config": "~/.zen",
+        "executables": ["zen", "zen-browser"],
+        "policy": "/usr/lib/zen-browser/distribution/policies.json",
     },
 }
 
@@ -87,30 +146,60 @@ def browser_info() -> dict:
     result["supported"] = True
     result["desktop"] = desktop
     result["config"] = str(Path(result["config"]).expanduser())
-    profile = active_profile(Path(result["config"]))
+    profile = active_profile(result)
     result["profile"] = str(profile)
-    result["darkReaderInstalled"] = dark_reader_installed(profile)
+    result["darkReaderInstalled"] = dark_reader_installed(result, profile)
     return result
 
 
-def dark_reader_installed(profile: Path) -> bool:
+def dark_reader_installed(info: dict, profile: Path) -> bool:
+    if info["family"] == "firefox":
+        return firefox_dark_reader_installed(profile)
+    return chromium_dark_reader_installed(profile)
+
+
+def chromium_dark_reader_installed(profile: Path) -> bool:
     preferences = profile / "Preferences"
     if preferences.is_file():
         try:
             settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
-            if EXTENSION_ID in settings:
+            if CHROMIUM_EXTENSION_ID in settings:
                 return True
         except (json.JSONDecodeError, OSError):
             pass
 
-    if (profile / "Extensions" / EXTENSION_ID).exists():
+    if (profile / "Extensions" / CHROMIUM_EXTENSION_ID).exists():
         return True
-    if (profile / "Sync Extension Settings" / EXTENSION_ID).exists():
+    if (profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID).exists():
         return True
     return False
 
 
-def active_profile(config_dir: Path) -> Path:
+def firefox_dark_reader_installed(profile: Path) -> bool:
+    extensions_json = profile / "extensions.json"
+    if extensions_json.is_file():
+        try:
+            addons = json.loads(extensions_json.read_text()).get("addons", [])
+            for addon in addons:
+                if addon.get("id") == FIREFOX_EXTENSION_ID and addon.get("active", True):
+                    return True
+        except (json.JSONDecodeError, OSError):
+            pass
+    if (profile / "extensions" / f"{FIREFOX_EXTENSION_ID}.xpi").exists():
+        return True
+    if (profile / "browser-extension-data" / FIREFOX_EXTENSION_ID).exists():
+        return True
+    return False
+
+
+def active_profile(info: dict) -> Path:
+    config_dir = Path(info["config"])
+    if info["family"] == "firefox":
+        return firefox_active_profile(config_dir)
+    return chromium_active_profile(config_dir)
+
+
+def chromium_active_profile(config_dir: Path) -> Path:
     local_state = config_dir / "Local State"
     if local_state.is_file():
         try:
@@ -121,6 +210,50 @@ def active_profile(config_dir: Path) -> Path:
         except (json.JSONDecodeError, OSError):
             pass
     return config_dir / "Default"
+
+
+def firefox_active_profile(config_dir: Path) -> Path:
+    profiles_ini = config_dir / "profiles.ini"
+    if not profiles_ini.is_file():
+        return config_dir
+
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(profiles_ini)
+    except configparser.Error:
+        return config_dir
+
+    install_default = None
+    for section in parser.sections():
+        if section.startswith("Install") and parser.has_option(section, "Default"):
+            install_default = parser.get(section, "Default")
+            break
+
+    selected = None
+    for section in parser.sections():
+        if not section.startswith("Profile"):
+            continue
+        path = parser.get(section, "Path", fallback="")
+        if not path:
+            continue
+        if install_default and path == install_default:
+            selected = section
+            break
+        if parser.get(section, "Default", fallback="0") == "1":
+            selected = section
+
+    if selected is None:
+        for section in parser.sections():
+            if section.startswith("Profile") and parser.has_option(section, "Path"):
+                selected = section
+                break
+    if selected is None:
+        return config_dir
+
+    path = Path(parser.get(selected, "Path"))
+    if parser.get(selected, "IsRelative", fallback="1") == "1":
+        return config_dir / path
+    return path
 
 
 def browser_running(executables: list[str]) -> bool:
@@ -180,6 +313,7 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
     temporary.write_text(json.dumps({
         "browser": info["name"],
         "browserDesktop": info["desktop"],
+        "browserFamily": "chromium",
         "browserProfile": str(profile),
         "database": str(database),
         "entries": entries,
@@ -200,24 +334,143 @@ def restore_theme(state_dir: Path, status_file: Path | None) -> int:
         print(f"Omarchroma: close {info['name']} before restoring Dark Reader")
         return 2
 
-    try:
-        import plyvel
-    except ImportError:
-        print("Omarchroma: python-plyvel is required", file=sys.stderr)
-        return 1
+    family = snapshot.get("browserFamily", "chromium")
+    if family == "firefox":
+        restore_firefox_theme(snapshot)
+    else:
+        try:
+            import plyvel
+        except ImportError:
+            print("Omarchroma: python-plyvel is required", file=sys.stderr)
+            return 1
 
-    database = Path(snapshot["database"])
-    database.mkdir(parents=True, exist_ok=True)
-    with plyvel.DB(str(database), create_if_missing=True) as db:
-        for key, entry in snapshot.get("entries", {}).items():
-            raw_key = key.encode()
-            if entry.get("existed"):
-                db.put(raw_key, base64.b64decode(entry["value"]))
-            else:
-                db.delete(raw_key)
+        database = Path(snapshot["database"])
+        database.mkdir(parents=True, exist_ok=True)
+        with plyvel.DB(str(database), create_if_missing=True) as db:
+            for key, entry in snapshot.get("entries", {}).items():
+                raw_key = key.encode()
+                if entry.get("existed"):
+                    db.put(raw_key, base64.b64decode(entry["value"]))
+                else:
+                    db.delete(raw_key)
 
     write_status(status_file, darkReader="restored")
     print(f"Omarchroma: Dark Reader restored for {snapshot.get('browser', 'browser')}")
+    return 0
+
+
+def firefox_storage_data(database: Path) -> dict:
+    if not database.exists():
+        return {}
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT data FROM storage_sync_data WHERE ext_id = ?",
+            (FIREFOX_EXTENSION_ID,),
+        ).fetchone()
+    if row is None or row[0] is None:
+        return {}
+    return json.loads(row[0])
+
+
+def write_firefox_storage_data(database: Path, data: dict) -> None:
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS storage_sync_data ("
+            "ext_id TEXT NOT NULL PRIMARY KEY, "
+            "data TEXT, "
+            "sync_change_counter INTEGER NOT NULL DEFAULT 1)"
+        )
+        connection.execute(
+            "INSERT INTO storage_sync_data(ext_id, data, sync_change_counter) "
+            "VALUES(?, ?, 1) "
+            "ON CONFLICT(ext_id) DO UPDATE SET "
+            "data = excluded.data, "
+            "sync_change_counter = storage_sync_data.sync_change_counter + 1",
+            (FIREFOX_EXTENSION_ID, json.dumps(data, separators=(",", ":"))),
+        )
+        connection.commit()
+
+
+def snapshot_firefox_settings(snapshot_file: Path, info: dict, profile: Path, database: Path) -> None:
+    if snapshot_file.exists():
+        return
+    data = firefox_storage_data(database)
+    snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = snapshot_file.with_suffix(".tmp")
+    temporary.write_text(json.dumps({
+        "browser": info["name"],
+        "browserDesktop": info["desktop"],
+        "browserFamily": "firefox",
+        "browserProfile": str(profile),
+        "database": str(database),
+        "dataExisted": bool(data),
+        "data": data,
+    }, indent=2) + "\n")
+    temporary.replace(snapshot_file)
+
+
+def restore_firefox_theme(snapshot: dict) -> None:
+    database = Path(snapshot["database"])
+    if snapshot.get("dataExisted"):
+        write_firefox_storage_data(database, snapshot.get("data", {}))
+        return
+    if not database.exists():
+        return
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DELETE FROM storage_sync_data WHERE ext_id = ?",
+            (FIREFOX_EXTENSION_ID,),
+        )
+        connection.commit()
+
+
+def apply_firefox_theme(info: dict, theme: dict, state_dir: Path | None, status_file: Path | None) -> int:
+    profile = active_profile(info)
+    database = profile / "storage-sync-v2.sqlite"
+    if state_dir is not None:
+        snapshot_firefox_settings(state_dir / "original/dark-reader.json", info, profile, database)
+
+    data = firefox_storage_data(database)
+    data["theme"] = theme
+    data["enabled"] = True
+    data["enabledByDefault"] = True
+    data["detectDarkTheme"] = False
+    data["automation"] = {"enabled": False, "mode": "", "behavior": "OnOff"}
+    data["changeBrowserTheme"] = False
+    data["syncSettings"] = True
+
+    palette_keys = {
+        "darkColorScheme",
+        "darkSchemeBackgroundColor",
+        "darkSchemeTextColor",
+        "scrollbarColor",
+        "selectionColor",
+        "styleSystemControls",
+        "stylesheet",
+    }
+    for key in ("customThemes", "presets"):
+        entries = data.get(key)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            entry_theme = entry.get("theme")
+            if isinstance(entry_theme, dict):
+                entry_theme.update({
+                    name: theme[name]
+                    for name in palette_keys
+                    if name in theme
+                })
+    write_firefox_storage_data(database, data)
+
+    write_status(
+        status_file,
+        browser=info["name"],
+        browserDesktop=info["desktop"],
+        browserProfile=str(profile),
+        darkReader="synchronized",
+    )
+    print(f"Omarchroma: Dark Reader synchronized for {info['name']}")
     return 0
 
 
@@ -230,14 +483,8 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
             browserDesktop=info["desktop"],
             darkReader="unsupported",
         )
-        print(f"Omarchroma: {info['name']} is not a supported Chromium browser")
+        print(f"Omarchroma: {info['name']} is not a supported browser")
         return 0
-
-    try:
-        import plyvel
-    except ImportError:
-        print("Omarchroma: python-plyvel is required", file=sys.stderr)
-        return 1
 
     if browser_running(info["executables"]):
         write_status(
@@ -250,8 +497,17 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         return 2
 
     theme = json.loads(theme_file.read_text())
-    profile = active_profile(Path(info["config"]))
-    database = profile / "Sync Extension Settings" / EXTENSION_ID
+    if info["family"] == "firefox":
+        return apply_firefox_theme(info, theme, state_dir, status_file)
+
+    try:
+        import plyvel
+    except ImportError:
+        print("Omarchroma: python-plyvel is required", file=sys.stderr)
+        return 1
+
+    profile = active_profile(info)
+    database = profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID
     database.mkdir(parents=True, exist_ok=True)
     palette_keys = {
         "darkColorScheme",
