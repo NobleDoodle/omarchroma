@@ -25,6 +25,58 @@ policy, and the command used by its service and bar widget.
 EOF
 }
 
+require_install_acknowledgement() {
+  cat <<EOF
+Omarchroma install consent
+
+This installer changes user and system configuration so Omarchy theme changes
+can be synchronized outside the Omarchy shell.
+
+Before installing, it may:
+- install missing outside packages with pacman: adw-gtk-theme, python-plyvel
+- copy this plugin into:
+  $TARGET_DIR
+- overwrite Omarchroma command shims in:
+  $HOME/.local/bin/omarchroma-sync
+  $HOME/.local/bin/omarchroma-dark-reader
+  $HOME/.local/bin/omarchroma-state
+- install the native Omarchy theme hook:
+  $HOME/.config/omarchy/hooks/theme-set.d/omarchroma
+- remove legacy Omarchroma/Primeval Dawn hook shims if present:
+  $HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme
+  $HOME/.local/bin/apply-dark-reader-theme
+- snapshot original application and browser state under:
+  ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
+- configure Dark Reader for the current default browser unless --no-policy is used
+  or Dark Reader was already installed before Omarchroma first changed it
+- for Chromium-family browsers, write managed policy under the browser's
+  system policy directory, such as /etc/chromium/policies/managed
+- for Firefox-family browsers, merge Dark Reader installation policy into the
+  browser's system policies.json
+- run an initial sync that may update:
+  $HOME/.config/gtk-3.0/
+  $HOME/.config/gtk-4.0/
+  $HOME/.config/kdeglobals
+  $HOME/.local/share/color-schemes/Omarchroma.colors
+  $HOME/.config/YouTube Music/omarchroma.css
+  the active browser profile's Dark Reader settings
+- enable the Omarchy bar widget if --enable is used
+
+The uninstaller restores the state captured before Omarchroma first changed
+each integration. Browser Dark Reader sync and restore require the target
+browser to be closed.
+
+Type "I understand" to continue:
+EOF
+
+  local acknowledgement
+  if ! read -r acknowledgement; then
+    die "install cancelled: acknowledgement was not provided"
+  fi
+  [[ "$acknowledgement" == "I understand" ]] || \
+    die "install cancelled: acknowledgement did not match"
+}
+
 for argument in "$@"; do
   case "$argument" in
     --enable) ENABLE=1 ;;
@@ -36,6 +88,7 @@ for argument in "$@"; do
 done
 
 command -v omarchy >/dev/null || die "omarchy is not available"
+require_install_acknowledgement
 
 if (( INSTALL_PACKAGES )); then
   missing=()
