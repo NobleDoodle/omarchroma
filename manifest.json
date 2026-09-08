@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchroma",
+  "name": "Omarchroma",
+  "version": "1.2.0",
+  "author": "NobleDoodle",
+  "license": "MIT",
+  "description": "Keep GTK, Qt/KDE, Dark Reader, and Pear Desktop matched to the active Omarchy theme.",
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omarchroma",
+    "description": "Force synchronization of application colors",
+    "category": "Appearance",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

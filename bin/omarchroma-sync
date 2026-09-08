@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_ID="omarchroma"
+PLUGIN_DIR="${OMARCHROMA_PLUGIN_DIR:-$HOME/.config/omarchy/plugins/$PLUGIN_ID}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
+STATUS_FILE="$STATE_DIR/status.json"
+SETTINGS_FILE="$STATE_DIR/settings.json"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/omarchroma-sync-$UID.lock"
+
+quiet=0
+notify=0
+force=0
+target="all"
+set_enabled=""
+
+for argument in "$@"; do
+  case "$argument" in
+    --quiet) quiet=1 ;;
+    --notify) notify=1 ;;
+    --force) force=1 ;;
+    --target=all) target="all" ;;
+    --target=gtk) target="gtk" ;;
+    --target=qt-kde) target="qt-kde" ;;
+    --target=dark-reader) target="dark-reader" ;;
+    --target=pear) target="pear" ;;
+    --set-enabled=true) set_enabled="true" ;;
+    --set-enabled=false) set_enabled="false" ;;
+    -h|--help)
+      echo "Usage: omarchroma-sync [--target=gtk|qt-kde|dark-reader|pear] [--set-enabled=true|false] [--force] [--quiet] [--notify]"
+      exit 0
+      ;;
+    *)
+      echo "omarchroma-sync: unknown option: $argument" >&2
+      exit 2
+      ;;
+  esac
+done
+
+log() {
+  (( quiet )) || printf 'Omarchroma: %s\n' "$*"
+}
+
+fail() {
+  printf 'Omarchroma: %s\n' "$*" >&2
+  (( notify )) && notify-send -a Omarchroma "Color synchronization failed" "$*" || true
+  exit 1
+}
+
+color() {
+  local value
+  value=$(omarchy theme color "$1")
+  [[ $value =~ ^#[0-9A-Fa-f]{6}$ ]] || fail "invalid theme color $1: $value"
+  printf '%s' "$value"
+}
+
+command -v omarchy >/dev/null || fail "omarchy is not available"
+[[ -x "$PLUGIN_DIR/lib/sync-gtk-theme" ]] || fail "GTK synchronizer is missing"
+[[ -x "$PLUGIN_DIR/lib/sync-qt-kde-theme" ]] || fail "Qt/KDE synchronizer is missing"
+[[ -f "$PLUGIN_DIR/assets/pear-theme.css.template" ]] || fail "Pear CSS template is missing"
+[[ -x "$PLUGIN_DIR/bin/omarchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
+
+mkdir -p "$STATE_DIR" "$DATA_DIR" "$(dirname "$LOCK_FILE")"
+
+target_key() {
+  case "$1" in
+    gtk) printf 'gtk' ;;
+    qt-kde) printf 'qtKde' ;;
+    dark-reader) printf 'darkReader' ;;
+    pear) printf 'pear' ;;
+    *) return 1 ;;
+  esac
+}
+
+target_enabled() {
+  local key
+  key=$(target_key "$1") || return 1
+  [[ $(jq -r --arg key "$key" '.frameworks[$key] // true' "$SETTINGS_FILE" 2>/dev/null || echo true) == "true" ]]
+}
+
+if [[ -n $set_enabled ]]; then
+  [[ $target != "all" ]] || fail "--set-enabled requires a specific --target"
+  settings_key=$(target_key "$target") || fail "unknown target: $target"
+  python3 - "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+enabled = sys.argv[3] == "true"
+settings = json.loads(path.read_text()) if path.exists() else {}
+frameworks = settings.setdefault("frameworks", {})
+for name in ("gtk", "qtKde", "darkReader", "pear"):
+    frameworks.setdefault(name, True)
+frameworks[key] = enabled
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(settings, indent=2) + "\n")
+temporary.replace(path)
+PY
+  if [[ $set_enabled == "false" ]]; then
+    log "$target disabled"
+    exit 0
+  fi
+  force=1
+fi
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  log "another synchronization is already running"
+  exit 0
+fi
+
+theme_name=$(omarchy theme current)
+background=$(color background)
+dark_background=$(color dark_background)
+darker_background=$(color darker_background)
+lighter_background=$(color lighter_background)
+selection=$(color selection)
+selection_foreground=$(color selection_foreground)
+foreground=$(color foreground)
+dark_foreground=$(color dark_foreground)
+light_foreground=$(color light_foreground)
+bright_foreground=$(color bright_foreground)
+accent=$(color accent)
+muted=$(color muted)
+red=$(color red)
+bright_red=$(color bright_red)
+green=$(color green)
+bright_green=$(color bright_green)
+yellow=$(color yellow)
+bright_yellow=$(color bright_yellow)
+blue=$(color blue)
+magenta=$(color magenta)
+mode=$(omarchy theme color mode)
+browser_desktop=$(
+  "$PLUGIN_DIR/bin/omarchroma-dark-reader" --info |
+    jq -r '.desktop // ""'
+)
+pear_installed=0
+if command -v pear-desktop >/dev/null || [[ -d "$HOME/.config/YouTube Music" ]]; then
+  pear_installed=1
+fi
+
+fingerprint=$(
+  printf '%s\n' \
+    "$theme_name" "$mode" "$background" "$dark_background" \
+    "$darker_background" "$lighter_background" "$selection" \
+    "$selection_foreground" "$foreground" \
+    "$dark_foreground" "$light_foreground" "$bright_foreground" "$accent" \
+    "$muted" "$red" "$bright_red" "$green" "$bright_green" \
+    "$yellow" "$bright_yellow" "$blue" "$magenta" \
+    "$browser_desktop" "$pear_installed" \
+    "$(jq -c '.frameworks // {}' "$SETTINGS_FILE" 2>/dev/null || echo '{}')" |
+    sha256sum | cut -d' ' -f1
+)
+
+previous_fingerprint=""
+dark_reader_state=""
+if [[ -f "$STATUS_FILE" ]]; then
+  previous_fingerprint=$(jq -r '.fingerprint // ""' "$STATUS_FILE" 2>/dev/null || true)
+  dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
+fi
+
+if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
+   [[ $dark_reader_state != "pending-browser-exit" ]] && [[ $target == "all" ]]; then
+  log "colors are already synchronized"
+  exit 0
+fi
+
+if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
+  log "synchronizing GTK"
+  "$PLUGIN_DIR/lib/sync-gtk-theme"
+fi
+if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
+  log "synchronizing Qt and KDE"
+  "$PLUGIN_DIR/lib/sync-qt-kde-theme"
+fi
+
+pear_state="not-installed"
+if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
+  log "synchronizing Pear Desktop"
+  pear_dir="$HOME/.config/YouTube Music"
+  pear_css="$pear_dir/omarchroma.css"
+  mkdir -p "$pear_dir"
+  sed \
+    -e "s/^  --om-bg: .*;/  --om-bg: $background;/" \
+    -e "s/^  --om-bg-dark: .*;/  --om-bg-dark: $dark_background;/" \
+    -e "s/^  --om-bg-darker: .*;/  --om-bg-darker: $darker_background;/" \
+    -e "s/^  --om-surface: .*;/  --om-surface: $lighter_background;/" \
+    -e "s/^  --om-selection: .*;/  --om-selection: $selection;/" \
+    -e "s/^  --om-muted: .*;/  --om-muted: $muted;/" \
+    -e "s/^  --om-fg: .*;/  --om-fg: $foreground;/" \
+    -e "s/^  --om-fg-dim: .*;/  --om-fg-dim: $dark_foreground;/" \
+    -e "s/^  --om-fg-soft: .*;/  --om-fg-soft: $light_foreground;/" \
+    -e "s/^  --om-fg-bright: .*;/  --om-fg-bright: $bright_foreground;/" \
+    -e "s/^  --om-accent: .*;/  --om-accent: $accent;/" \
+    -e "s/^  --om-red: .*;/  --om-red: $red;/" \
+    -e "s/^  --om-green: .*;/  --om-green: $green;/" \
+    "$PLUGIN_DIR/assets/pear-theme.css.template" >"$pear_css.tmp"
+  chmod 644 "$pear_css.tmp"
+  mv -f "$pear_css.tmp" "$pear_css"
+
+  python3 - "$pear_dir/config.json" "$pear_css" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+theme = sys.argv[2]
+config = json.loads(path.read_text()) if path.exists() else {}
+themes = config.setdefault("options", {}).setdefault("themes", [])
+themes[:] = [
+    item for item in themes
+    if Path(item).name not in {"omarchroma.css", "omarchy-primeval-dawn.css"}
+]
+themes.append(theme)
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(config, indent=2) + "\n")
+temporary.replace(path)
+PY
+  pear_state="synchronized"
+fi
+
+dark_reader_exit=0
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
+  dark_reader_theme="$DATA_DIR/dark-reader-theme.json"
+  python3 - "$dark_reader_theme" \
+  "$theme_name" "$background" "$foreground" "$selection" \
+  "$dark_background" "$accent" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+name, background, foreground, selection, dark_background, accent = sys.argv[2:]
+stylesheet = f""":root {{
+  accent-color: {accent} !important;
+  scrollbar-color: {selection} {dark_background} !important;
+}}
+
+::selection {{
+  background-color: {selection} !important;
+  color: {foreground} !important;
+}}
+
+:focus-visible {{
+  outline-color: {accent} !important;
+}}
+
+::-webkit-scrollbar {{
+  background-color: {dark_background} !important;
+}}
+
+::-webkit-scrollbar-thumb {{
+  background-color: {selection} !important;
+  border: 3px solid {dark_background} !important;
+  border-radius: 8px !important;
+}}"""
+theme = {
+    "brightness": 100,
+    "contrast": 100,
+    "darkColorScheme": name,
+    "darkSchemeBackgroundColor": background,
+    "darkSchemeTextColor": foreground,
+    "engine": "dynamicTheme",
+    "fontFamily": "Open Sans",
+    "grayscale": 0,
+    "immediateModify": False,
+    "lightColorScheme": "Default",
+    "lightSchemeBackgroundColor": "#dcdad7",
+    "lightSchemeTextColor": "#181a1b",
+    "mode": 1,
+    "scrollbarColor": selection,
+    "selectionColor": selection,
+    "sepia": 0,
+    "styleSystemControls": True,
+    "stylesheet": stylesheet,
+    "textStroke": 0,
+    "useFont": False,
+}
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(theme, indent=2) + "\n")
+temporary.replace(path)
+PY
+
+  "$PLUGIN_DIR/bin/omarchroma-dark-reader" \
+    --theme "$dark_reader_theme" \
+    --status "$STATUS_FILE" || dark_reader_exit=$?
+  (( dark_reader_exit == 0 || dark_reader_exit == 2 )) || \
+    fail "Dark Reader synchronization failed"
+fi
+
+python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text()) if path.exists() else {}
+state.update({
+    "theme": sys.argv[2],
+    "fingerprint": sys.argv[3],
+    "lastSync": datetime.now(timezone.utc).isoformat(),
+})
+pear_state, target, dark_reader_exit = sys.argv[4:]
+if target in {"all", "gtk"}:
+    state["gtk"] = "synchronized"
+if target in {"all", "qt-kde"}:
+    state["qtKde"] = "synchronized"
+if target in {"all", "pear"}:
+    state["pearDesktop"] = pear_state
+if target in {"all", "dark-reader"} and dark_reader_exit == "0":
+    state["darkReader"] = "synchronized"
+temporary = path.with_suffix(".tmp")
+temporary.write_text(json.dumps(state, indent=2) + "\n")
+temporary.replace(path)
+PY
+
+if (( dark_reader_exit == 2 )); then
+  if [[ $target == "dark-reader" ]]; then
+    message="Dark Reader will update after the browser exits"
+  else
+    message="Enabled frameworks synchronized; Dark Reader will update after the browser exits"
+  fi
+else
+  case "$target" in
+    gtk) message="GTK and GNOME synchronized" ;;
+    qt-kde) message="Qt and KDE synchronized" ;;
+    dark-reader) message="Dark Reader synchronized" ;;
+    pear) message=$([[ $pear_state == "synchronized" ]] && echo "Pear Desktop synchronized" || echo "Pear Desktop is not installed") ;;
+    *) message="GTK, Qt/KDE, and Dark Reader synchronized"
+       (( pear_installed )) && message+=", including Pear Desktop" ;;
+  esac
+fi
+log "$message"
+if (( notify )); then
+  command -v notify-send >/dev/null && \
+    notify-send -a Omarchroma "Colors synchronized" "$message"
+fi
