@@ -27,7 +27,7 @@ touching that framework.
 
 | Theme | What it shows |
 |---|---|
-| ![Custom Primeval Dawn theme synchronized across desktop apps](screenshots/custom-primeval-dawn.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a custom Primeval Dawn palette. |
+| ![Custom theme synchronized across desktop apps](screenshots/custom-theme.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a custom Omarchy palette. |
 | ![Nord theme synchronized across desktop apps](screenshots/nord.png) | The same app set following a Nord palette after an Omarchy theme change. |
 
 ## Install
@@ -52,7 +52,7 @@ requires typing `I understand`. The notice explains that the installer may:
 - copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
 - overwrite Omarchroma command shims in `~/.local/bin`
 - install the Omarchy `theme-set` hook
-- remove old Omarchroma/Primeval Dawn compatibility hook shims
+- remove stale Omarchroma compatibility hook shims
 - snapshot original state in `~/.local/state/omarchroma/original/`
 - configure Dark Reader browser policy when Omarchroma needs to install it
 - run the initial sync for enabled GTK/GNOME, Qt/KDE, Dark Reader, and Pear
