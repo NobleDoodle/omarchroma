@@ -60,6 +60,7 @@ command -v omarchy >/dev/null || fail "omarchy is not available"
 [[ -x "$PLUGIN_DIR/lib/sync-qt-kde-theme" ]] || fail "Qt/KDE synchronizer is missing"
 [[ -f "$PLUGIN_DIR/assets/pear-theme.css.template" ]] || fail "Pear CSS template is missing"
 [[ -x "$PLUGIN_DIR/bin/omarchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
+[[ -x "$PLUGIN_DIR/bin/omarchroma-state" ]] || fail "state helper is missing"
 
 mkdir -p "$STATE_DIR" "$DATA_DIR" "$(dirname "$LOCK_FILE")"
 
@@ -171,16 +172,22 @@ fi
 
 if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   log "synchronizing GTK"
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target gtk
   "$PLUGIN_DIR/lib/sync-gtk-theme"
 fi
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
   log "synchronizing Qt and KDE"
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
   "$PLUGIN_DIR/lib/sync-qt-kde-theme"
 fi
 
 pear_state="not-installed"
 if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
   log "synchronizing Pear Desktop"
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target pear
   pear_dir="$HOME/.config/YouTube Music"
   pear_css="$pear_dir/omarchroma.css"
   mkdir -p "$pear_dir"
@@ -287,6 +294,7 @@ PY
 
   "$PLUGIN_DIR/bin/omarchroma-dark-reader" \
     --theme "$dark_reader_theme" \
+    --state-dir "$STATE_DIR" \
     --status "$STATUS_FILE" || dark_reader_exit=$?
   (( dark_reader_exit == 0 || dark_reader_exit == 2 )) || \
     fail "Dark Reader synchronization failed"

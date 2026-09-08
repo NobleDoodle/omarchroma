@@ -70,6 +70,8 @@ if [[ "$SOURCE_DIR" != "$TARGET_DIR" ]]; then
   install -m 755 "$SOURCE_DIR/bin/omarchroma-sync" "$TARGET_DIR/bin/omarchroma-sync"
   install -m 755 "$SOURCE_DIR/bin/omarchroma-dark-reader" \
     "$TARGET_DIR/bin/omarchroma-dark-reader"
+  install -m 755 "$SOURCE_DIR/bin/omarchroma-state" \
+    "$TARGET_DIR/bin/omarchroma-state"
   install -m 755 "$SOURCE_DIR/hooks/omarchroma" "$TARGET_DIR/hooks/omarchroma"
   install -m 644 "$SOURCE_DIR/assets/dark-reader-policy.json" \
     "$TARGET_DIR/assets/dark-reader-policy.json"
@@ -83,6 +85,8 @@ fi
 install -Dm755 "$TARGET_DIR/bin/omarchroma-sync" "$HOME/.local/bin/omarchroma-sync"
 install -Dm755 "$TARGET_DIR/bin/omarchroma-dark-reader" \
   "$HOME/.local/bin/omarchroma-dark-reader"
+install -Dm755 "$TARGET_DIR/bin/omarchroma-state" \
+  "$HOME/.local/bin/omarchroma-state"
 omarchy hook install theme-set "$TARGET_DIR/hooks/omarchroma"
 rm -f \
   "$HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme" \
@@ -93,17 +97,51 @@ if (( INSTALL_POLICY )); then
   if [[ $(jq -r '.supported' <<<"$browser_info") == "true" ]]; then
     policy_dir=$(jq -r '.policy' <<<"$browser_info")
     browser_name=$(jq -r '.name' <<<"$browser_info")
-    info "Installing Dark Reader for the default browser: $browser_name"
-    if [[ -t 0 ]]; then
-      sudo install -d -m 755 "$policy_dir"
-      sudo rm -f "$policy_dir/99-primeval-dawn-dark-reader.json"
-      sudo install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
-        "$policy_dir/99-omarchroma-dark-reader.json"
+    dark_reader_installed=$(jq -r '.darkReaderInstalled // false' <<<"$browser_info")
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
+    policy_snapshot="$state_dir/original/policy.json"
+    omarchroma_policy="$policy_dir/99-omarchroma-dark-reader.json"
+    if [[ $dark_reader_installed == "true" && ! -f "$omarchroma_policy" ]]; then
+      info "Dark Reader is already installed for $browser_name; leaving extension installation unmanaged"
     else
-      pkexec install -d -m 755 "$policy_dir"
-      pkexec rm -f "$policy_dir/99-primeval-dawn-dark-reader.json"
-      pkexec install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
-        "$policy_dir/99-omarchroma-dark-reader.json"
+      if [[ ! -f "$policy_snapshot" ]]; then
+        mkdir -p "$state_dir/original/policy"
+        python3 - "$policy_snapshot" "$policy_dir" <<'PY'
+import json
+import shutil
+import sys
+from pathlib import Path
+
+snapshot = Path(sys.argv[1])
+policy_dir = Path(sys.argv[2])
+backup_dir = snapshot.parent / "policy"
+entries = []
+for name in ("99-omarchroma-dark-reader.json", "99-primeval-dawn-dark-reader.json"):
+    path = policy_dir / name
+    entry = {"path": str(path), "existed": path.exists()}
+    if path.exists():
+        backup = backup_dir / name
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup)
+        entry["backup"] = str(backup.relative_to(snapshot.parent))
+    entries.append(entry)
+temporary = snapshot.with_suffix(".tmp")
+temporary.write_text(json.dumps({"entries": entries}, indent=2) + "\n")
+temporary.replace(snapshot)
+PY
+      fi
+      info "Installing Dark Reader for the default browser: $browser_name"
+      if [[ -t 0 ]]; then
+        sudo install -d -m 755 "$policy_dir"
+        sudo rm -f "$policy_dir/99-primeval-dawn-dark-reader.json"
+        sudo install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
+          "$policy_dir/99-omarchroma-dark-reader.json"
+      else
+        pkexec install -d -m 755 "$policy_dir"
+        pkexec rm -f "$policy_dir/99-primeval-dawn-dark-reader.json"
+        pkexec install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
+          "$policy_dir/99-omarchroma-dark-reader.json"
+      fi
     fi
   else
     warn "The default browser is not Chromium-based; Dark Reader was skipped"

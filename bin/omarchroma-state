@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+
+def read_json(path):
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(value, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def command_output(command):
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def snapshot_file(snapshot_dir, manifest, key, path):
+    files = manifest.setdefault("files", {})
+    if key in files:
+        return
+    entry = {"path": str(path), "existed": path.exists()}
+    if path.exists():
+        backup = snapshot_dir / "files" / key
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, backup)
+        entry["backup"] = str(backup.relative_to(snapshot_dir))
+    files[key] = entry
+
+
+def snapshot_gsettings(manifest):
+    if "gsettings" in manifest:
+        return
+    values = {}
+    for key in ("gtk-theme", "color-scheme", "accent-color"):
+        value = command_output(["gsettings", "get", "org.gnome.desktop.interface", key])
+        if value is not None:
+            values[key] = value
+    manifest["gsettings"] = values
+
+
+def snapshot(state_dir, data_dir, target):
+    snapshot_dir = state_dir / "original"
+    manifest_path = snapshot_dir / "manifest.json"
+    manifest = read_json(manifest_path)
+    home = Path.home()
+
+    if target == "gtk":
+        snapshot_file(snapshot_dir, manifest, "gtk3_css", home / ".config/gtk-3.0/gtk.css")
+        snapshot_file(snapshot_dir, manifest, "gtk4_css", home / ".config/gtk-4.0/gtk.css")
+        snapshot_gsettings(manifest)
+    elif target == "qt-kde":
+        snapshot_file(snapshot_dir, manifest, "kdeglobals", home / ".config/kdeglobals")
+        snapshot_file(snapshot_dir, manifest, "omarchroma_colors", home / ".local/share/color-schemes/Omarchroma.colors")
+    elif target == "pear":
+        snapshot_file(snapshot_dir, manifest, "pear_config", home / ".config/YouTube Music/config.json")
+        snapshot_file(snapshot_dir, manifest, "pear_css", home / ".config/YouTube Music/omarchroma.css")
+    else:
+        raise SystemExit(f"unknown target: {target}")
+
+    write_json(manifest_path, manifest)
+
+
+def restore_file(snapshot_dir, entry):
+    path = Path(entry["path"])
+    if entry.get("existed"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(snapshot_dir / entry["backup"], path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def restore_gsettings(values):
+    for key, value in values.items():
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", key, value], check=False)
+
+
+def restore(state_dir, data_dir):
+    snapshot_dir = state_dir / "original"
+    manifest = read_json(snapshot_dir / "manifest.json")
+    for entry in manifest.get("files", {}).values():
+        restore_file(snapshot_dir, entry)
+    restore_gsettings(manifest.get("gsettings", {}))
+
+    for path in (
+        Path.home() / ".local/share/color-schemes/Omarchroma.colors",
+        Path.home() / ".config/YouTube Music/omarchroma.css",
+        data_dir / "dark-reader-theme.json",
+        state_dir / "settings.json",
+        state_dir / "status.json",
+    ):
+        if not any(str(path) == entry.get("path") and entry.get("existed") for entry in manifest.get("files", {}).values()):
+            path.unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--state-dir", type=Path, required=True)
+    parser.add_argument("--data-dir", type=Path, required=True)
+    sub = parser.add_subparsers(dest="command", required=True)
+    snap = sub.add_parser("snapshot")
+    snap.add_argument("--target", required=True)
+    sub.add_parser("restore")
+    args = parser.parse_args()
+
+    if args.command == "snapshot":
+        snapshot(args.state_dir, args.data_dir, args.target)
+    else:
+        restore(args.state_dir, args.data_dir)
+
+
+if __name__ == "__main__":
+    main()

@@ -40,7 +40,9 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma
 The first command installs the plugin through Omarchy. The second installs its
 commands and native `theme-set` hook, adds missing dependencies, configures
 Dark Reader for the default browser, enables the service, and places the
-palette icon in the right bar section immediately before the power widget.
+palette icon in the right bar section immediately before the power widget. If
+Dark Reader is already installed in the active browser profile, Omarchroma
+leaves extension installation unmanaged and only synchronizes its settings.
 
 The shell hot-reloads; no restart is required. To install without adding the
 bar icon:
@@ -56,8 +58,12 @@ bar icon:
 ```
 
 The uninstaller removes the plugin, commands, hook, and bar integration.
-Generated GTK, Qt/KDE, Dark Reader, and Pear themes remain active so
-applications do not abruptly lose their last synchronized appearance.
+It also restores the GTK, GNOME, Qt/KDE, Pear Desktop, Dark Reader, and
+browser policy state captured before Omarchroma first changed each
+integration. If Dark Reader was already installed when Omarchroma was
+installed, uninstall restores its original settings and does not remove the
+extension. Dark Reader restore requires the target browser to be closed,
+matching the sync path's LevelDB safety rule.
 
 ## Requirements
 
@@ -81,6 +87,7 @@ BarWidget.qml                    palette button and manual sync action
 Service.qml                      startup and one-minute recovery sync
 bin/omarchroma-sync              synchronization orchestrator
 bin/omarchroma-dark-reader       browser/profile detection and LevelDB updater
+bin/omarchroma-state             snapshot and restore helper
 hooks/omarchroma                 native theme-set hook
 lib/sync-gtk-theme               GTK 3/4 and libadwaita palette generator
 lib/sync-qt-kde-theme            Qt/KDE color-scheme generator
@@ -133,6 +140,7 @@ modified while the browser is running; the update is marked
 ~/.config/YouTube Music/omarchroma.css
 ~/.local/share/color-schemes/Omarchroma.colors
 ~/.local/share/omarchroma/dark-reader-theme.json
+~/.local/state/omarchroma/original/
 ~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
 ```
