@@ -220,7 +220,7 @@ config = json.loads(path.read_text()) if path.exists() else {}
 themes = config.setdefault("options", {}).setdefault("themes", [])
 themes[:] = [
     item for item in themes
-    if Path(item).name not in {"omarchroma.css", "omarchy-primeval-dawn.css"}
+    if Path(item).name != "omarchroma.css"
 ]
 themes.append(theme)
 temporary = path.with_suffix(".tmp")

@@ -42,7 +42,7 @@ Before installing, it may:
   $HOME/.local/bin/omarchroma-state
 - install the native Omarchy theme hook:
   $HOME/.config/omarchy/hooks/theme-set.d/omarchroma
-- remove legacy Omarchroma/Primeval Dawn hook shims if present:
+- remove stale Omarchroma hook shims if present:
   $HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme
   $HOME/.local/bin/apply-dark-reader-theme
 - snapshot original application and browser state under:
@@ -173,7 +173,6 @@ entries = []
 if family == "chromium":
     paths = [
         target / "99-omarchroma-dark-reader.json",
-        target / "99-primeval-dawn-dark-reader.json",
     ]
 else:
     paths = [target]
@@ -194,12 +193,10 @@ PY
       if [[ $browser_family == "chromium" ]]; then
         if [[ -t 0 ]]; then
           sudo install -d -m 755 "$policy_target"
-          sudo rm -f "$policy_target/99-primeval-dawn-dark-reader.json"
           sudo install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
             "$policy_target/99-omarchroma-dark-reader.json"
         else
           pkexec install -d -m 755 "$policy_target"
-          pkexec rm -f "$policy_target/99-primeval-dawn-dark-reader.json"
           pkexec install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
             "$policy_target/99-omarchroma-dark-reader.json"
         fi
