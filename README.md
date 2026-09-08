@@ -45,6 +45,20 @@ Dark Reader is already installed in the active browser profile on first
 install, Omarchroma leaves extension installation unmanaged and only
 synchronizes its settings.
 
+Before changing files, `install.sh` prints an explicit consent notice and
+requires typing `I understand`. The notice explains that the installer may:
+
+- install the outside packages `adw-gtk-theme` and `python-plyvel`
+- copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
+- overwrite Omarchroma command shims in `~/.local/bin`
+- install the Omarchy `theme-set` hook
+- remove old Omarchroma/Primeval Dawn compatibility hook shims
+- snapshot original state in `~/.local/state/omarchroma/original/`
+- configure Dark Reader browser policy when Omarchroma needs to install it
+- run the initial sync for enabled GTK/GNOME, Qt/KDE, Dark Reader, and Pear
+  Desktop integrations
+- enable the bar widget when `--enable` is used
+
 The shell hot-reloads; no restart is required. To install without adding the
 bar icon:
 
