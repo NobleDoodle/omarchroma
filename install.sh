@@ -25,6 +25,198 @@ policy, and the command used by its service and bar widget.
 EOF
 }
 
+command_output() {
+  local output
+  output=$("$@" 2>/dev/null) || return 0
+  printf '%s' "$output"
+}
+
+default_browser_desktop() {
+  local desktop
+  desktop=$(command_output xdg-settings get default-web-browser)
+  if [[ -n "$desktop" ]]; then
+    printf '%s\n' "$desktop"
+    return
+  fi
+  command_output xdg-mime query default x-scheme-handler/https
+  printf '\n'
+}
+
+policy_info_for_desktop() {
+  local desktop="$1"
+  case "$desktop" in
+    helium.desktop)
+      printf '%s\t%s\t%s\n' "Helium" "chromium" "/etc/chromium/policies/managed" ;;
+    chromium.desktop)
+      printf '%s\t%s\t%s\n' "Chromium" "chromium" "/etc/chromium/policies/managed" ;;
+    google-chrome.desktop|google-chrome-stable.desktop)
+      printf '%s\t%s\t%s\n' "Google Chrome" "chromium" "/etc/opt/chrome/policies/managed" ;;
+    brave-browser.desktop)
+      printf '%s\t%s\t%s\n' "Brave" "chromium" "/etc/brave/policies/managed" ;;
+    vivaldi-stable.desktop)
+      printf '%s\t%s\t%s\n' "Vivaldi" "chromium" "/etc/chromium/policies/managed" ;;
+    microsoft-edge.desktop)
+      printf '%s\t%s\t%s\n' "Microsoft Edge" "chromium" "/etc/opt/edge/policies/managed" ;;
+    firefox.desktop)
+      printf '%s\t%s\t%s\n' "Firefox" "firefox" "/usr/lib/firefox/distribution/policies.json" ;;
+    firefox-developer-edition.desktop)
+      printf '%s\t%s\t%s\n' "Firefox Developer Edition" "firefox" "/usr/lib/firefox-developer-edition/distribution/policies.json" ;;
+    librewolf.desktop)
+      printf '%s\t%s\t%s\n' "LibreWolf" "firefox" "/usr/lib/librewolf/distribution/policies.json" ;;
+    waterfox.desktop)
+      printf '%s\t%s\t%s\n' "Waterfox" "firefox" "/usr/lib/waterfox/distribution/policies.json" ;;
+    floorp.desktop)
+      printf '%s\t%s\t%s\n' "Floorp" "firefox" "/usr/lib/floorp/distribution/policies.json" ;;
+    zen-browser.desktop|zen.desktop)
+      printf '%s\t%s\t%s\n' "Zen Browser" "firefox" "/usr/lib/zen-browser/distribution/policies.json" ;;
+    *)
+      return 1 ;;
+  esac
+}
+
+install_browser_policy() {
+  local desktop="$1"
+  local family="$2"
+  local chromium_policy_json='{
+  "ExtensionSettings": {
+    "eimadpbcbfnmbkopoojfekhnkhdbieeh": {
+      "installation_mode": "force_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }
+  }
+}
+'
+  local payload_b64 payload_digest
+  payload_b64=$(printf '%s' "$chromium_policy_json" | base64 -w 0)
+  payload_digest=$(printf '%s' "$chromium_policy_json" | sha256sum | awk '{print $1}')
+
+  local -a policy_command
+  if [[ -t 0 ]]; then
+    policy_command=(sudo python3 - "$desktop" "$family" "$payload_digest" "$payload_b64")
+  else
+    policy_command=(pkexec python3 - "$desktop" "$family" "$payload_digest" "$payload_b64")
+  fi
+
+  "${policy_command[@]}" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+POLICY_DESTINATIONS = {
+    "helium.desktop": ("chromium", "/etc/chromium/policies/managed"),
+    "chromium.desktop": ("chromium", "/etc/chromium/policies/managed"),
+    "google-chrome.desktop": ("chromium", "/etc/opt/chrome/policies/managed"),
+    "google-chrome-stable.desktop": ("chromium", "/etc/opt/chrome/policies/managed"),
+    "brave-browser.desktop": ("chromium", "/etc/brave/policies/managed"),
+    "vivaldi-stable.desktop": ("chromium", "/etc/chromium/policies/managed"),
+    "microsoft-edge.desktop": ("chromium", "/etc/opt/edge/policies/managed"),
+    "firefox.desktop": ("firefox", "/usr/lib/firefox/distribution/policies.json"),
+    "firefox-developer-edition.desktop": (
+        "firefox",
+        "/usr/lib/firefox-developer-edition/distribution/policies.json",
+    ),
+    "librewolf.desktop": ("firefox", "/usr/lib/librewolf/distribution/policies.json"),
+    "waterfox.desktop": ("firefox", "/usr/lib/waterfox/distribution/policies.json"),
+    "floorp.desktop": ("firefox", "/usr/lib/floorp/distribution/policies.json"),
+    "zen-browser.desktop": ("firefox", "/usr/lib/zen-browser/distribution/policies.json"),
+    "zen.desktop": ("firefox", "/usr/lib/zen-browser/distribution/policies.json"),
+}
+
+
+def die(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def ensure_secure_directory(path: Path) -> None:
+    if not path.is_absolute():
+        die(f"policy path is not absolute: {path}")
+    current = Path("/")
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            current.mkdir(mode=0o755)
+            metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            die(f"refusing symlinked policy path component: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            die(f"refusing non-directory policy path component: {current}")
+
+
+def ensure_safe_file_target(path: Path) -> None:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode):
+        die(f"refusing symlinked policy file: {path}")
+    if not stat.S_ISREG(metadata.st_mode):
+        die(f"refusing non-file policy target: {path}")
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    ensure_secure_directory(path.parent)
+    ensure_safe_file_target(path)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+desktop, requested_family, expected_digest, payload_b64 = sys.argv[1:5]
+allowed = POLICY_DESTINATIONS.get(desktop)
+if allowed is None:
+    die(f"unsupported browser policy destination: {desktop}")
+family, target = allowed
+if requested_family != family:
+    die(f"browser policy family mismatch for {desktop}")
+
+payload = base64.b64decode(payload_b64.encode(), validate=True)
+if hashlib.sha256(payload).hexdigest() != expected_digest:
+    die("browser policy payload digest mismatch")
+
+if family == "chromium":
+    atomic_write(
+        Path(target) / "99-omarchroma-dark-reader.json",
+        payload,
+    )
+else:
+    path = Path(target)
+    ensure_secure_directory(path.parent)
+    ensure_safe_file_target(path)
+    policy = {}
+    if path.exists():
+        try:
+            policy = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            policy = {}
+    policies = policy.setdefault("policies", {})
+    settings = policies.setdefault("ExtensionSettings", {})
+    settings["addon@darkreader.org"] = {
+        "installation_mode": "force_installed",
+        "install_url": "https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi",
+    }
+    atomic_write(path, (json.dumps(policy, indent=2) + "\n").encode())
+PY
+}
+
 require_install_acknowledgement() {
   cat <<EOF
 Omarchroma install consent
@@ -146,12 +338,12 @@ rm -f \
   "$HOME/.local/bin/apply-dark-reader-theme"
 
 if (( INSTALL_POLICY )); then
-  browser_info=$("$TARGET_DIR/bin/omarchroma-dark-reader" --info)
-  if [[ $(jq -r '.supported' <<<"$browser_info") == "true" ]]; then
-    browser_family=$(jq -r '.family' <<<"$browser_info")
-    policy_target=$(jq -r '.policy' <<<"$browser_info")
-    browser_name=$(jq -r '.name' <<<"$browser_info")
-    dark_reader_installed=$(jq -r '.darkReaderInstalled // false' <<<"$browser_info")
+  browser_desktop=$(default_browser_desktop)
+  if policy_info=$(policy_info_for_desktop "$browser_desktop"); then
+    IFS=$'\t' read -r browser_name browser_family policy_target <<<"$policy_info"
+    browser_info=$("$TARGET_DIR/bin/omarchroma-dark-reader" --info || printf '{}')
+    dark_reader_installed=$(jq -r '.darkReaderInstalled // false' \
+      <<<"$browser_info" 2>/dev/null || printf false)
     state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
     policy_snapshot="$state_dir/original/policy.json"
     if [[ $dark_reader_installed == "true" && ! -f "$policy_snapshot" ]]; then
@@ -190,47 +382,7 @@ temporary.replace(snapshot)
 PY
       fi
       info "Installing Dark Reader for the default browser: $browser_name"
-      if [[ $browser_family == "chromium" ]]; then
-        if [[ -t 0 ]]; then
-          sudo install -d -m 755 "$policy_target"
-          sudo install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
-            "$policy_target/99-omarchroma-dark-reader.json"
-        else
-          pkexec install -d -m 755 "$policy_target"
-          pkexec install -m 644 "$TARGET_DIR/assets/dark-reader-policy.json" \
-            "$policy_target/99-omarchroma-dark-reader.json"
-        fi
-      else
-        firefox_policy=$(mktemp)
-        python3 - "$policy_target" >"$firefox_policy" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-policy = {}
-if path.exists():
-    try:
-        policy = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        policy = {}
-policies = policy.setdefault("policies", {})
-settings = policies.setdefault("ExtensionSettings", {})
-settings["addon@darkreader.org"] = {
-    "installation_mode": "force_installed",
-    "install_url": "https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi",
-}
-print(json.dumps(policy, indent=2))
-PY
-        if [[ -t 0 ]]; then
-          sudo install -d -m 755 "$(dirname "$policy_target")"
-          sudo install -m 644 "$firefox_policy" "$policy_target"
-        else
-          pkexec install -d -m 755 "$(dirname "$policy_target")"
-          pkexec install -m 644 "$firefox_policy" "$policy_target"
-        fi
-        rm -f "$firefox_policy"
-      fi
+      install_browser_policy "$browser_desktop" "$browser_family"
     fi
   else
     warn "The default browser is not supported; Dark Reader was skipped"
