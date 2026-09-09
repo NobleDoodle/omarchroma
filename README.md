@@ -52,7 +52,8 @@ requires typing `I understand`. The notice explains that the installer may:
 - copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
 - overwrite Omarchroma command shims in `~/.local/bin`
 - install the Omarchy `theme-set` hook
-- remove stale Omarchroma compatibility hook shims
+- remove stale Omarchroma compatibility hook shims and the unused
+  `assets/dark-reader-policy.json` left by earlier versions
 - snapshot original state in `~/.local/state/omarchroma/original/`
 - configure Dark Reader browser policy when Omarchroma needs to install it,
   keeping a root-owned backup of each replaced policy file under
@@ -112,6 +113,7 @@ synchronized GTK palette.
 ```text
 manifest.json                    service + bar-widget plugin manifest
 BarWidget.qml                    palette button and manual sync action
+Panel.qml                        framework toggle panel opened by the widget
 Service.qml                      startup and one-minute recovery sync
 bin/omarchroma-sync              synchronization orchestrator
 bin/omarchroma-dark-reader       browser/profile detection and Dark Reader updater
