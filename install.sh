@@ -164,13 +164,18 @@ def ensure_safe_file_target(path: Path) -> None:
 def atomic_write(path: Path, data: bytes) -> None:
     ensure_secure_directory(path.parent)
     ensure_safe_file_target(path)
+    _atomic_write_into(path, data)
+
+
+def _atomic_write_into(path: Path, data: bytes, mode: int = 0o644) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o644)
+        os.chmod(temporary, mode)
+        os.chown(temporary, 0, 0)
         os.replace(temporary, path)
     except BaseException:
         try:
@@ -178,6 +183,164 @@ def atomic_write(path: Path, data: bytes) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+STAGING_ROOT = Path("/var/lib/omarchroma/policy-backup")
+
+
+def managed_target(family: str, policy_dir: str) -> Path:
+    if family == "chromium":
+        return Path(policy_dir) / "99-omarchroma-dark-reader.json"
+    return Path(policy_dir)
+
+
+def allowlisted_target(desktop: str, family: str) -> Path:
+    """Rederive a destination from the fixed allowlist. A manifest never
+    supplies a path; it only supplies an allowlist key to look one up with."""
+    allowed = POLICY_DESTINATIONS.get(desktop)
+    if allowed is None:
+        die(f"policy backup names an unsupported browser: {desktop!r}")
+    expected_family, policy_dir = allowed
+    if family != expected_family:
+        die(f"policy backup family does not match the allowlist for {desktop}")
+    return managed_target(expected_family, policy_dir)
+
+
+def backup_name(family: str, target: Path) -> str:
+    digest = hashlib.sha256(str(target).encode()).hexdigest()[:16]
+    return f"{family}-{digest}"
+
+
+def normalized_entries(manifest: dict) -> dict:
+    """Return {destination: entry} for manifest version 1 or 2. Destinations are
+    rederived from the allowlist, and a key that disagrees with the entry it
+    holds is refused."""
+    version = manifest.get("version")
+    if version == 1:
+        # v1 recorded exactly one destination, at the top level.
+        desktop = manifest.get("desktop")
+        family = manifest.get("family")
+        target = allowlisted_target(desktop, family)
+        raw = manifest.get("entries")
+        if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], dict):
+            die("policy backup manifest is corrupt")
+        entry = {name: value for name, value in raw[0].items() if name != "key"}
+        entry["desktop"] = desktop
+        entry["family"] = family
+        return {str(target): entry}
+    if version != 2:
+        die(f"unsupported policy backup manifest version: {version!r}")
+    raw = manifest.get("entries")
+    if not isinstance(raw, dict):
+        die("policy backup manifest is corrupt")
+    entries = {}
+    for key, entry in raw.items():
+        if not isinstance(entry, dict):
+            die("policy backup manifest is corrupt")
+        target = allowlisted_target(entry.get("desktop"), entry.get("family"))
+        if str(target) != key:
+            die(f"policy backup entry does not match its destination: {key}")
+        entries[key] = entry
+    return entries
+
+
+def ensure_root_staging() -> Path:
+    current = Path("/")
+    for part in STAGING_ROOT.parts[1:]:
+        current = current / part
+        try:
+            metadata = os.lstat(current)
+        except FileNotFoundError:
+            os.mkdir(current, 0o755)
+            os.chmod(current, 0o755)
+            os.chown(current, 0, 0)
+            metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            die(f"refusing symlinked staging component: {current}")
+        if not stat.S_ISDIR(metadata.st_mode):
+            die(f"refusing non-directory staging component: {current}")
+        if metadata.st_uid != 0:
+            die(f"refusing non-root-owned staging component: {current}")
+    return STAGING_ROOT
+
+
+def read_regular_file(path: Path) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1 << 16)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def load_manifest(manifest_path: Path):
+    try:
+        metadata = os.lstat(manifest_path)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
+        die("refusing untrusted policy backup manifest")
+    try:
+        manifest = json.loads(read_regular_file(manifest_path).decode())
+    except (ValueError, UnicodeDecodeError):
+        die("policy backup manifest is corrupt")
+    if not isinstance(manifest, dict):
+        die("policy backup manifest is corrupt")
+    return manifest
+
+
+def snapshot_destination_once(desktop: str, family: str, policy_dir: str) -> None:
+    """Capture this destination's pristine state once. Create-once is scoped per
+    destination, so changing the default browser between installs still records
+    the new policy file for the uninstaller to clean up."""
+    staging = ensure_root_staging()
+    manifest_path = staging / "manifest.json"
+    manifest = load_manifest(manifest_path)
+    entries = normalized_entries(manifest) if manifest is not None else {}
+
+    target = managed_target(family, policy_dir)
+    key = str(target)
+    if key in entries:
+        return  # already captured; keep the pristine copy
+
+    ensure_secure_directory(target.parent)
+    entry = {"desktop": desktop, "family": family}
+    try:
+        file_metadata = os.lstat(target)
+    except FileNotFoundError:
+        entry["existed"] = False
+    else:
+        if stat.S_ISLNK(file_metadata.st_mode):
+            die(f"refusing to back up symlinked policy file: {target}")
+        if not stat.S_ISREG(file_metadata.st_mode):
+            die(f"refusing to back up non-file policy target: {target}")
+        data = read_regular_file(target)
+        name = backup_name(family, target)
+        # Record the original permissions and ownership so the uninstaller can
+        # put the file back as it was instead of normalizing it. setuid, setgid
+        # and sticky are dropped: a policy file has no use for them, and they
+        # are not worth carrying through a privileged restore.
+        mode = stat.S_IMODE(file_metadata.st_mode) & 0o777
+        # The staging copy keeps the original permissions too, so a restrictive
+        # original is not widened while it sits in the backup directory.
+        _atomic_write_into(staging / name, data, mode)
+        entry["existed"] = True
+        entry["sha256"] = hashlib.sha256(data).hexdigest()
+        entry["backup"] = name
+        entry["mode"] = mode
+        entry["uid"] = file_metadata.st_uid
+        entry["gid"] = file_metadata.st_gid
+
+    entries[key] = entry
+    _atomic_write_into(
+        manifest_path,
+        (json.dumps({"version": 2, "entries": entries}, indent=2) + "\n").encode(),
+    )
 
 
 desktop, requested_family, expected_digest, payload_b64 = sys.argv[1:5]
@@ -191,6 +354,10 @@ if requested_family != family:
 payload = base64.b64decode(payload_b64.encode(), validate=True)
 if hashlib.sha256(payload).hexdigest() != expected_digest:
     die("browser policy payload digest mismatch")
+
+# Capture the pristine policy state in root-owned staging before overwriting it,
+# so the uninstaller can restore it without trusting any user-writable file.
+snapshot_destination_once(desktop, family, target)
 
 if family == "chromium":
     atomic_write(
@@ -237,6 +404,7 @@ Before installing, it may:
 - remove stale Omarchroma hook shims if present:
   $HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme
   $HOME/.local/bin/apply-dark-reader-theme
+  $TARGET_DIR/assets/dark-reader-policy.json
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
 - configure Dark Reader for the current default browser unless --no-policy is used
@@ -245,6 +413,10 @@ Before installing, it may:
   system policy directory, such as /etc/chromium/policies/managed
 - for Firefox-family browsers, merge Dark Reader installation policy into the
   browser's system policies.json
+- keep a root-owned backup of each browser policy file it replaces under:
+  /var/lib/omarchroma/policy-backup/
+  one record per policy destination, so a later change of default browser is
+  still tracked and still removed at uninstall
 - run an initial sync that may update:
   $HOME/.config/gtk-3.0/
   $HOME/.config/gtk-4.0/
@@ -256,7 +428,8 @@ Before installing, it may:
 
 The uninstaller restores the state captured before Omarchroma first changed
 each integration. Browser Dark Reader sync and restore require the target
-browser to be closed.
+browser to be closed. Restoring the system browser policy is performed by a
+fixed privileged helper and prompts for administrator authentication.
 
 Type "I understand" to continue:
 EOF
@@ -318,8 +491,6 @@ if [[ "$SOURCE_DIR" != "$TARGET_DIR" ]]; then
   install -m 755 "$SOURCE_DIR/bin/omarchroma-state" \
     "$TARGET_DIR/bin/omarchroma-state"
   install -m 755 "$SOURCE_DIR/hooks/omarchroma" "$TARGET_DIR/hooks/omarchroma"
-  install -m 644 "$SOURCE_DIR/assets/dark-reader-policy.json" \
-    "$TARGET_DIR/assets/dark-reader-policy.json"
   install -m 644 "$SOURCE_DIR/assets/pear-theme.css.template" \
     "$TARGET_DIR/assets/pear-theme.css.template"
   install -m 755 "$SOURCE_DIR/lib/sync-gtk-theme" "$TARGET_DIR/lib/sync-gtk-theme"
@@ -335,52 +506,24 @@ install -Dm755 "$TARGET_DIR/bin/omarchroma-state" \
 omarchy hook install theme-set "$TARGET_DIR/hooks/omarchroma"
 rm -f \
   "$HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme" \
-  "$HOME/.local/bin/apply-dark-reader-theme"
+  "$HOME/.local/bin/apply-dark-reader-theme" \
+  "$TARGET_DIR/assets/dark-reader-policy.json"
 
 if (( INSTALL_POLICY )); then
   browser_desktop=$(default_browser_desktop)
   if policy_info=$(policy_info_for_desktop "$browser_desktop"); then
-    IFS=$'\t' read -r browser_name browser_family policy_target <<<"$policy_info"
+    # policy_target is rederived from the allowlist inside the privileged helper.
+    IFS=$'\t' read -r browser_name browser_family _ <<<"$policy_info"
     browser_info=$("$TARGET_DIR/bin/omarchroma-dark-reader" --info || printf '{}')
     dark_reader_installed=$(jq -r '.darkReaderInstalled // false' \
       <<<"$browser_info" 2>/dev/null || printf false)
-    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
-    policy_snapshot="$state_dir/original/policy.json"
-    if [[ $dark_reader_installed == "true" && ! -f "$policy_snapshot" ]]; then
+    # The pristine policy is captured in root-owned staging by the privileged
+    # helper (install_browser_policy -> snapshot_destination_once). Its manifest
+    # the record of "Omarchroma has managed this browser policy before".
+    policy_backup_manifest="/var/lib/omarchroma/policy-backup/manifest.json"
+    if [[ $dark_reader_installed == "true" && ! -e "$policy_backup_manifest" ]]; then
       info "Dark Reader is already installed for $browser_name; leaving extension installation unmanaged"
     else
-      if [[ ! -f "$policy_snapshot" ]]; then
-        mkdir -p "$state_dir/original/policy"
-        python3 - "$policy_snapshot" "$browser_family" "$policy_target" <<'PY'
-import json
-import shutil
-import sys
-from pathlib import Path
-
-snapshot = Path(sys.argv[1])
-family = sys.argv[2]
-target = Path(sys.argv[3])
-backup_dir = snapshot.parent / "policy"
-entries = []
-if family == "chromium":
-    paths = [
-        target / "99-omarchroma-dark-reader.json",
-    ]
-else:
-    paths = [target]
-for path in paths:
-    entry = {"path": str(path), "existed": path.exists()}
-    if path.exists():
-        backup = backup_dir / path.name
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, backup)
-        entry["backup"] = str(backup.relative_to(snapshot.parent))
-    entries.append(entry)
-temporary = snapshot.with_suffix(".tmp")
-temporary.write_text(json.dumps({"entries": entries}, indent=2) + "\n")
-temporary.replace(snapshot)
-PY
-      fi
       info "Installing Dark Reader for the default browser: $browser_name"
       install_browser_policy "$browser_desktop" "$browser_family"
     fi

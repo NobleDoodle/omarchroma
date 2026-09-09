@@ -54,7 +54,9 @@ requires typing `I understand`. The notice explains that the installer may:
 - install the Omarchy `theme-set` hook
 - remove stale Omarchroma compatibility hook shims
 - snapshot original state in `~/.local/state/omarchroma/original/`
-- configure Dark Reader browser policy when Omarchroma needs to install it
+- configure Dark Reader browser policy when Omarchroma needs to install it,
+  keeping a root-owned backup of each replaced policy file under
+  `/var/lib/omarchroma/policy-backup/`
 - run the initial sync for enabled GTK/GNOME, Qt/KDE, Dark Reader, and Pear
   Desktop integrations
 - enable the bar widget when `--enable` is used
@@ -79,6 +81,17 @@ integration. If Dark Reader was already installed when Omarchroma was
 installed, uninstall restores its original settings and does not remove the
 extension. Dark Reader restore requires the target browser to be closed,
 matching the sync path's LevelDB safety rule.
+
+The system browser policy is restored by a fixed privileged helper that
+rederives each policy path from the built-in browser allowlist and replays the
+root-owned backup under `/var/lib/omarchroma/policy-backup/` only after
+verifying its digest; it prompts for administrator authentication and never
+runs a user-writable script. One backup is recorded per policy destination, so
+if the default browser changed while Omarchroma was installed, every policy
+file it wrote is restored or removed, with the permissions and ownership it
+had before Omarchroma replaced it. The backup directory is removed once the
+restore succeeds. If the backup record is missing the uninstaller does not
+guess: it names the policy files it left in place so they can be reviewed.
 
 ## Requirements
 
@@ -106,7 +119,6 @@ bin/omarchroma-state             snapshot and restore helper
 hooks/omarchroma                 native theme-set hook
 lib/sync-gtk-theme               GTK 3/4 and libadwaita palette generator
 lib/sync-qt-kde-theme            Qt/KDE color-scheme generator
-assets/dark-reader-policy.json   managed Chromium Dark Reader extension policy
 assets/pear-theme.css.template   Pear Desktop stylesheet template
 install.sh                       standalone installer
 uninstall.sh                     integration cleanup
@@ -167,6 +179,7 @@ marked `pending-browser-exit` and retried after the browser closes.
 ~/.local/state/omarchroma/original/
 ~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
+/var/lib/omarchroma/policy-backup/   (root-owned; only when a browser policy is installed)
 ```
 
 Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
