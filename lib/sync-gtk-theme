@@ -33,6 +33,29 @@ contrasting_fg() {
   fi
 }
 
+# Omarchy themes each name an icon theme in icons.theme, but nothing in Omarchy
+# applies it, so KDE and GTK drift apart or fall back to whatever was set last.
+omarchy_icon_theme() {
+  local name_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name"
+  [[ -f $name_file ]] || return 0
+  local slug directory value
+  slug=$(tr -d "\\n" <"$name_file")
+  [[ -n $slug ]] || return 0
+  directory=$(omarchy theme dir "$slug" 2>/dev/null) || return 0
+  [[ -f "$directory/icons.theme" ]] || return 0
+  value=$(tr -d "\\n" <"$directory/icons.theme")
+  [[ $value =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 0
+  # A theme may name an icon set that is not installed; the stock vantablack and
+  # white themes both do. Applying one would leave apps with no icons at all.
+  [[ -d "/usr/share/icons/$value" || \
+     -d "${XDG_DATA_HOME:-$HOME/.local/share}/icons/$value" ]] || {
+    printf "%s: Omarchy theme requests icon theme '%s', which is not installed\\n" \
+      "$1" "$value" >&2
+    return 0
+  }
+  printf "%s" "$value"
+}
+
 background=$(color background)
 dark_background=$(color dark_background)
 darker_background=$(color darker_background)
@@ -325,3 +348,8 @@ trap - EXIT
 gsettings set org.gnome.desktop.interface gtk-theme "$gtk_theme"
 gsettings set org.gnome.desktop.interface color-scheme "$color_scheme"
 gsettings set org.gnome.desktop.interface accent-color "$gnome_accent"
+
+icon_theme=$(omarchy_icon_theme sync-gtk-theme)
+if [[ -n $icon_theme ]]; then
+  gsettings set org.gnome.desktop.interface icon-theme "$icon_theme"
+fi
