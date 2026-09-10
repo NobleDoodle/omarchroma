@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -249,9 +250,41 @@ def open_windows():
     ]
 
 
+def omarchy_reloaded_executables():
+    """Executables Omarchy re-themes itself when the theme changes.
+
+    Read out of Omarchy's own theme-set path rather than listed here, so it
+    follows along as Omarchy gains more: the shell hot-reloads over IPC, and the
+    omarchy-restart-* helpers signal terminals, TUIs and the compositor to
+    reread their config. Telling someone to restart one of those would be wrong.
+
+    Tokens are matched loosely and then intersected with what is actually
+    running, so shell keywords and file paths in those scripts fall away on
+    their own instead of needing a parser."""
+    root = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy") / "bin"
+    sources = [root / "omarchy-theme-set", *sorted(root.glob("omarchy-restart-*"))]
+    tokens = set()
+    for source in sources:
+        try:
+            tokens |= set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", source.read_text()))
+        except OSError:
+            continue
+    return tokens & running_executables()
+
+
+def window_executable(pid):
+    try:
+        return os.path.basename(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return None
+
+
 def stale_open_apps():
     """Names of apps with a window open that started before the current theme
     was selected, so they are still drawing the previous one.
+
+    Applications Omarchy re-themes on its own are left out, so the list is only
+    what genuinely will not change until it is restarted.
 
     Reporting only. Nothing here signals, quits or writes to a running app: an
     open window keeps whatever it started with until its owner restarts it."""
@@ -259,10 +292,15 @@ def stale_open_apps():
     windows = open_windows()
     if since is None or not windows:
         return []
+    reloaded = omarchy_reloaded_executables()
     names = set()
     for title, klass, pid in windows:
         started = process_started_at(pid)
         if started is None or started >= since:
+            continue
+        # A terminal, TUI or the shell already picked the theme up when Omarchy
+        # told it to; naming it would send someone to restart nothing.
+        if window_executable(pid) in reloaded:
             continue
         # Identify by window class, not title: a title is the document being
         # shown and changes minute to minute, which would make this report
