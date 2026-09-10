@@ -317,6 +317,10 @@ def stale_open_apps():
 # applications, so it covers ones this plugin has never heard of.
 KDE_COLOR_LIBRARY = "libKF6ColorScheme"
 
+# Bound on re-arming, so a session spent opening and closing KDE apps cannot
+# leave this looping forever. The recovery service covers anything past it.
+WATCH_ROUNDS = 32
+
 
 def kde_color_clients():
     """Names of running processes that would reload if kdeglobals were rewritten
@@ -383,28 +387,35 @@ def watch_kde_exit(state_dir, data_dir):
     except OSError:
         return  # another waiter already holds this
 
-    descriptors = []
-    for pid in kde_color_client_pids():
-        try:
-            descriptors.append(os.pidfd_open(pid))
-        except OSError:
-            continue  # exited between listing it and waiting on it
+    # Re-arm rather than hand off. Closing an application and reopening it before
+    # the palette is written used to disarm this permanently: the sync deferred
+    # again and spawned a replacement, but the replacement could not take this
+    # lock while it was still held, so it exited and nothing was left watching.
+    for _ in range(WATCH_ROUNDS):
+        descriptors = []
+        for pid in kde_color_client_pids():
+            try:
+                descriptors.append(os.pidfd_open(pid))
+            except OSError:
+                continue  # exited between listing it and waiting on it
 
-    if descriptors:
-        poller = select.poll()
-        for descriptor in descriptors:
-            poller.register(descriptor, select.POLLIN)
-        remaining = set(descriptors)
-        while remaining:
-            for descriptor, _ in poller.poll():
-                poller.unregister(descriptor)
-                os.close(descriptor)
-                remaining.discard(descriptor)
+        if descriptors:
+            poller = select.poll()
+            for descriptor in descriptors:
+                poller.register(descriptor, select.POLLIN)
+            remaining = set(descriptors)
+            while remaining:
+                for descriptor, _ in poller.poll():
+                    poller.unregister(descriptor)
+                    os.close(descriptor)
+                    remaining.discard(descriptor)
 
-    subprocess.run(
-        [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
-        check=False,
-    )
+        subprocess.run(
+            [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
+            check=False,
+        )
+        if not kde_color_client_pids():
+            return  # nothing holding the files, so that sync wrote the palette
 
 
 def restore(state_dir, data_dir):
