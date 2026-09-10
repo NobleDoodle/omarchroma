@@ -146,8 +146,12 @@ started afterwards comes up with the new palette. A window already open cannot
 be restyled in place, and nothing here signals, quits or restarts it, nor edits
 the configuration of a running application. Instead the sync lists the open
 applications still showing the previous theme, so restarting them is the user's
-choice. The list is identified by window class rather than window title, so it
-names the same applications every run.
+choice. Anything Omarchy re-themes on its own is left out: the shell hot-reloads
+over IPC, and terminals, TUIs and the compositor are told to reread their config
+by Omarchy's own restart helpers, so naming them would send someone to restart
+nothing. That set is read from Omarchy rather than listed here, so it follows
+along as Omarchy gains more. The list is identified by window class rather than
+window title, so it names the same applications every run.
 
 The native `theme-set` and `font-set` hooks apply changes immediately. A lightweight service
 checks once per minute for a missed event, a changed default browser, a newly
