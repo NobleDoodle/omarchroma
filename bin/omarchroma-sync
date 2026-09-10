@@ -190,12 +190,25 @@ if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   "$PLUGIN_DIR/lib/sync-gtk-theme"
 fi
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
-  log "synchronizing Qt and KDE"
-  "$PLUGIN_DIR/bin/omarchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
-  "$PLUGIN_DIR/lib/sync-qt-kde-theme"
+  # kdeglobals and the generated color scheme are read by every running KDE
+  # application, and rewriting them underneath one is what disturbs it. If any
+  # process still has KColorScheme mapped, leave both files exactly as they are;
+  # the restart report names those applications, and the next sync after they
+  # exit writes the palette for everything started from then on.
+  kde_clients=$("$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" kde-color-clients 2>/dev/null || true)
+  if [[ -n $kde_clients ]]; then
+    qt_kde_deferred=1
+    log "Qt and KDE left untouched; still running: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+  else
+    log "synchronizing Qt and KDE"
+    "$PLUGIN_DIR/bin/omarchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
+    "$PLUGIN_DIR/lib/sync-qt-kde-theme"
+  fi
 fi
 
+qt_kde_deferred=${qt_kde_deferred:-0}
 pear_state="not-installed"
 if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
   log "synchronizing Pear Desktop"
@@ -349,10 +362,16 @@ if (( dark_reader_exit == 2 )); then
 else
   case "$target" in
     gtk) message="GTK and GNOME synchronized" ;;
-    qt-kde) message="Qt and KDE synchronized" ;;
+    qt-kde) message=$( (( qt_kde_deferred )) \
+             && echo "Qt/KDE deferred while KDE apps are open" \
+             || echo "Qt and KDE synchronized" ) ;;
     dark-reader) message="Dark Reader synchronized" ;;
     pear) message=$([[ $pear_state == "synchronized" ]] && echo "Pear Desktop synchronized" || echo "Pear Desktop is not installed") ;;
-    *) message="GTK, Qt/KDE, and Dark Reader synchronized"
+    *) if (( qt_kde_deferred )); then
+         message="GTK and Dark Reader synchronized; Qt/KDE deferred while KDE apps are open"
+       else
+         message="GTK, Qt/KDE, and Dark Reader synchronized"
+       fi
        (( pear_installed )) && message+=", including Pear Desktop" ;;
   esac
 fi

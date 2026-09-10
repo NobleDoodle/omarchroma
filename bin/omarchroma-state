@@ -310,6 +310,31 @@ def stale_open_apps():
     return sorted(names)
 
 
+# Any process with KColorScheme mapped reads the colours in kdeglobals and
+# reloads when they change. That is the predicate, rather than a list of KDE
+# applications, so it covers ones this plugin has never heard of.
+KDE_COLOR_LIBRARY = "libKF6ColorScheme"
+
+
+def kde_color_clients():
+    """Names of running processes that would reload if kdeglobals were
+    rewritten. Rewriting those files underneath them is what makes a theme
+    change disturb applications that are already open."""
+    names = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            with open(entry / "maps") as handle:
+                if not any(KDE_COLOR_LIBRARY in line for line in handle):
+                    continue
+        except OSError:
+            continue
+        name = window_executable(entry.name) or entry.name
+        names.add(name)
+    return sorted(names)
+
+
 def restore(state_dir, data_dir):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
@@ -339,6 +364,7 @@ def main():
     sub.add_parser("restore")
     sub.add_parser("clear-app-color-schemes")
     sub.add_parser("report-stale-apps")
+    sub.add_parser("kde-color-clients")
     args = parser.parse_args()
 
     if args.command == "snapshot":
@@ -347,6 +373,9 @@ def main():
         clear_app_color_schemes(args.state_dir)
     elif args.command == "report-stale-apps":
         for name in stale_open_apps():
+            print(name)
+    elif args.command == "kde-color-clients":
+        for name in kde_color_clients():
             print(name)
     else:
         restore(args.state_dir, args.data_dir)
