@@ -6,6 +6,7 @@ import os
 import re
 import select
 import shutil
+import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -321,6 +322,9 @@ KDE_COLOR_LIBRARY = "libKF6ColorScheme"
 # leave this looping forever. The recovery service covers anything past it.
 WATCH_ROUNDS = 32
 
+# How long a waiter lingers before leaving it to the recovery service.
+WATCH_TIMEOUT_SECONDS = 900
+
 
 def kde_color_clients():
     """Names of running processes that would reload if kdeglobals were rewritten
@@ -370,6 +374,55 @@ def kde_color_client_pids():
     return pids
 
 
+def hyprland_event_socket():
+    """Hyprland's event stream, or None when it cannot be reached."""
+    signature = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not signature or not runtime:
+        return None
+    path = Path(runtime) / "hypr" / signature / ".socket2.sock"
+    try:
+        return path if path.is_socket() else None
+    except OSError:
+        return None
+
+
+def apply_and_check_clear():
+    """Run the Qt/KDE sync and report whether it had a clear run at it."""
+    subprocess.run(
+        [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
+        check=False,
+    )
+    return not kde_color_client_pids()
+
+
+def watch_windows_close(stream):
+    """Apply the palette once no KDE window is holding the files, waking on
+    Hyprland's window events.
+
+    The condition being waited on is a window going away, not a process ending.
+    Closing a KDE application often leaves the process alive with no window --
+    kdenlive routinely leaves several -- so waiting for the process to exit
+    waits for something that may never happen, which is why this used to fall
+    through to the recovery service a minute later."""
+    stream.settimeout(WATCH_TIMEOUT_SECONDS)
+    pending = b""
+    while True:
+        if not kde_color_client_pids() and apply_and_check_clear():
+            return
+        try:
+            received = stream.recv(4096)
+        except (TimeoutError, socket.timeout):
+            return  # the recovery service covers anything past this
+        if not received:
+            return  # Hyprland went away
+        pending += received
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            if line.startswith(b"closewindow"):
+                break  # re-check who is holding the files
+
+
 def watch_kde_exit(state_dir, data_dir):
     """Wait for the KDE applications holding the colour files to exit, then
     apply the palette once.
@@ -387,6 +440,18 @@ def watch_kde_exit(state_dir, data_dir):
     except OSError:
         return  # another waiter already holds this
 
+    stream_path = hyprland_event_socket()
+    if stream_path is not None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+            try:
+                stream.connect(str(stream_path))
+            except OSError:
+                stream_path = None
+            else:
+                watch_windows_close(stream)
+                return
+
+    # No event stream: fall back to waiting for the processes themselves to end.
     # Re-arm rather than hand off. Closing an application and reopening it before
     # the palette is written used to disarm this permanently: the sync deferred
     # again and spawned a replacement, but the replacement could not take this

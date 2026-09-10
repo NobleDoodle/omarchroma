@@ -146,10 +146,13 @@ application, so they are only rewritten when no process that has `KColorScheme`
 mapped *and a window on screen* is running. A process with no window has nothing
 to redraw, so a background daemon, or the remains of an application that crashed,
 does not hold the palette back. While one is open both files are left exactly as they
-are, that application is named in the restart list, and a helper waits
-for it to exit and then applies the palette. That wait is on a pidfd, so the
-kernel wakes the helper the moment the process ends rather than anything polling
-for it; it costs nothing while it sleeps, only one runs at a time, and the
+are, that application is named in the restart list, and a helper applies the
+palette once no KDE window is holding the files. It waits on Hyprland's event
+stream and wakes on a window closing, which is the condition that matters:
+closing a KDE application frequently leaves its process running with no window,
+so waiting for the process to end waits for something that may never happen.
+Where that stream is unavailable it falls back to waiting on the processes
+themselves; it costs nothing while it sleeps, only one runs at a time, and the
 deferral is also recorded so the recovery service still catches the case where
 the helper never ran. The check is that
 predicate rather than a list of KDE applications, so it covers ones this plugin
