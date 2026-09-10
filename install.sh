@@ -420,7 +420,10 @@ Before installing, it may:
   still tracked and still removed at uninstall
 - set the KDE color scheme for every app once in kdeglobals, and clear
   per-application pins that would override it, recording each original value
-  for the uninstaller
+  for the uninstaller, never editing the configuration of an application that
+  is currently running
+- after a change, list the open applications still showing the previous theme,
+  without signalling, quitting or restarting any of them
 - run an initial sync that may update:
   $HOME/.config/gtk-3.0/
   $HOME/.config/gtk-4.0/

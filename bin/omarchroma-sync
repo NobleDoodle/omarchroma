@@ -361,3 +361,17 @@ if (( notify )); then
   command -v notify-send >/dev/null && \
     notify-send -a Omarchroma "Colors synchronized" "$message"
 fi
+
+# Everything is written to disk by this point, so anything started from now on
+# picks up the new theme. Windows already open cannot be restyled in place, and
+# nothing here touches them; say which ones they are so the choice to restart is
+# the user's.
+stale_apps=$("$PLUGIN_DIR/bin/omarchroma-state" \
+  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps 2>/dev/null || true)
+if [[ -n $stale_apps ]]; then
+  stale_list=$(sed ':a;N;$!ba;s/\n/, /g' <<<"$stale_apps")
+  log "restart to pick up the new theme: $stale_list"
+  command -v notify-send >/dev/null && \
+    notify-send -a Omarchroma "Restart to finish theming" \
+      "Still showing the previous theme: $stale_list" || true
+fi

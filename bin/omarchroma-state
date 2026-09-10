@@ -140,10 +140,20 @@ def clear_app_color_schemes(state_dir):
     manifest_path = state_dir / "original/manifest.json"
     manifest = read_json(manifest_path)
     recorded = manifest.setdefault("appColorSchemes", {})
+    running = running_executables()
 
     for path, lines in readable_rc_files():
         index, value = find_ini_key(lines, APP_COLOR_SCHEME_GROUP, APP_COLOR_SCHEME_KEY)
         if index is None:
+            continue
+        # "kdenliverc" belongs to "kdenlive". A running app rewrites its rc on
+        # exit, so editing it underneath would be undone anyway; leave the file,
+        # and the process, exactly as they are. It is cleared the next time a
+        # sync runs with the app closed.
+        owner = path.name[:-2] if path.name.endswith("rc") else path.name
+        if owner in running:
+            print(f"Omarchroma: {owner} is running; leaving its pinned "
+                  f"{value} colour scheme alone until it is restarted")
             continue
         recorded.setdefault(str(path), {"existed": True, "value": value})
         del lines[index]
@@ -183,6 +193,85 @@ def restore_app_color_schemes(manifest):
         write_lines(path, lines)
 
 
+def running_executables():
+    """Basenames of every running executable. Used to tell whether an app would
+    simply write a change back, and to leave it alone if so."""
+    names = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            names.add(os.path.basename(os.readlink(entry / "exe")))
+        except OSError:
+            continue
+    return names
+
+
+def theme_switched_at():
+    """When the active Omarchy theme was selected, as epoch seconds."""
+    marker = Path(
+        os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state"
+    ) / "omarchy/current/theme.name"
+    try:
+        return int(marker.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def process_started_at(pid):
+    """Epoch seconds when a process began, from its start time in jiffies."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            fields = handle.read().rsplit(b") ", 1)[1].split()
+        with open("/proc/stat") as handle:
+            boot = next(int(line.split()[1]) for line in handle
+                        if line.startswith("btime "))
+    except (OSError, StopIteration, IndexError, ValueError):
+        return None
+    return boot + int(fields[19]) // os.sysconf("SC_CLK_TCK")
+
+
+def open_windows():
+    """(title, class, pid) per mapped window, or None if that cannot be read.
+    None means nothing is reported rather than something being guessed."""
+    result = subprocess.run(["hyprctl", "-j", "clients"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        clients = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return [
+        (c.get("initialTitle") or c.get("title") or c.get("class") or "?",
+         (c.get("class") or "").lower(), c.get("pid"))
+        for c in clients if c.get("pid", 0) > 0
+    ]
+
+
+def stale_open_apps():
+    """Names of apps with a window open that started before the current theme
+    was selected, so they are still drawing the previous one.
+
+    Reporting only. Nothing here signals, quits or writes to a running app: an
+    open window keeps whatever it started with until its owner restarts it."""
+    since = theme_switched_at()
+    windows = open_windows()
+    if since is None or not windows:
+        return []
+    names = set()
+    for title, klass, pid in windows:
+        started = process_started_at(pid)
+        if started is None or started >= since:
+            continue
+        # Identify by window class, not title: a title is the document being
+        # shown and changes minute to minute, which would make this report
+        # neither stable nor readable. "org.gnome.Nautilus" reads as "Nautilus".
+        name = klass.rsplit(".", 1)[-1] if klass else title
+        names.add(name[:1].upper() + name[1:] if name else "?")
+    return sorted(names)
+
+
 def restore(state_dir, data_dir):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
@@ -211,12 +300,16 @@ def main():
     snap.add_argument("--target", required=True)
     sub.add_parser("restore")
     sub.add_parser("clear-app-color-schemes")
+    sub.add_parser("report-stale-apps")
     args = parser.parse_args()
 
     if args.command == "snapshot":
         snapshot(args.state_dir, args.data_dir, args.target)
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
+    elif args.command == "report-stale-apps":
+        for name in stale_open_apps():
+            print(name)
     else:
         restore(args.state_dir, args.data_dir)
 
