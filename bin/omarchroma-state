@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import os
 import re
+import select
 import shutil
 import stat
 import subprocess
@@ -344,6 +346,67 @@ def kde_color_clients():
     return sorted(names)
 
 
+def kde_color_client_pids():
+    """PIDs behind the windows that are holding the colour files open."""
+    windows = open_windows()
+    if windows is None:
+        return []
+    windowed = {pid for _, _, pid in windows}
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) not in windowed:
+            continue
+        try:
+            with open(entry / "maps") as handle:
+                if not any(KDE_COLOR_LIBRARY in line for line in handle):
+                    continue
+        except OSError:
+            continue
+        pids.append(int(entry.name))
+    return pids
+
+
+def watch_kde_exit(state_dir, data_dir):
+    """Wait for the KDE applications holding the colour files to exit, then
+    apply the palette once.
+
+    The wait is on pidfds handed to poll(), so the kernel wakes this the moment
+    a process ends. Nothing is polled and nothing is signalled: it sleeps at zero
+    cost until there is something to do. One instance at a time, so a waiter per
+    theme change cannot pile up, and a pid that has already gone simply never
+    registers."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+    runtime.mkdir(parents=True, exist_ok=True)
+    lock = open(runtime / "omarchroma-kde-wait.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another waiter already holds this
+
+    descriptors = []
+    for pid in kde_color_client_pids():
+        try:
+            descriptors.append(os.pidfd_open(pid))
+        except OSError:
+            continue  # exited between listing it and waiting on it
+
+    if descriptors:
+        poller = select.poll()
+        for descriptor in descriptors:
+            poller.register(descriptor, select.POLLIN)
+        remaining = set(descriptors)
+        while remaining:
+            for descriptor, _ in poller.poll():
+                poller.unregister(descriptor)
+                os.close(descriptor)
+                remaining.discard(descriptor)
+
+    subprocess.run(
+        [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
+        check=False,
+    )
+
+
 def restore(state_dir, data_dir):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
@@ -374,6 +437,7 @@ def main():
     sub.add_parser("clear-app-color-schemes")
     sub.add_parser("report-stale-apps")
     sub.add_parser("kde-color-clients")
+    sub.add_parser("watch-kde-exit")
     args = parser.parse_args()
 
     if args.command == "snapshot":
@@ -386,6 +450,8 @@ def main():
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
             print(name)
+    elif args.command == "watch-kde-exit":
+        watch_kde_exit(args.state_dir, args.data_dir)
     else:
         restore(args.state_dir, args.data_dir)
 

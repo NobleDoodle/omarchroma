@@ -203,6 +203,15 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
   if [[ -n $kde_clients ]]; then
     qt_kde_deferred=1
     log "Qt and KDE left untouched; still running: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+    # Wait on those processes rather than polling for them: the helper sleeps on
+    # a pidfd and is woken by the kernel the moment the last one exits, then
+    # applies the palette. It holds a lock, so one waiter exists at a time.
+    # 9>&- matters: fd 9 holds this run's flock, and a child that inherits it
+    # keeps the lock held, so the sync the waiter runs later would find the lock
+    # taken and quietly do nothing.
+    setsid "$PLUGIN_DIR/bin/omarchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-kde-exit \
+      >/dev/null 2>&1 </dev/null 9>&- &
   else
     log "synchronizing Qt and KDE"
     "$PLUGIN_DIR/bin/omarchroma-state" \
