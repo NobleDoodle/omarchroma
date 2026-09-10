@@ -417,8 +417,9 @@ Before installing, it may:
   /var/lib/omarchroma/policy-backup/
   one record per policy destination, so a later change of default browser is
   still tracked and still removed at uninstall
-- clear per-application KDE color scheme pins so every app follows the
-  synchronized palette, recording each original value for the uninstaller
+- set the KDE color scheme for every app once in kdeglobals, and clear
+  per-application pins that would override it, recording each original value
+  for the uninstaller
 - run an initial sync that may update:
   $HOME/.config/gtk-3.0/
   $HOME/.config/gtk-4.0/

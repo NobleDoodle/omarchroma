@@ -167,6 +167,15 @@ if [[ -f "$STATUS_FILE" ]]; then
   dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
 fi
 
+# A per-application colour scheme overrides the one kdeglobals sets for every
+# app, so an app that writes one back drops out of theming until something
+# changes. Clear pins before the unchanged-state short-circuit, so this is
+# enforced on every run rather than only when the palette moves.
+if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
+fi
+
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
    [[ $dark_reader_state != "pending-browser-exit" ]] && [[ $target == "all" ]]; then
   log "colors are already synchronized"
@@ -183,10 +192,6 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
   log "synchronizing Qt and KDE"
   "$PLUGIN_DIR/bin/omarchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
-  # A per-application colour scheme wins over kdeglobals, so an app pinning one
-  # would ignore the synchronized palette entirely. Record and drop those pins.
-  "$PLUGIN_DIR/bin/omarchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
   "$PLUGIN_DIR/lib/sync-qt-kde-theme"
 fi
 

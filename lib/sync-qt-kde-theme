@@ -231,6 +231,7 @@ preamble, existing_sections = chunks(current_text)
 output_sections = []
 found_general = False
 found_kde = False
+found_ui_settings = False
 for section in existing_sections:
     header = section[0]
     if (
@@ -246,6 +247,15 @@ for section in existing_sections:
     elif header == "[KDE]":
         section = set_key(section, "contrast", "4")
         found_kde = True
+    elif header == "[UiSettings]":
+        # KColorSchemeManager, which every KXmlGui app instantiates, reads the
+        # active scheme from [UiSettings] ColorScheme and ignores the one in
+        # [General]. Without it the manager overwrites the palette the platform
+        # theme supplied with its compiled-in Breeze defaults. KConfig merges
+        # kdeglobals into every application's config, so setting it here reaches
+        # every KDE app without touching a single per-application file.
+        section = set_key(section, "ColorScheme", "Omarchroma")
+        found_ui_settings = True
     output_sections.append(section)
 
 if not found_general:
@@ -256,6 +266,8 @@ if not found_general:
     ])
 if not found_kde:
     output_sections.append(["[KDE]", "contrast=4"])
+if not found_ui_settings:
+    output_sections.append(["[UiSettings]", "ColorScheme=Omarchroma"])
 output_sections.extend(managed)
 
 parts = []
