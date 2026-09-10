@@ -59,7 +59,8 @@ requires typing `I understand`. The notice explains that the installer may:
   keeping a root-owned backup of each replaced policy file under
   `/var/lib/omarchroma/policy-backup/`
 - clear per-application KDE color scheme pins (`[UiSettings] ColorScheme` in
-  `~/.config/*rc`), recording each original value for the uninstaller
+  `~/.config/*rc`), recording each original value for the uninstaller, and
+  skipping any application that is running so its configuration is untouched
 - run the initial sync for enabled GTK/GNOME, Qt/KDE, Dark Reader, and Pear
   Desktop integrations
 - enable the bar widget when `--enable` is used
@@ -139,6 +140,14 @@ uninstall.sh                     integration cleanup
 | KDE Frameworks | generated `Omarchroma.colors`, applied `kdeglobals` color groups, and `[UiSettings] ColorScheme` set globally so `KColorSchemeManager` stops overriding KDE apps with its built-in defaults; per-application pins are cleared so no app opts out, the same `icons.theme` GTK uses is set so both toolkits draw from one icon set. A `KConfigWatcher` notification is sent, but it is not known to reach anything outside a Plasma session, so already-running KDE apps may need a restart |
 | Dark Reader | dynamic theme, selection, focus, scrollbar colors, and custom CSS applied by default without dark-site detection |
 | Pear Desktop | generated and registered YouTube Music stylesheet |
+
+Everything is written to disk as soon as the theme changes, so any application
+started afterwards comes up with the new palette. A window already open cannot
+be restyled in place, and nothing here signals, quits or restarts it, nor edits
+the configuration of a running application. Instead the sync lists the open
+applications still showing the previous theme, so restarting them is the user's
+choice. The list is identified by window class rather than window title, so it
+names the same applications every run.
 
 The native `theme-set` and `font-set` hooks apply changes immediately. A lightweight service
 checks once per minute for a missed event, a changed default browser, a newly
