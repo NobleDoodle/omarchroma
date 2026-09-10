@@ -19,6 +19,29 @@ rgb() {
     "$((16#${hex:4:2}))"
 }
 
+# Omarchy themes each name an icon theme in icons.theme, but nothing in Omarchy
+# applies it, so KDE and GTK drift apart or fall back to whatever was set last.
+omarchy_icon_theme() {
+  local name_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name"
+  [[ -f $name_file ]] || return 0
+  local slug directory value
+  slug=$(tr -d "\\n" <"$name_file")
+  [[ -n $slug ]] || return 0
+  directory=$(omarchy theme dir "$slug" 2>/dev/null) || return 0
+  [[ -f "$directory/icons.theme" ]] || return 0
+  value=$(tr -d "\\n" <"$directory/icons.theme")
+  [[ $value =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 0
+  # A theme may name an icon set that is not installed; the stock vantablack and
+  # white themes both do. Applying one would leave apps with no icons at all.
+  [[ -d "/usr/share/icons/$value" || \
+     -d "${XDG_DATA_HOME:-$HOME/.local/share}/icons/$value" ]] || {
+    printf "%s: Omarchy theme requests icon theme '%s', which is not installed\\n" \
+      "$1" "$value" >&2
+    return 0
+  }
+  printf "%s" "$value"
+}
+
 background=$(color background)
 dark_background=$(color dark_background)
 darker_background=$(color darker_background)
@@ -174,7 +197,7 @@ else
 fi
 
 globals_changed=$(
-  python3 - "$scheme_file" "$kdeglobals" <<'PY'
+  python3 - "$scheme_file" "$kdeglobals" "$(omarchy_icon_theme sync-qt-kde-theme)" <<'PY'
 import hashlib
 import os
 import stat
@@ -183,6 +206,7 @@ from pathlib import Path
 
 scheme_path = Path(sys.argv[1])
 globals_path = Path(sys.argv[2])
+icon_theme = sys.argv[3] if len(sys.argv) > 3 else ""
 scheme_text = scheme_path.read_text()
 current_text = globals_path.read_text() if globals_path.exists() else ""
 scheme_hash = hashlib.sha1(scheme_path.read_bytes()).hexdigest()
@@ -232,6 +256,7 @@ output_sections = []
 found_general = False
 found_kde = False
 found_ui_settings = False
+found_icons = False
 for section in existing_sections:
     header = section[0]
     if (
@@ -247,6 +272,11 @@ for section in existing_sections:
     elif header == "[KDE]":
         section = set_key(section, "contrast", "4")
         found_kde = True
+    elif header == "[Icons]" and icon_theme:
+        # KDE reads its icon theme here. Without it, the gtk3 platform theme
+        # decides, so KDE and GTK can disagree about which set to draw from.
+        section = set_key(section, "Theme", icon_theme)
+        found_icons = True
     elif header == "[UiSettings]":
         # KColorSchemeManager, which every KXmlGui app instantiates, reads the
         # active scheme from [UiSettings] ColorScheme and ignores the one in
@@ -268,6 +298,8 @@ if not found_kde:
     output_sections.append(["[KDE]", "contrast=4"])
 if not found_ui_settings:
     output_sections.append(["[UiSettings]", "ColorScheme=Omarchroma"])
+if not found_icons and icon_theme:
+    output_sections.append(["[Icons]", f"Theme={icon_theme}"])
 output_sections.extend(managed)
 
 parts = []

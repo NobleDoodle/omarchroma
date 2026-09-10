@@ -46,14 +46,16 @@ def snapshot_file(snapshot_dir, manifest, key, path):
 
 
 def snapshot_gsettings(manifest):
-    if "gsettings" in manifest:
-        return
-    values = {}
-    for key in ("gtk-theme", "color-scheme", "accent-color"):
+    # Create-once per key rather than for the group as a whole, so an install
+    # that predates a newly managed key still records that key's original value
+    # the first time this version runs, before anything overwrites it.
+    values = manifest.setdefault("gsettings", {})
+    for key in ("gtk-theme", "color-scheme", "accent-color", "icon-theme"):
+        if key in values:
+            continue
         value = command_output(["gsettings", "get", "org.gnome.desktop.interface", key])
         if value is not None:
             values[key] = value
-    manifest["gsettings"] = values
 
 
 def snapshot(state_dir, data_dir, target):

@@ -134,9 +134,9 @@ uninstall.sh                     integration cleanup
 |---|---|
 | GTK 3 | complete widget, surface, selection, and semantic palette |
 | GTK 4/libadwaita | matching CSS variables, surfaces, cards, dialogs, and controls |
-| GNOME settings | dark/light mode, `adw-gtk3`, icon theme compatibility, and nearest accent |
+| GNOME settings | dark/light mode, `adw-gtk3`, the icon theme named by the active Omarchy theme's `icons.theme`, and nearest accent |
 | Qt 5/Qt 6 | follows the generated GTK palette through Omarchy's platform-theme bridge |
-| KDE Frameworks | generated `Omarchroma.colors`, applied `kdeglobals` color groups, and `[UiSettings] ColorScheme` set globally so `KColorSchemeManager` stops overriding KDE apps with its built-in defaults; per-application pins are cleared so no app opts out, and running apps are notified through `KConfigWatcher` |
+| KDE Frameworks | generated `Omarchroma.colors`, applied `kdeglobals` color groups, and `[UiSettings] ColorScheme` set globally so `KColorSchemeManager` stops overriding KDE apps with its built-in defaults; per-application pins are cleared so no app opts out, the same `icons.theme` GTK uses is set so both toolkits draw from one icon set, and running apps are notified through `KConfigWatcher` |
 | Dark Reader | dynamic theme, selection, focus, scrollbar colors, and custom CSS applied by default without dark-site detection |
 | Pear Desktop | generated and registered YouTube Music stylesheet |
 

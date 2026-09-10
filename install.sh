@@ -425,6 +425,7 @@ Before installing, it may:
   $HOME/.config/gtk-4.0/
   $HOME/.config/kdeglobals
   the [UiSettings] ColorScheme key in $HOME/.config/*rc
+  the GTK and KDE icon theme, set to the one the Omarchy theme names
   $HOME/.local/share/color-schemes/Omarchroma.colors
   $HOME/.config/YouTube Music/omarchroma.css
   the active browser profile's Dark Reader settings
