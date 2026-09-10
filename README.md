@@ -141,8 +141,16 @@ uninstall.sh                     integration cleanup
 | Dark Reader | dynamic theme, selection, focus, scrollbar colors, and custom CSS applied by default without dark-site detection |
 | Pear Desktop | generated and registered YouTube Music stylesheet |
 
-Everything is written to disk as soon as the theme changes, so any application
-started afterwards comes up with the new palette. A window already open cannot
+`kdeglobals` and the generated color scheme are read by every running KDE
+application, so they are only rewritten when no process still has
+`KColorScheme` mapped. While one is open both files are left exactly as they
+are, that application is named in the restart list, and the next sync after it
+exits writes the palette for everything launched from then on. The check is that
+predicate rather than a list of KDE applications, so it covers ones this plugin
+has never heard of.
+
+Everything else is written to disk as soon as the theme changes, so any
+application started afterwards comes up with the new palette. A window already open cannot
 be restyled in place, and nothing here signals, quits or restarts it, nor edits
 the configuration of a running application. Instead the sync lists the open
 applications still showing the previous theme, so restarting them is the user's

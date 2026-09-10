@@ -422,6 +422,8 @@ Before installing, it may:
   per-application pins that would override it, recording each original value
   for the uninstaller, never editing the configuration of an application that
   is currently running
+- leave kdeglobals and the generated color scheme untouched while any KDE
+  application is running, applying them once nothing holds them open
 - after a change, list the open applications still showing the previous theme,
   excluding those Omarchy re-themes itself, and without signalling, quitting or
   restarting any of them
