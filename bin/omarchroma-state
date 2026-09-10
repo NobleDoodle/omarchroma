@@ -317,12 +317,22 @@ KDE_COLOR_LIBRARY = "libKF6ColorScheme"
 
 
 def kde_color_clients():
-    """Names of running processes that would reload if kdeglobals were
-    rewritten. Rewriting those files underneath them is what makes a theme
-    change disturb applications that are already open."""
+    """Names of running processes that would reload if kdeglobals were rewritten
+    and have a window to disturb.
+
+    Having the library mapped is not enough on its own. A process with no window
+    has nothing on screen to interrupt, and treating one as a reason to hold the
+    palette back is how a stray background copy of an application blocks its own
+    theming indefinitely. Only windows count."""
+    windows = open_windows()
+    if windows is None:
+        # Without a window list this cannot tell an idle process from one in
+        # use, so it holds back rather than risk writing under a live window.
+        return ["unknown"]
+    windowed = {pid for _, _, pid in windows}
     names = set()
     for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
+        if not entry.name.isdigit() or int(entry.name) not in windowed:
             continue
         try:
             with open(entry / "maps") as handle:
@@ -330,8 +340,7 @@ def kde_color_clients():
                     continue
         except OSError:
             continue
-        name = window_executable(entry.name) or entry.name
-        names.add(name)
+        names.add(window_executable(entry.name) or entry.name)
     return sorted(names)
 
 

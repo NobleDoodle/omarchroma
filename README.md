@@ -142,10 +142,14 @@ uninstall.sh                     integration cleanup
 | Pear Desktop | generated and registered YouTube Music stylesheet |
 
 `kdeglobals` and the generated color scheme are read by every running KDE
-application, so they are only rewritten when no process still has
-`KColorScheme` mapped. While one is open both files are left exactly as they
-are, that application is named in the restart list, and the next sync after it
-exits writes the palette for everything launched from then on. The check is that
+application, so they are only rewritten when no process that has `KColorScheme`
+mapped *and a window on screen* is running. A process with no window has nothing
+to redraw, so a background daemon, or the remains of an application that crashed,
+does not hold the palette back. While one is open both files are left exactly as they
+are, that application is named in the restart list, the deferral is
+recorded so an unchanged theme does not short-circuit the next run, and the
+first sync after it exits writes the palette for everything launched from then
+on. The check is that
 predicate rather than a list of KDE applications, so it covers ones this plugin
 has never heard of.
 
