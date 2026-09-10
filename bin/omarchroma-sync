@@ -166,7 +166,9 @@ dark_reader_state=""
 if [[ -f "$STATUS_FILE" ]]; then
   previous_fingerprint=$(jq -r '.fingerprint // ""' "$STATUS_FILE" 2>/dev/null || true)
   dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
+  qt_kde_state=$(jq -r '.qtKde // ""' "$STATUS_FILE" 2>/dev/null || true)
 fi
+qt_kde_state=${qt_kde_state:-}
 
 # A per-application colour scheme overrides the one kdeglobals sets for every
 # app, so an app that writes one back drops out of theming until something
@@ -178,7 +180,8 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
 fi
 
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
-   [[ $dark_reader_state != "pending-browser-exit" ]] && [[ $target == "all" ]]; then
+   [[ $dark_reader_state != "pending-browser-exit" ]] && \
+   [[ $qt_kde_state != "deferred" ]] && [[ $target == "all" ]]; then
   log "colors are already synchronized"
   exit 0
 fi
@@ -326,7 +329,7 @@ PY
     fail "Dark Reader synchronization failed"
 fi
 
-python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" <<'PY'
+python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" <<'PY'
 import json
 import sys
 from datetime import datetime, timezone
@@ -339,11 +342,13 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit = sys.argv[4:]
+pear_state, target, dark_reader_exit, qt_kde_deferred = sys.argv[4:]
 if target in {"all", "gtk"}:
     state["gtk"] = "synchronized"
 if target in {"all", "qt-kde"}:
-    state["qtKde"] = "synchronized"
+    # "deferred" keeps the next run from short-circuiting, so the palette lands
+    # as soon as whatever was holding kdeglobals open has exited.
+    state["qtKde"] = "deferred" if qt_kde_deferred == "1" else "synchronized"
 if target in {"all", "pear"}:
     state["pearDesktop"] = pear_state
 if target in {"all", "dark-reader"} and dark_reader_exit == "0":
