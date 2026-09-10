@@ -324,14 +324,25 @@ else:
 PY
 )
 
-# Tell running apps to re-read kdeglobals. KF6 watches it through
-# KConfigWatcher, which listens for ConfigChanged on org.kde.kconfig.notify at
-# the config's object path. The KF5-era org.kde.KGlobalSettings.notifyChange
-# this used to send no longer has an implementation in KF6, so nothing received
-# it and running apps only picked up a new palette when they were restarted.
-# The argument is a{sas} (group -> changed keys); dbus-send cannot express that
-# type, and gdbus only infers it when the value is a bare array rather than a
-# variant, so the payload below must stay unwrapped.
+# Ask running apps to re-read kdeglobals, best effort.
+#
+# The KF5-era org.kde.KGlobalSettings.notifyChange this used to send has no
+# implementation left in KF6, so nothing could have been receiving it. Its
+# documented replacement is KConfigWatcher, which listens for ConfigChanged on
+# org.kde.kconfig.notify at the config's object path, and that is what is sent
+# below.
+#
+# It is not known to work. A real KConfigWatcher registers exactly the match
+# rule this emits against, yet none was seen reacting to it on a session without
+# Plasma -- with the group's keys sent as an array of strings or as the array of
+# byte arrays a QByteArrayList marshals to, and whether or not the file had just
+# changed. So do not count on this repainting anything: KDE apps may still need
+# a restart to pick up a new palette. It is left in because it is the correct
+# mechanism, costs one signal, and a Plasma session may well act on it.
+#
+# dbus-send cannot express the dictionary argument at all, and gdbus only infers
+# an array of strings when the value is bare rather than wrapped in a variant,
+# so the payload below must stay unwrapped.
 if (( scheme_changed || globals_changed )) && \
    [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v gdbus >/dev/null; then
   notify_payload=$(python3 - "$scheme_file" <<'NOTIFY'
