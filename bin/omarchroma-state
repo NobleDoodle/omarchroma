@@ -50,7 +50,8 @@ def snapshot_gsettings(manifest):
     # that predates a newly managed key still records that key's original value
     # the first time this version runs, before anything overwrites it.
     values = manifest.setdefault("gsettings", {})
-    for key in ("gtk-theme", "color-scheme", "accent-color", "icon-theme"):
+    for key in ("gtk-theme", "color-scheme", "accent-color", "icon-theme",
+                "monospace-font-name"):
         if key in values:
             continue
         value = command_output(["gsettings", "get", "org.gnome.desktop.interface", key])

@@ -156,6 +156,7 @@ fingerprint=$(
     "$muted" "$red" "$bright_red" "$green" "$bright_green" \
     "$yellow" "$bright_yellow" "$blue" "$magenta" \
     "$browser_desktop" "$pear_installed" \
+    "$(omarchy font current 2>/dev/null || true)" \
     "$(jq -c '.frameworks // {}' "$SETTINGS_FILE" 2>/dev/null || echo '{}')" |
     sha256sum | cut -d' ' -f1
 )
