@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
+
+APP_COLOR_SCHEME_GROUP = "UiSettings"
+APP_COLOR_SCHEME_KEY = "ColorScheme"
 
 
 def read_json(path):
@@ -87,12 +92,101 @@ def restore_gsettings(values):
         subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", key, value], check=False)
 
 
+def config_home():
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+def find_ini_key(lines, group, key):
+    """Index and value of key inside [group], or (None, None). Subgroups such as
+    "[UiSettings][Foo]" are deliberately not matched."""
+    in_group = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_group = stripped == f"[{group}]"
+        elif in_group and "=" in stripped:
+            name, value = stripped.split("=", 1)
+            if name.strip() == key:
+                return index, value.strip()
+    return None, None
+
+
+def write_lines(path, lines):
+    tmp = path.parent / f"{path.name}.omarchroma-tmp"
+    tmp.write_text("".join(lines))
+    os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+    tmp.replace(path)
+
+
+def readable_rc_files():
+    for path in sorted(config_home().glob("*rc")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            yield path, path.read_text().splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            continue
+
+
+def clear_app_color_schemes(state_dir):
+    """A KDE app can pin its own colour scheme in its rc file, which wins over
+    kdeglobals and leaves that app ignoring the synchronized palette. Record the
+    original value once, then drop the key so every app follows kdeglobals. The
+    key is only ever removed, never rewritten to track the theme; the
+    uninstaller puts the original back."""
+    manifest_path = state_dir / "original/manifest.json"
+    manifest = read_json(manifest_path)
+    recorded = manifest.setdefault("appColorSchemes", {})
+
+    for path, lines in readable_rc_files():
+        index, value = find_ini_key(lines, APP_COLOR_SCHEME_GROUP, APP_COLOR_SCHEME_KEY)
+        if index is None:
+            continue
+        recorded.setdefault(str(path), {"existed": True, "value": value})
+        del lines[index]
+        write_lines(path, lines)
+        print(f"Omarchroma: cleared the {value} colour scheme pinned in {path.name}")
+
+    write_json(manifest_path, manifest)
+
+
+def restore_app_color_schemes(manifest):
+    for raw_path, entry in manifest.get("appColorSchemes", {}).items():
+        if not entry.get("existed"):
+            continue
+        path = Path(raw_path)
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            lines = path.read_text().splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            continue
+        restored = f"{APP_COLOR_SCHEME_KEY}={entry.get('value', '')}\n"
+        index, _ = find_ini_key(lines, APP_COLOR_SCHEME_GROUP, APP_COLOR_SCHEME_KEY)
+        if index is not None:
+            lines[index] = restored
+        else:
+            group = next(
+                (i for i, line in enumerate(lines)
+                 if line.strip() == f"[{APP_COLOR_SCHEME_GROUP}]"),
+                None,
+            )
+            if group is None:
+                if lines and not lines[-1].endswith("\n"):
+                    lines.append("\n")
+                lines.extend([f"[{APP_COLOR_SCHEME_GROUP}]\n", restored])
+            else:
+                lines.insert(group + 1, restored)
+        write_lines(path, lines)
+
+
 def restore(state_dir, data_dir):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
     for entry in manifest.get("files", {}).values():
         restore_file(snapshot_dir, entry)
     restore_gsettings(manifest.get("gsettings", {}))
+    restore_app_color_schemes(manifest)
 
     for path in (
         Path.home() / ".local/share/color-schemes/Omarchroma.colors",
@@ -113,10 +207,13 @@ def main():
     snap = sub.add_parser("snapshot")
     snap.add_argument("--target", required=True)
     sub.add_parser("restore")
+    sub.add_parser("clear-app-color-schemes")
     args = parser.parse_args()
 
     if args.command == "snapshot":
         snapshot(args.state_dir, args.data_dir, args.target)
+    elif args.command == "clear-app-color-schemes":
+        clear_app_color_schemes(args.state_dir)
     else:
         restore(args.state_dir, args.data_dir)
 

@@ -280,9 +280,44 @@ else:
 PY
 )
 
+# Tell running apps to re-read kdeglobals. KF6 watches it through
+# KConfigWatcher, which listens for ConfigChanged on org.kde.kconfig.notify at
+# the config's object path. The KF5-era org.kde.KGlobalSettings.notifyChange
+# this used to send no longer has an implementation in KF6, so nothing received
+# it and running apps only picked up a new palette when they were restarted.
+# The argument is a{sas} (group -> changed keys); dbus-send cannot express that
+# type, and gdbus only infers it when the value is a bare array rather than a
+# variant, so the payload below must stay unwrapped.
 if (( scheme_changed || globals_changed )) && \
-   [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v dbus-send >/dev/null; then
-  dbus-send --session --type=signal \
-    /KGlobalSettings org.kde.KGlobalSettings.notifyChange \
-    int32:0 int32:0 >/dev/null 2>&1 || true
+   [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v gdbus >/dev/null; then
+  notify_payload=$(python3 - "$scheme_file" <<'NOTIFY'
+import sys
+from pathlib import Path
+
+groups = {}
+current = None
+for line in Path(sys.argv[1]).read_text().splitlines():
+    line = line.strip()
+    if line.startswith("[") and line.endswith("]"):
+        # "[Colors:Header][Inactive]" is a subgroup; watchers key off the parent.
+        current = line[1:-1].split("][", 1)[0]
+        groups.setdefault(current, set())
+    elif current and "=" in line:
+        groups[current].add(line.split("=", 1)[0])
+groups.setdefault("General", set()).update({"ColorScheme", "ColorSchemeHash"})
+groups.setdefault("KDE", set()).add("contrast")
+
+
+def quote(value):
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+print("{" + ", ".join(
+    f"{quote(group)}: [{', '.join(quote(key) for key in sorted(keys))}]"
+    for group, keys in sorted(groups.items()) if keys
+) + "}")
+NOTIFY
+  )
+  gdbus emit --session --object-path /kdeglobals \
+    --signal org.kde.kconfig.notify.ConfigChanged "$notify_payload" >/dev/null 2>&1 || true
 fi

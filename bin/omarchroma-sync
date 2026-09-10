@@ -183,6 +183,10 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
   log "synchronizing Qt and KDE"
   "$PLUGIN_DIR/bin/omarchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
+  # A per-application colour scheme wins over kdeglobals, so an app pinning one
+  # would ignore the synchronized palette entirely. Record and drop those pins.
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
   "$PLUGIN_DIR/lib/sync-qt-kde-theme"
 fi
 

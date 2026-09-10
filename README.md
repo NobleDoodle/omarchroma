@@ -58,6 +58,8 @@ requires typing `I understand`. The notice explains that the installer may:
 - configure Dark Reader browser policy when Omarchroma needs to install it,
   keeping a root-owned backup of each replaced policy file under
   `/var/lib/omarchroma/policy-backup/`
+- clear per-application KDE color scheme pins (`[UiSettings] ColorScheme` in
+  `~/.config/*rc`), recording each original value for the uninstaller
 - run the initial sync for enabled GTK/GNOME, Qt/KDE, Dark Reader, and Pear
   Desktop integrations
 - enable the bar widget when `--enable` is used
@@ -134,7 +136,7 @@ uninstall.sh                     integration cleanup
 | GTK 4/libadwaita | matching CSS variables, surfaces, cards, dialogs, and controls |
 | GNOME settings | dark/light mode, `adw-gtk3`, icon theme compatibility, and nearest accent |
 | Qt 5/Qt 6 | follows the generated GTK palette through Omarchy's platform-theme bridge |
-| KDE Frameworks | generated `Omarchroma.colors` plus applied `kdeglobals` color groups |
+| KDE Frameworks | generated `Omarchroma.colors` plus applied `kdeglobals` color groups; per-application color scheme pins are cleared so no app opts out, and running apps are notified through `KConfigWatcher` |
 | Dark Reader | dynamic theme, selection, focus, scrollbar colors, and custom CSS applied by default without dark-site detection |
 | Pear Desktop | generated and registered YouTube Music stylesheet |
 
@@ -181,6 +183,7 @@ marked `pending-browser-exit` and retried after the browser closes.
 ~/.local/state/omarchroma/original/
 ~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
+~/.config/*rc                        (only the [UiSettings] ColorScheme key, removed)
 /var/lib/omarchroma/policy-backup/   (root-owned; only when a browser policy is installed)
 ```
 
