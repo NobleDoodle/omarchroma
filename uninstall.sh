@@ -4,6 +4,7 @@ set -euo pipefail
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
 PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 HOOK="$HOME/.config/omarchy/hooks/theme-set.d/omarchroma"
+FONT_HOOK="$HOME/.config/omarchy/hooks/font-set.d/omarchroma"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
 restore_exit=0
@@ -369,6 +370,7 @@ fi
 
 rm -f \
   "$HOOK" \
+  "$FONT_HOOK" \
   "$HOME/.local/bin/omarchroma-sync" \
   "$HOME/.local/bin/omarchroma-dark-reader" \
   "$HOME/.local/bin/omarchroma-state"

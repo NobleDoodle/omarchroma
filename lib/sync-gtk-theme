@@ -56,6 +56,18 @@ omarchy_icon_theme() {
   printf "%s" "$value"
 }
 
+# Omarchy owns the monospace font (omarchy font set), but it only rewrites
+# terminal configs and fontconfig -- it never touches gsettings, so the GTK
+# monospace font goes stale the moment the font changes.
+omarchy_font() {
+  local value
+  value=$(omarchy font current 2>/dev/null) || return 0
+  value=${value//$'\n'/}
+  [[ -n $value ]] || return 0
+  [[ $value =~ ^[A-Za-z0-9][A-Za-z0-9\ ._-]*$ ]] || return 0
+  printf '%s' "$value"
+}
+
 background=$(color background)
 dark_background=$(color dark_background)
 darker_background=$(color darker_background)
@@ -352,4 +364,16 @@ gsettings set org.gnome.desktop.interface accent-color "$gnome_accent"
 icon_theme=$(omarchy_icon_theme sync-gtk-theme)
 if [[ -n $icon_theme ]]; then
   gsettings set org.gnome.desktop.interface icon-theme "$icon_theme"
+fi
+
+# Only the family follows Omarchy; the point size stays whatever the user chose.
+monospace_font=$(omarchy_font)
+if [[ -n $monospace_font ]]; then
+  current_monospace=$(gsettings get org.gnome.desktop.interface monospace-font-name 2>/dev/null || printf "''")
+  current_monospace=${current_monospace#\'}
+  current_monospace=${current_monospace%\'}
+  monospace_size=${current_monospace##* }
+  [[ $monospace_size =~ ^[0-9]+$ ]] || monospace_size=11
+  gsettings set org.gnome.desktop.interface monospace-font-name \
+    "$monospace_font $monospace_size"
 fi

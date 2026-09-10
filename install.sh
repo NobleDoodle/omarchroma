@@ -399,8 +399,9 @@ Before installing, it may:
   $HOME/.local/bin/omarchroma-sync
   $HOME/.local/bin/omarchroma-dark-reader
   $HOME/.local/bin/omarchroma-state
-- install the native Omarchy theme hook:
+- install the native Omarchy theme and font hooks:
   $HOME/.config/omarchy/hooks/theme-set.d/omarchroma
+  $HOME/.config/omarchy/hooks/font-set.d/omarchroma
 - remove stale Omarchroma hook shims if present:
   $HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme
   $HOME/.local/bin/apply-dark-reader-theme
@@ -426,6 +427,7 @@ Before installing, it may:
   $HOME/.config/kdeglobals
   the [UiSettings] ColorScheme key in $HOME/.config/*rc
   the GTK and KDE icon theme, set to the one the Omarchy theme names
+  the GTK monospace font family, set to the one Omarchy is using
   $HOME/.local/share/color-schemes/Omarchroma.colors
   $HOME/.config/YouTube Music/omarchroma.css
   the active browser profile's Dark Reader settings
@@ -509,6 +511,9 @@ install -Dm755 "$TARGET_DIR/bin/omarchroma-dark-reader" \
 install -Dm755 "$TARGET_DIR/bin/omarchroma-state" \
   "$HOME/.local/bin/omarchroma-state"
 omarchy hook install theme-set "$TARGET_DIR/hooks/omarchroma"
+# omarchy font set fires font-set; without this the new font only reaches
+# GTK when something else happens to trigger a sync.
+omarchy hook install font-set "$TARGET_DIR/hooks/omarchroma"
 rm -f \
   "$HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme" \
   "$HOME/.local/bin/apply-dark-reader-theme" \
