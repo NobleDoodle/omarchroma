@@ -31,6 +31,26 @@ while (( $# )); do
   shift
 done
 
+# The snapshot records whether it captured Omarchroma's own output -- which
+# happens when an earlier install's state directory was lost while its generated
+# files were still on disk. Restoring that would reinstate the previous
+# generation, so stock becomes the default when the flag is set.
+capture_tainted() {
+  python3 - "$STATE_DIR/original/manifest.json" <<'MANIFEST'
+import json, sys
+from pathlib import Path
+
+try:
+    manifest = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if manifest.get("captureTainted") else 1)
+MANIFEST
+}
+
+tainted=0
+capture_tainted && tainted=1
+
 if [[ -z $mode ]]; then
   if [[ -t 0 ]]; then
     cat <<'EOF'
@@ -40,16 +60,31 @@ How should Omarchroma put your theming back?
                -- gtk.css, kdeglobals, the generated colour scheme -- and lets
                Omarchy re-author the settings it owns.
 
-  2) captured  Exactly what was on disk when Omarchroma first ran. If
-               Omarchroma has been installed on this machine before, be aware
-               that snapshot is itself a previous Omarchroma generation.
+  2) captured  Exactly what was on disk when Omarchroma first ran.
 
 EOF
-    read -r -p "Choose [1/2, default 2]: " choice
-    case "$choice" in
-      1 | stock) mode="stock" ;;
-      *) mode="captured" ;;
-    esac
+    if (( tainted )); then
+      cat <<'EOF'
+Note: this snapshot was taken while Omarchroma output was already on disk, so
+parts of it are a previous Omarchroma generation rather than your originals.
+Stock is recommended here.
+
+EOF
+      read -r -p "Choose [1/2, default 1]: " choice
+      case "$choice" in
+        2 | captured) mode="captured" ;;
+        *) mode="stock" ;;
+      esac
+    else
+      read -r -p "Choose [1/2, default 2]: " choice
+      case "$choice" in
+        1 | stock) mode="stock" ;;
+        *) mode="captured" ;;
+      esac
+    fi
+  elif (( tainted )); then
+    mode="stock"
+    echo "Omarchroma: snapshot contains Omarchroma output; defaulting to stock."
   else
     mode="captured"
   fi
