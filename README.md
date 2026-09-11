@@ -100,7 +100,15 @@ Capture happens once per file, so upgrading never overwrites a baseline that
 was already recorded. A snapshot taken while Omarchroma output
 was already on disk -- which can happen if a previous install's state directory
 was lost -- is detected and marked, and the uninstaller then recommends stock
-and says why. Omarchroma's own generated files are never recorded as originals.
+and says why.
+
+A backup never holds Omarchroma's own output. A file Omarchroma writes whole is
+recorded as absent rather than copied, which is also its correct stock value
+since Omarchy writes none of them. `kdeglobals` is the one file shared with its
+owner, so what Omarchroma wrote is removed from the copy and the rest of your
+KDE settings are kept; if nothing of yours is left, it is recorded as absent
+too. Without this a restore would put back the colours it was meant to remove,
+and the next capture would carry them forward again.
 
 Pass `--stock` or `--captured` to skip the question; without a terminal the
 default is `--captured`. Either way the browser policy is restored the same
