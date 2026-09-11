@@ -9,7 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-CHROMIUM_EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
+# The id Dark Reader has when it comes from the Chrome Web Store. It is a hash
+# of the publisher's key, so every store install shares it -- but a build the
+# user side-loaded has its own, and side-loading is the only route left on a
+# browser that cannot install from the store. Treated as the first guess, not
+# as the answer: see chromium_extension_id.
+CHROMIUM_STORE_EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
 FIREFOX_EXTENSION_ID = "addon@darkreader.org"
 
 # Every key Omarchroma writes or edits. Snapshotting records these, and a stock
@@ -174,6 +179,52 @@ def dark_reader_installed(info: dict, profile: Path) -> bool:
     return chromium_dark_reader_installed(profile)
 
 
+def chromium_extension_id(profile: Path) -> str:
+    """Which id Dark Reader actually has in this profile.
+
+    Omarchroma writes the theme into the extension's own storage, which is keyed
+    by id, so guessing wrong writes it nowhere. The store id is used when it is
+    present; otherwise the installed extensions are searched for one that calls
+    itself Dark Reader, which is what finds a side-loaded build. Falls back to
+    the store id so a fresh profile still has somewhere to write."""
+    if (profile / "Extensions" / CHROMIUM_STORE_EXTENSION_ID).is_dir():
+        return CHROMIUM_STORE_EXTENSION_ID
+
+    extensions = profile / "Extensions"
+    if extensions.is_dir():
+        try:
+            candidates = sorted(extensions.iterdir())
+        except OSError:
+            candidates = []
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+            for manifest in sorted(candidate.glob("*/manifest.json")):
+                try:
+                    name = json.loads(manifest.read_text()).get("name", "")
+                except (json.JSONDecodeError, OSError):
+                    continue
+                if isinstance(name, str) and name.strip().lower() == "dark reader":
+                    return candidate.name
+
+    # An unpacked extension lives wherever it was loaded from, so it has no
+    # directory here; Preferences still records it.
+    preferences = profile / "Preferences"
+    if preferences.is_file():
+        try:
+            settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
+        except (json.JSONDecodeError, OSError):
+            settings = {}
+        for key, entry in sorted(settings.items()):
+            if not isinstance(entry, dict):
+                continue
+            name = (entry.get("manifest") or {}).get("name", "")
+            if isinstance(name, str) and name.strip().lower() == "dark reader":
+                return key
+
+    return CHROMIUM_STORE_EXTENSION_ID
+
+
 def chromium_preferences_entry(profile: Path) -> dict | None:
     preferences = profile / "Preferences"
     if not preferences.is_file():
@@ -182,7 +233,7 @@ def chromium_preferences_entry(profile: Path) -> dict | None:
         settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
     except (json.JSONDecodeError, OSError):
         return None
-    entry = settings.get(CHROMIUM_EXTENSION_ID)
+    entry = settings.get(CHROMIUM_STORE_EXTENSION_ID)
     return entry if isinstance(entry, dict) else None
 
 
@@ -196,7 +247,7 @@ def chromium_dark_reader_installed(profile: Path) -> bool:
     A bare key in Preferences does not count either. A force-install policy the
     browser accepted but could not fetch leaves an empty entry there -- a
     pending install, not an installed extension."""
-    if (profile / "Extensions" / CHROMIUM_EXTENSION_ID).exists():
+    if (profile / "Extensions" / chromium_extension_id(profile)).exists():
         return True
     entry = chromium_preferences_entry(profile)
     return bool(entry) and any(key in entry for key in ("manifest", "path"))
@@ -425,7 +476,7 @@ def reset_theme(status_file: Path | None) -> int:
             print("Omarchroma: python-plyvel is required", file=sys.stderr)
             return 1
 
-        database = profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID
+        database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
         if not database.is_dir():
             print("Omarchroma: no Dark Reader settings to reset")
             write_status(status_file, darkReader="reset")
@@ -587,7 +638,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         return 1
 
     profile = active_profile(info)
-    database = profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID
+    database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
     database.mkdir(parents=True, exist_ok=True)
     palette_keys = {
         "darkColorScheme",

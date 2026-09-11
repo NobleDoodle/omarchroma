@@ -117,6 +117,20 @@ installed, uninstall restores its original settings and does not remove the
 extension. Dark Reader restore requires the target browser to be closed,
 matching the sync path's LevelDB safety rule.
 
+The Dark Reader extension policy is an enterprise policy, which the browser
+treats as mandated by an administrator -- and on this mechanism the
+administrator is whatever root wrote into the browser's managed-policy
+directory, which is Omarchroma. `force_installed` therefore does not mean
+"please install this"; it means the user may not change it. A browser that
+registers the policy and never completes the download is then stuck: the
+automatic install cannot finish and the browser refuses a manual one, reporting
+it blocked by the administrator. Omarchroma detects that, withdraws the policy
+on the next `install.sh`, records the browser in
+`~/.local/state/omarchroma/no-extension-policy` so it is not written again, and
+leaves installing Dark Reader to you. It still themes it once it is there:
+the extension's id is looked up in the profile rather than assumed, so a
+side-loaded build is themed like a Web Store one.
+
 The system browser policy is restored by a fixed privileged helper that
 rederives each policy path from the built-in browser allowlist and replays the
 root-owned backup under `/var/lib/omarchroma/policy-backup/` only after

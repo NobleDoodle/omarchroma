@@ -7,6 +7,8 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
 STATUS_FILE="$STATE_DIR/status.json"
 SETTINGS_FILE="$STATE_DIR/settings.json"
+# Browsers whose extension policy Omarchroma has withdrawn; install.sh owns it.
+POLICY_OPT_OUT="$STATE_DIR/no-extension-policy"
 # Lock in the per-user runtime dir when available, otherwise the user-owned
 # state dir. Never /tmp: a fixed name there is a symlink/squatting target on a
 # shared host.
@@ -375,13 +377,18 @@ fi
 dark_reader_exit=0
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
    && [[ $browser_stalled == "true" ]]; then
-  # Ungoogled-chromium derivatives rewrite every Google hostname to one that
-  # cannot resolve, so the Web Store URL the policy names is unreachable and the
-  # extension never arrives. Nothing here can fix that, and silence would leave
-  # the browser looking unthemed for no visible reason.
-  log "$browser_name accepted the Dark Reader policy but cannot fetch the extension;" \
-      "install Dark Reader manually to theme pages there"
-  notify_user "$browser_name cannot install Dark Reader itself; install it manually"
+  # The browser registered the extension policy and never completed the install.
+  # Once the policy has been withdrawn the browser keeps its half-made record
+  # until it restarts, so say which situation this is rather than repeating a
+  # complaint about a policy that is already gone.
+  if [[ -f $POLICY_OPT_OUT ]] && grep -qxF "$browser_desktop" "$POLICY_OPT_OUT"; then
+    log "Dark Reader is not installed in $browser_name; install it and Omarchroma will theme it"
+    notify_user "Install Dark Reader in $browser_name and Omarchroma will theme it"
+  else
+    log "$browser_name accepted the Dark Reader policy but never installed the extension;" \
+        "re-run install.sh to withdraw it so you can install Dark Reader yourself"
+    notify_user "$browser_name could not install Dark Reader; re-run install.sh to unblock it"
+  fi
 fi
 
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
