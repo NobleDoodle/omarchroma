@@ -110,16 +110,6 @@ run_state_helper() {
   fi
 }
 
-# The policy an older Omarchroma installed is removed by its own privileged
-# helper; nothing here writes one any more.
-run_policy_cleanup() {
-  if [[ -x "$PLUGIN_DIR/bin/omarchroma-policy-cleanup" ]]; then
-    "$PLUGIN_DIR/bin/omarchroma-policy-cleanup"
-  elif command -v omarchroma-policy-cleanup >/dev/null; then
-    omarchroma-policy-cleanup
-  fi
-}
-
 run_dark_reader_helper() {
   if [[ -x "$PLUGIN_DIR/bin/omarchroma-dark-reader" ]]; then
     "$PLUGIN_DIR/bin/omarchroma-dark-reader" "$@"
@@ -171,7 +161,13 @@ fi
 
 run_state_helper --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
   restore --mode "$mode" || restore_exit=$?
-run_policy_cleanup || restore_exit=$?
+# Not run from here either. Uninstalling should not be the moment a script
+# decides to authenticate on the user's behalf; it is said plainly instead.
+if [[ -e /var/lib/omarchroma/policy-backup/manifest.json ]]; then
+  echo "Omarchroma: a browser policy from a version before 1.6.0 is still installed."
+  echo "Omarchroma: remove it with $PLUGIN_DIR/bin/omarchroma-policy-cleanup before"
+  echo "Omarchroma: this directory is deleted, or with the copy in your clone afterwards."
+fi
 
 if (( restore_exit != 0 )); then
   echo "Restore failed; Omarchroma was not removed." >&2

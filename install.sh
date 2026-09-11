@@ -217,14 +217,16 @@ else
   info "Omarchroma will theme it from the next sync -- it installs nothing for you."
 fi
 
-# An older Omarchroma installed a browser policy. Take it back out rather than
-# leaving a root-owned file behind that nothing maintains. This is the only
-# privileged step besides installing packages, it runs once, and it only ever
-# removes.
+# Versions before 1.6.0 installed a browser policy. Say so, and leave running
+# the removal to the user: detecting it needs no privilege, and an installer
+# that authenticates on its own is the habit this release is getting rid of.
+# The helper is transitional and will be dropped once it is no longer plausible
+# that anyone is upgrading across that boundary.
 if [[ -e /var/lib/omarchroma/policy-backup/manifest.json ]]; then
-  info "Removing the browser policy an earlier Omarchroma installed"
-  "$TARGET_DIR/bin/omarchroma-policy-cleanup" || \
-    warn "Could not remove it; run $TARGET_DIR/bin/omarchroma-policy-cleanup by hand"
+  warn "A browser policy from a version before 1.6.0 is still installed."
+  warn "Omarchroma no longer uses one. Remove it and its root-owned backup with:"
+  warn "  $TARGET_DIR/bin/omarchroma-policy-cleanup"
+  warn "It only removes, and asks for authentication once."
 fi
 
 omarchy plugin validate "$TARGET_DIR"
