@@ -16,20 +16,8 @@ changes for frameworks that are switched on.
 
 ## Install
 
-```bash
-omarchy plugin add https://github.com/NobleDoodle/omarchroma
-~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/install.sh --enable
-```
-
-The first command installs the plugin through Omarchy. The second installs
-Omarchroma's commands and native `theme-set`/`font-set` hooks, and enables the
-bar widget's palette icon before the power widget. It asks for no privileges
-and runs no privileged command; before writing anything it prints a full
-consent notice and requires typing `I understand`. Drop `--enable` to install
-without the bar icon.
-
-Two packages and Dark Reader are worth having, and `install.sh` reports either
-as missing rather than installing them:
+Two packages and Dark Reader are worth having first. `install.sh` reports
+either as missing rather than installing them for you:
 
 ```bash
 sudo pacman -S --needed adw-gtk-theme python-plyvel
@@ -42,6 +30,21 @@ sudo pacman -S --needed adw-gtk-theme python-plyvel
   or [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/darkreader/).
   Omarchroma never installs it — earlier versions force-installed it through a
   browser policy; that mechanism is gone.
+
+Then install the plugin:
+
+```bash
+omarchy plugin add https://github.com/NobleDoodle/omarchroma
+~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/install.sh --enable
+```
+
+The first command installs the plugin through Omarchy. The second installs
+Omarchroma's commands and native `theme-set`/`font-set` hooks, and enables the
+bar widget's palette icon before the power widget. It asks for no privileges
+and runs no privileged command; before writing anything it prints a full
+consent notice and requires typing `I understand`. Drop `--enable` to install
+without the bar icon. If a dependency above is still missing, install finishes
+anyway and says so plainly in its last line rather than failing.
 
 Re-run `install.sh` to upgrade — it detects the existing install and skips the
 consent prompt. `--reinstall` forces the first-install path.
