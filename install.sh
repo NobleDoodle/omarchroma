@@ -231,7 +231,12 @@ OMARCHROMA_PLUGIN_DIR="$TARGET_DIR" "$HOME/.local/bin/omarchroma-sync" \
   --force --notify || warn "Initial synchronization was incomplete"
 
 if (( UPGRADE )); then
-  info "Omarchroma upgraded"
+  action="upgraded"
 else
-  info "Omarchroma installed"
+  action="installed"
+fi
+if (( ${#missing[@]} )); then
+  warn "Omarchroma $action, but incomplete: run 'sudo pacman -S --needed ${missing[*]}' to enable everything"
+else
+  info "Omarchroma $action"
 fi
