@@ -26,8 +26,9 @@ refreshes it immediately. Turning one off reverts it: that framework goes back
 to the values captured before Omarchroma first changed it, rather than keeping
 Omarchroma's colours in place with synchronization merely stopped. The snapshot
 is kept, so switching the framework back on re-syncs from the same baseline.
-Dark Reader reverts once the browser exits, matching the LevelDB safety rule
-the sync path follows.
+Both deferrals the sync path observes apply to reverting too: Qt/KDE waits for
+open KDE applications to close before rewriting `kdeglobals`, and Dark Reader
+waits for the browser to exit.
 
 | Theme | What it shows |
 |---|---|

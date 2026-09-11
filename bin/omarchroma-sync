@@ -142,6 +142,22 @@ if [[ $set_enabled == "false" ]]; then
       exit 0
     fi
   else
+    if [[ $target == "qt-kde" ]]; then
+      # Reverting rewrites kdeglobals and the generated colour scheme, which is
+      # the same write that disturbs a running KDE application -- switching the
+      # toggle off must not do to them what syncing is careful not to. Defer on
+      # exactly the condition the sync path defers on.
+      kde_clients=$("$PLUGIN_DIR/bin/omarchroma-state" \
+        --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" kde-color-clients 2>/dev/null || true)
+      if [[ -n $kde_clients ]]; then
+        setsid "$PLUGIN_DIR/bin/omarchroma-state" \
+          --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-kde-exit --action revert \
+          >/dev/null 2>&1 </dev/null 9>&- &
+        log "$target disabled; it reverts once these exit: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+        notify_user "Qt and KDE disabled; reverting once open KDE apps are closed"
+        exit 0
+      fi
+    fi
     "$PLUGIN_DIR/bin/omarchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
       restore --target "$target" --mode captured || revert_exit=$?
