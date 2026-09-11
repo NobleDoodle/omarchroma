@@ -52,7 +52,10 @@ BarWidget {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.togglePanel() }
-    function refresh(): void { root.open() }
+    // Named for what it does. This opened the panel while being called
+    // "refresh", which reads as "synchronize now" over IPC -- that is the
+    // service's sync method, not this one.
+    function openPanel(): void { root.open() }
   }
 
   BarIconButton {

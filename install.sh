@@ -432,10 +432,6 @@ Before installing, it may:
 - install the native Omarchy theme and font hooks:
   $HOME/.config/omarchy/hooks/theme-set.d/omarchroma
   $HOME/.config/omarchy/hooks/font-set.d/omarchroma
-- remove stale Omarchroma hook shims if present:
-  $HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme
-  $HOME/.local/bin/apply-dark-reader-theme
-  $TARGET_DIR/assets/dark-reader-policy.json
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
 - configure Dark Reader for the current default browser unless --no-policy is used
@@ -571,10 +567,6 @@ omarchy hook install theme-set "$TARGET_DIR/hooks/omarchroma"
 # omarchy font set fires font-set; without this the new font only reaches
 # GTK when something else happens to trigger a sync.
 omarchy hook install font-set "$TARGET_DIR/hooks/omarchroma"
-rm -f \
-  "$HOME/.config/omarchy/hooks/theme-set.d/sync-gtk-theme" \
-  "$HOME/.local/bin/apply-dark-reader-theme" \
-  "$TARGET_DIR/assets/dark-reader-policy.json"
 
 if (( INSTALL_POLICY )); then
   browser_desktop=$(default_browser_desktop)
