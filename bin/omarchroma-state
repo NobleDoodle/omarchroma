@@ -396,14 +396,34 @@ def write_lines(path, lines):
     atomic_write(path, "".join(lines))
 
 
+MAX_FOREIGN_FILE = 8 * 1024 * 1024
+
+
+def read_capped(path, limit=MAX_FOREIGN_FILE):
+    """Read a file this program does not own, or None if it will not fit.
+
+    An rc file in ~/.config is written by whichever application owns it and has
+    no bound Omarchroma controls, while this runs unattended on every window
+    event. At most limit+1 characters are read, so the size is judged from what
+    was actually read rather than from a stat that could change underneath.
+    Undecodable content returns None too, so the caller skips it rather than
+    rewriting a file through replacement characters."""
+    try:
+        with path.open("r") as handle:
+            data = handle.read(limit + 1)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None if len(data) > limit else data
+
+
 def readable_rc_files():
     for path in sorted(config_home().glob("*rc")):
         if path.is_symlink() or not path.is_file():
             continue
-        try:
-            yield path, path.read_text().splitlines(keepends=True)
-        except (OSError, UnicodeDecodeError):
+        text = read_capped(path)
+        if text is None:
             continue
+        yield path, text.splitlines(keepends=True)
 
 
 def clear_app_color_schemes(state_dir):
@@ -445,10 +465,10 @@ def restore_app_color_schemes(manifest):
         path = Path(raw_path)
         if path.is_symlink() or not path.is_file():
             continue
-        try:
-            lines = path.read_text().splitlines(keepends=True)
-        except (OSError, UnicodeDecodeError):
+        text = read_capped(path)
+        if text is None:
             continue
+        lines = text.splitlines(keepends=True)
         restored = f"{APP_COLOR_SCHEME_KEY}={entry.get('value', '')}\n"
         index, _ = find_ini_key(lines, APP_COLOR_SCHEME_GROUP, APP_COLOR_SCHEME_KEY)
         if index is not None:
