@@ -93,15 +93,16 @@ install, Omarchroma leaves extension installation unmanaged and only
 synchronizes its settings.
 
 Before changing files, `install.sh` prints an explicit consent notice and
-requires typing `I understand`. The notice explains that the installer may:
+requires typing `I understand`. It runs no privileged command and installs no
+packages; everything it touches is inside your home directory. The notice
+explains that the installer may:
 
-- install the outside packages `adw-gtk-theme` and `python-plyvel`
 - copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
 - overwrite Omarchroma command shims in `~/.local/bin`
 - install the Omarchy `theme-set` and `font-set` hooks
 - snapshot original state in `~/.local/state/omarchroma/original/`
-- remove a browser policy an earlier Omarchroma installed, and its root-owned
-  backup under `/var/lib/omarchroma/`
+- report a browser policy left by a version before 1.6.0, if one is still
+  present — it removes nothing and prints the command instead
 - clear per-application KDE color scheme pins (`[UiSettings] ColorScheme` in
   `~/.config/*rc`), recording each original value for the uninstaller, and
   skipping any application that is running so its configuration is untouched
