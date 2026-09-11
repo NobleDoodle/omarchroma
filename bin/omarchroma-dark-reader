@@ -232,50 +232,103 @@ def valid_extension_id(value: object) -> bool:
     return isinstance(value, str) and bool(CHROMIUM_ID_PATTERN.match(value))
 
 
-def chromium_extension_id(profile: Path) -> str:
-    """Which id Dark Reader actually has in this profile.
+MAX_FOREIGN_FILE = 8 * 1024 * 1024
 
-    Omarchroma writes the theme into the extension's own storage, which is keyed
-    by id, so guessing wrong writes it nowhere. The store id is used when it is
-    present; otherwise the installed extensions are searched for one that calls
-    itself Dark Reader, which is what finds a side-loaded build. Falls back to
-    the store id so a fresh profile still has somewhere to write."""
-    if (profile / "Extensions" / CHROMIUM_STORE_EXTENSION_ID).is_dir():
-        return CHROMIUM_STORE_EXTENSION_ID
+
+def read_capped(path: Path, limit: int = MAX_FOREIGN_FILE) -> str | None:
+    """Read a file another program owns, or None if it cannot be trusted to fit.
+
+    A browser's Preferences or Local State is written by the browser and has no
+    bound Omarchroma controls, and this runs unattended on every window event.
+    Reading at most limit+1 characters caps the memory a large file can cost
+    without a stat-then-open race: the size is judged from what was actually
+    read. Undecodable content also returns None, so the caller skips rather than
+    processing replacement characters."""
+    try:
+        with path.open("r") as handle:
+            data = handle.read(limit + 1)
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None if len(data) > limit else data
+
+
+def read_capped_json(path: Path):
+    """Parse a file another program owns, or {} if it is unusable."""
+    data = read_capped(path)
+    if data is None:
+        return {}
+    try:
+        parsed = json.loads(data)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+# Dark Reader declares alarms, fontSettings, scripting and storage. Requiring
+# storage is not a guess about branding: Omarchroma writes the theme into the
+# extension's own storage, so one that never asked for storage cannot be the
+# extension being themed.
+DARK_READER_REQUIRED_PERMISSION = "storage"
+
+
+def looks_like_dark_reader(manifest: object) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    name = manifest.get("name")
+    if not isinstance(name, str) or name.strip().lower() != "dark reader":
+        return False
+    permissions = manifest.get("permissions")
+    return isinstance(permissions, list) and DARK_READER_REQUIRED_PERMISSION in permissions
+
+
+def chromium_dark_reader_candidates(profile: Path) -> list[str]:
+    """Every installed extension that presents itself as Dark Reader."""
+    found = set()
 
     extensions = profile / "Extensions"
     if extensions.is_dir():
         try:
-            candidates = sorted(extensions.iterdir())
+            entries = sorted(extensions.iterdir())
         except OSError:
-            candidates = []
-        for candidate in candidates:
-            if not candidate.is_dir():
+            entries = []
+        for entry in entries:
+            if not entry.is_dir() or not valid_extension_id(entry.name):
                 continue
-            for manifest in sorted(candidate.glob("*/manifest.json")):
-                try:
-                    name = json.loads(manifest.read_text()).get("name", "")
-                except (json.JSONDecodeError, OSError):
-                    continue
-                if isinstance(name, str) and name.strip().lower() == "dark reader" \
-                        and valid_extension_id(candidate.name):
-                    return candidate.name
+            for manifest in sorted(entry.glob("*/manifest.json")):
+                if looks_like_dark_reader(read_capped_json(manifest)):
+                    found.add(entry.name)
+                    break
 
-    # An unpacked extension lives wherever it was loaded from, so it has no
-    # directory here; Preferences still records it.
-    preferences = profile / "Preferences"
-    if preferences.is_file():
-        try:
-            settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
-        except (json.JSONDecodeError, OSError):
-            settings = {}
-        for key, entry in sorted(settings.items()):
-            if not isinstance(entry, dict):
+    # An unpacked extension has no directory here; Preferences still records it.
+    settings = read_capped_json(profile / "Preferences").get("extensions", {})
+    settings = settings.get("settings", {}) if isinstance(settings, dict) else {}
+    if isinstance(settings, dict):
+        for key, entry in settings.items():
+            if not valid_extension_id(key) or not isinstance(entry, dict):
                 continue
-            name = (entry.get("manifest") or {}).get("name", "")
-            if isinstance(name, str) and name.strip().lower() == "dark reader" \
-                    and valid_extension_id(key):
-                return key
+            if looks_like_dark_reader(entry.get("manifest")):
+                found.add(key)
+
+    return sorted(found)
+
+
+def chromium_extension_id(profile: Path) -> str:
+    """Which id Dark Reader actually has in this profile.
+
+    Omarchroma writes the theme into the extension's own storage, which is keyed
+    by id, so guessing wrong writes it nowhere -- or into something else. The
+    store id wins when it is installed. Otherwise exactly one candidate must
+    present itself as Dark Reader: if several do, this refuses to choose between
+    them rather than handing the theme to whichever sorted first."""
+    if (profile / "Extensions" / CHROMIUM_STORE_EXTENSION_ID).is_dir():
+        return CHROMIUM_STORE_EXTENSION_ID
+
+    candidates = chromium_dark_reader_candidates(profile)
+    if len(candidates) == 1:
+        return candidates[0]
+    if len(candidates) > 1:
+        print(f"Omarchroma: {len(candidates)} extensions present themselves as Dark Reader "
+              f"({', '.join(candidates)}); not theming any of them", file=sys.stderr)
 
     return CHROMIUM_STORE_EXTENSION_ID
 
@@ -284,11 +337,9 @@ def chromium_preferences_entry(profile: Path) -> dict | None:
     preferences = profile / "Preferences"
     if not preferences.is_file():
         return None
-    try:
-        settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
-    except (json.JSONDecodeError, OSError):
-        return None
-    entry = settings.get(CHROMIUM_STORE_EXTENSION_ID)
+    settings = read_capped_json(preferences).get("extensions", {})
+    settings = settings.get("settings", {}) if isinstance(settings, dict) else {}
+    entry = settings.get(CHROMIUM_STORE_EXTENSION_ID) if isinstance(settings, dict) else None
     return entry if isinstance(entry, dict) else None
 
 
@@ -326,7 +377,7 @@ def firefox_dark_reader_installed(profile: Path) -> bool:
     extensions_json = profile / "extensions.json"
     if extensions_json.is_file():
         try:
-            addons = json.loads(extensions_json.read_text()).get("addons", [])
+            addons = read_capped_json(extensions_json).get("addons", [])
             for addon in addons:
                 if addon.get("id") == FIREFOX_EXTENSION_ID and addon.get("active", True):
                     return True
@@ -350,7 +401,7 @@ def chromium_active_profile(config_dir: Path) -> Path:
     local_state = config_dir / "Local State"
     if local_state.is_file():
         try:
-            state = json.loads(local_state.read_text())
+            state = read_capped_json(local_state)
             profile = state.get("profile", {}).get("last_used")
             if profile and "/" not in profile and profile not in {".", ".."}:
                 return config_dir / profile
