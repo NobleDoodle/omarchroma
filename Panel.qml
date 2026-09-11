@@ -19,6 +19,21 @@ Panel {
   readonly property string settingsPath: stateDir + "/settings.json"
 
   property string activeTarget: ""
+
+  // One list drives both the rows and the keyboard shortcuts, so the digit a
+  // row shows is always the digit that toggles it.
+  //
+  // Digits rather than initials: PanelKeyCatcher already consumes h/j/k/l for
+  // cursor movement and x for delete, so "k" cannot reach this panel to mean
+  // KDE; and "q" reads as quit in almost every keyboard UI, which is a poor
+  // thing to wire to a toggle that reverts the framework it switches off.
+  readonly property var frameworks: [
+    { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
+    { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
+    { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
+    { target: "pear", label: "Pear Desktop", icon: "󰎆" }
+  ]
+
   property var enabledTargets: ({
     gtk: true,
     qtKde: true,
@@ -38,6 +53,7 @@ Panel {
   }
 
   function setTargetEnabled(target, enabled) {
+    if (refreshProcess.running) return
     var key = targetKey(target)
     var next = {
       gtk: enabledTargets.gtk !== false,
@@ -67,6 +83,21 @@ Panel {
       "--notify"
     ]
     refreshProcess.running = true
+  }
+
+  // "r" matches the convention PanelKeyCatcher documents for refresh; the
+  // digits match each row's position, which the row displays.
+  function handleKey(text) {
+    var key = (text || "").toLowerCase()
+    if (key === "r") {
+      root.refresh("all")
+      return
+    }
+    var index = parseInt(key, 10) - 1
+    if (index >= 0 && index < root.frameworks.length) {
+      var target = root.frameworks[index].target
+      root.setTargetEnabled(target, !root.targetEnabled(target))
+    }
   }
 
   function switchPanel(direction) {
@@ -121,6 +152,7 @@ Panel {
       anchors.fill: parent
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
+      onTextKey: function(text) { root.handleKey(text) }
 
       Column {
         id: content
@@ -140,7 +172,8 @@ Panel {
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
                 : "Reverting " + root.activeTarget + "...")
-            : "Switching one off restores how it looked before Omarchroma."
+            : "Press a number to toggle, r to refresh. Switching one off "
+              + "restores how it looked before Omarchroma."
           color: Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -149,16 +182,12 @@ Panel {
         }
 
         Repeater {
-          model: [
-            { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
-            { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
-            { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
-            { target: "pear", label: "Pear Desktop", icon: "󰎆" }
-          ]
+          model: root.frameworks
 
           delegate: Item {
             id: row
             required property var modelData
+            required property int index
             width: content.width
             height: Math.max(Style.spacing.controlHeight, label.implicitHeight)
 
@@ -180,10 +209,23 @@ Panel {
               font.pixelSize: Style.font.body
               anchors.left: icon.right
               anchors.leftMargin: Style.space(10)
-              anchors.right: toggle.left
+              anchors.right: keyHint.left
               anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
               elide: Text.ElideRight
+            }
+
+            // The key that toggles this row, shown so the shortcut is
+            // discoverable without reading the README.
+            Text {
+              id: keyHint
+              text: String(row.index + 1)
+              color: Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              anchors.right: toggle.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
             }
 
             ToggleSwitch {
@@ -204,7 +246,7 @@ Panel {
 
         Button {
           width: content.width
-          text: "Refresh enabled"
+          text: "Refresh enabled  (r)"
           iconText: "󰑐"
           foreground: root.bar ? root.bar.foreground : Color.popups.text
           enabled: !refreshProcess.running
