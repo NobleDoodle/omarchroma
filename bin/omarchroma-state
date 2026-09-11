@@ -59,10 +59,39 @@ def read_json(path):
         return {}
 
 
+UNSAFE_IN_NAME = re.compile(r"[^\w .+-]")
+
+
+def display_name(value):
+    """A name safe to put in a log line or a notification body.
+
+    Window class, window title and a process's own executable name are all set
+    by the application, so they are attacker controlled, and notification
+    daemons render a subset of HTML in the body -- a window title containing
+    markup is enough to garble one. Keep the characters an application name
+    legitimately uses and drop the rest."""
+    cleaned = UNSAFE_IN_NAME.sub("", value or "").strip()
+    return cleaned[:64] or "?"
+
+
+def preserve_mode(path, temporary):
+    """Carry an existing file's permissions onto the replacement.
+
+    Writing a new temporary and renaming it over the original otherwise resets
+    the mode to whatever the umask allows, so a file the user had tightened
+    comes back world-readable. write_lines already does this for the rc files it
+    rewrites; these paths were creating fresh files and dropping it."""
+    try:
+        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
+    except OSError:
+        pass  # nothing there to copy from, so the umask default stands
+
+
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(value, indent=2) + "\n")
+    preserve_mode(path, tmp)
     tmp.replace(path)
 
 
@@ -423,7 +452,8 @@ def stale_open_apps():
         # shown and changes minute to minute, which would make this report
         # neither stable nor readable. "org.gnome.Nautilus" reads as "Nautilus".
         name = klass.rsplit(".", 1)[-1] if klass else title
-        names.add(name[:1].upper() + name[1:] if name else "?")
+        name = display_name(name)
+        names.add(name[:1].upper() + name[1:])
     return sorted(names)
 
 
@@ -468,7 +498,7 @@ def kde_color_clients():
                     continue
         except OSError:
             continue
-        names.add(window_executable(entry.name) or entry.name)
+        names.add(display_name(window_executable(entry.name) or entry.name))
     return sorted(names)
 
 
@@ -922,6 +952,7 @@ def rewrite_pear_themes(chosen):
     options["themes"] = wanted
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent="\t") + "\n")
+    preserve_mode(path, temporary)
     temporary.replace(path)
 
 
