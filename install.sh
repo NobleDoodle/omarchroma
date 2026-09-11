@@ -7,6 +7,23 @@ TARGET_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 ENABLE=0
 INSTALL_PACKAGES=1
 INSTALL_POLICY=1
+REINSTALL=0
+UPGRADE=0
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
+
+# The Dark Reader machine policy. Declared here rather than inside
+# install_browser_policy so an upgrade can compare it with what is already on
+# disk -- a world-readable file -- instead of authenticating just to find out
+# nothing changed.
+CHROMIUM_POLICY_JSON='{
+  "ExtensionSettings": {
+    "eimadpbcbfnmbkopoojfekhnkhdbieeh": {
+      "installation_mode": "force_installed",
+      "update_url": "https://clients2.google.com/service/update2/crx"
+    }
+  }
+}
+'
 
 info() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
@@ -14,14 +31,20 @@ die() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--enable] [--no-packages] [--no-policy]
+Usage: ./install.sh [--enable] [--no-packages] [--no-policy] [--reinstall]
 
 Installs Omarchroma, its theme-change hook, GTK and Qt/KDE support, Dark Reader
 policy, and the command used by its service and bar widget.
 
+Re-run it to upgrade an existing install. An upgrade refreshes the plugin,
+commands and hooks, and does not ask for consent again or re-authenticate a
+browser policy that is already in place. Your captured original state is left
+untouched, so nothing is re-captured.
+
   --enable       Enable Omarchroma and place its icon before the power widget
   --no-packages  Do not install adw-gtk-theme or python-plyvel
   --no-policy    Do not install the Dark Reader browser policy
+  --reinstall    Treat an existing install as a first install (asks again)
 EOF
 }
 
@@ -74,21 +97,28 @@ policy_info_for_desktop() {
   esac
 }
 
+# Whether the policy this installer would write is already the policy on disk.
+# Both trust roots are world-readable, so an upgrade can answer this without
+# authenticating; only a real change is worth a password prompt.
+policy_already_current() {
+  local family="$1" target="$2" expected actual
+  if [[ $family == "chromium" ]]; then
+    local file="$target/99-omarchroma-dark-reader.json"
+    [[ -f $file ]] || return 1
+    expected=$(printf '%s' "$CHROMIUM_POLICY_JSON" | sha256sum | awk '{print $1}')
+    actual=$(sha256sum <"$file" | awk '{print $1}')
+    [[ $actual == "$expected" ]]
+  else
+    [[ -f $target ]] && grep -q 'addon@darkreader\.org' "$target"
+  fi
+}
+
 install_browser_policy() {
   local desktop="$1"
   local family="$2"
-  local chromium_policy_json='{
-  "ExtensionSettings": {
-    "eimadpbcbfnmbkopoojfekhnkhdbieeh": {
-      "installation_mode": "force_installed",
-      "update_url": "https://clients2.google.com/service/update2/crx"
-    }
-  }
-}
-'
   local payload_b64 payload_digest
-  payload_b64=$(printf '%s' "$chromium_policy_json" | base64 -w 0)
-  payload_digest=$(printf '%s' "$chromium_policy_json" | sha256sum | awk '{print $1}')
+  payload_b64=$(printf '%s' "$CHROMIUM_POLICY_JSON" | base64 -w 0)
+  payload_digest=$(printf '%s' "$CHROMIUM_POLICY_JSON" | sha256sum | awk '{print $1}')
 
   local -a policy_command
   if [[ -t 0 ]]; then
@@ -465,13 +495,29 @@ for argument in "$@"; do
     --enable) ENABLE=1 ;;
     --no-packages) INSTALL_PACKAGES=0 ;;
     --no-policy) INSTALL_POLICY=0 ;;
+    --reinstall) REINSTALL=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $argument" ;;
   esac
 done
 
 command -v omarchy >/dev/null || die "omarchy is not available"
-require_install_acknowledgement
+
+# An existing install is an upgrade. Consent covers changing your system and
+# capturing its original state; both already happened, and neither is repeated
+# here -- capture is create-once, so the recorded original survives untouched.
+# Asking again on every version bump trains people to type past it.
+if (( ! REINSTALL )) && [[ -f "$TARGET_DIR/manifest.json" || -e "$STATE_DIR/original/manifest.json" ]]; then
+  UPGRADE=1
+fi
+
+if (( UPGRADE )); then
+  version=$(jq -r '.version // "?"' "$SOURCE_DIR/manifest.json" 2>/dev/null || printf '?')
+  info "Upgrading Omarchroma to $version"
+  info "Refreshing the plugin, commands and hooks; captured original state is left as it is"
+else
+  require_install_acknowledgement
+fi
 
 if (( INSTALL_PACKAGES )); then
   missing=()
@@ -533,8 +579,10 @@ rm -f \
 if (( INSTALL_POLICY )); then
   browser_desktop=$(default_browser_desktop)
   if policy_info=$(policy_info_for_desktop "$browser_desktop"); then
-    # policy_target is rederived from the allowlist inside the privileged helper.
-    IFS=$'\t' read -r browser_name browser_family _ <<<"$policy_info"
+    # policy_target is only read here, to see whether an upgrade can skip
+    # authenticating. Where the policy is actually written is rederived from the
+    # allowlist inside the privileged helper, never taken from this value.
+    IFS=$'\t' read -r browser_name browser_family policy_target <<<"$policy_info"
     browser_info=$("$TARGET_DIR/bin/omarchroma-dark-reader" --info || printf '{}')
     dark_reader_installed=$(jq -r '.darkReaderInstalled // false' \
       <<<"$browser_info" 2>/dev/null || printf false)
@@ -542,7 +590,9 @@ if (( INSTALL_POLICY )); then
     # helper (install_browser_policy -> snapshot_destination_once). Its manifest
     # the record of "Omarchroma has managed this browser policy before".
     policy_backup_manifest="/var/lib/omarchroma/policy-backup/manifest.json"
-    if [[ $dark_reader_installed == "true" && ! -e "$policy_backup_manifest" ]]; then
+    if (( UPGRADE )) && policy_already_current "$browser_family" "$policy_target"; then
+      info "Browser policy for $browser_name is already current; no authentication needed"
+    elif [[ $dark_reader_installed == "true" && ! -e "$policy_backup_manifest" ]]; then
       info "Dark Reader is already installed for $browser_name; leaving extension installation unmanaged"
     else
       info "Installing Dark Reader for the default browser: $browser_name"
@@ -565,4 +615,8 @@ fi
 OMARCHROMA_PLUGIN_DIR="$TARGET_DIR" "$HOME/.local/bin/omarchroma-sync" \
   --force --notify || warn "Initial synchronization was incomplete"
 
-info "Omarchroma installed"
+if (( UPGRADE )); then
+  info "Omarchroma upgraded"
+else
+  info "Omarchroma installed"
+fi
