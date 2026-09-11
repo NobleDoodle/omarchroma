@@ -41,6 +41,12 @@ def atomic_write(path: Path, data: str, mode: int | None = None) -> None:
         raise
 
 
+# Commands are resolved from here, not from the inherited PATH: this runs
+# unattended from the shell service. Every command used -- hyprctl, gdbus,
+# gsettings, xdg-settings and Omarchy's own -- lives in a root-owned directory.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
+os.environ["PATH"] = TRUSTED_PATH
+
 # The id Dark Reader has when it comes from the Chrome Web Store. It is a hash
 # of the publisher's key, so every store install shares it -- but a build the
 # user side-loaded has its own, and side-loading is the only route left on a

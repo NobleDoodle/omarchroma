@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# sudo and pkexec are resolved from here rather than from the inherited PATH:
+# this script authenticates, and a planted "sudo" earlier in PATH would be a
+# credential prompt under someone else's control. Omarchy's own privileged
+# helper pins PATH for the same reason and accepts the same cost -- a dev-linked
+# Omarchy checkout is shadowed by the packaged one.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+export PATH
+
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"

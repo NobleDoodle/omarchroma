@@ -15,6 +15,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Commands are resolved from here, not from the inherited PATH: this runs
+# unattended from the shell service. Every command used -- hyprctl, gdbus,
+# gsettings, xdg-settings and Omarchy's own -- lives in a root-owned directory.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
+os.environ["PATH"] = TRUSTED_PATH
+
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
 

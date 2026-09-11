@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Every command below is resolved from here, not from the PATH this inherited.
+# The shell service runs this unattended and the theme hook runs it on every
+# theme change, so a directory earlier in the ambient PATH holding something
+# called jq, sed or omarchy would be executed with nobody watching. Each command
+# used was checked to live in a root-owned directory; the last entry is where
+# Omarchy keeps its own. A dev-linked Omarchy checkout is deliberately shadowed,
+# the same trade Omarchy's own privileged helper makes.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+export PATH
+
 
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
 PLUGIN_DIR="${OMARCHROMA_PLUGIN_DIR:-$HOME/.config/omarchy/plugins/$PLUGIN_ID}"
