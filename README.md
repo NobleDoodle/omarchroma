@@ -292,6 +292,30 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | `omarchy-shell io.github.nobledoodle.omarchroma toggle` | open or close the framework panel over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | synchronize now, in the background service |
 
+### Keyboard
+
+With the panel open:
+
+| Key | Action |
+|---|---|
+| `1` | toggle GTK and GNOME |
+| `2` | toggle Qt and KDE |
+| `3` | toggle Dark Reader |
+| `4` | toggle Pear Desktop |
+| `r` | refresh every enabled framework |
+| `Esc` | close the panel |
+| `Tab` / `Shift-Tab` | move to the next or previous bar panel |
+
+Each row shows the digit that toggles it, so the shortcuts are readable off the
+panel itself. Digits rather than initials because the shell's panel key handler
+takes `h`, `j`, `k` and `l` for cursor movement and `x` for delete before a
+panel sees them -- `k` can never reach this panel to mean KDE -- and because `q`
+reads as "quit" nearly everywhere, which is the wrong key to attach to a toggle
+that reverts the framework it switches off.
+
+A toggle or refresh is ignored while one is still running, so holding a key down
+cannot stack them up.
+
 ## CLI
 
 ```bash
