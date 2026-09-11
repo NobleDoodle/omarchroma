@@ -65,9 +65,6 @@ Before installing, it may:
   $HOME/.config/omarchy/hooks/font-set.d/omarchroma
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
-- say so, and do nothing about it, if a browser policy from a version before
-  1.6.0 is still present. Omarchroma installs no browser policy and removes
-  none; the command to remove that one is printed for you to run
 - set the KDE color scheme for every app once in kdeglobals, and clear
   per-application pins that would override it, recording each original value
   for the uninstaller, never editing the configuration of an application that

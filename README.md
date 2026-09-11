@@ -101,8 +101,6 @@ explains that the installer may:
 - install Omarchroma's command shims in `~/.local/bin`, replacing any already there
 - install the Omarchy `theme-set` and `font-set` hooks
 - snapshot original state in `~/.local/state/omarchroma/original/`
-- report a browser policy left by a version before 1.6.0, if one is still
-  present — it removes nothing and prints the command instead
 - clear per-application KDE color scheme pins (`[UiSettings] ColorScheme` in
   `~/.config/*rc`), recording each original value for the uninstaller, and
   skipping any application that is running so its configuration is untouched
