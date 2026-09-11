@@ -505,17 +505,22 @@ def hyprland_event_socket():
         return None
 
 
-def apply_and_check_clear():
-    """Run the Qt/KDE sync and report whether it had a clear run at it."""
-    subprocess.run(
-        [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
-        check=False,
-    )
+def apply_and_check_clear(state_dir, data_dir, action):
+    """Write the Qt/KDE palette -- or revert it -- and report a clear run at it."""
+    if action == "revert":
+        # A sync cannot do this: qtKde was disabled a moment ago, so every sync
+        # from here skips the framework and the revert would never happen.
+        restore(state_dir, data_dir, ("qt-kde",), "captured")
+    else:
+        subprocess.run(
+            [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
+            check=False,
+        )
     return not kde_color_client_pids()
 
 
-def watch_windows_close(stream):
-    """Apply the palette once no KDE window is holding the files, waking on
+def watch_windows_close(stream, state_dir, data_dir, action):
+    """Write the palette once no KDE window is holding the files, waking on
     Hyprland's window events.
 
     The condition being waited on is a window going away, not a process ending.
@@ -526,7 +531,7 @@ def watch_windows_close(stream):
     stream.settimeout(WATCH_TIMEOUT_SECONDS)
     pending = b""
     while True:
-        if not kde_color_client_pids() and apply_and_check_clear():
+        if not kde_color_client_pids() and apply_and_check_clear(state_dir, data_dir, action):
             return
         try:
             received = stream.recv(4096)
@@ -808,9 +813,9 @@ def watch_events(state_dir, data_dir):
                     deadline = time.monotonic() + EVENT_DEBOUNCE_SECONDS
 
 
-def watch_kde_exit(state_dir, data_dir):
+def watch_kde_exit(state_dir, data_dir, action="sync"):
     """Wait for the KDE applications holding the colour files to exit, then
-    apply the palette once.
+    write the palette once -- or revert it, when a toggle was switched off.
 
     The wait is on pidfds handed to poll(), so the kernel wakes this the moment
     a process ends. Nothing is polled and nothing is signalled: it sleeps at zero
@@ -833,7 +838,7 @@ def watch_kde_exit(state_dir, data_dir):
             except OSError:
                 stream_path = None
             else:
-                watch_windows_close(stream)
+                watch_windows_close(stream, state_dir, data_dir, action)
                 return
 
     # No event stream: fall back to waiting for the processes themselves to end.
@@ -860,12 +865,8 @@ def watch_kde_exit(state_dir, data_dir):
                     os.close(descriptor)
                     remaining.discard(descriptor)
 
-        subprocess.run(
-            [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
-            check=False,
-        )
-        if not kde_color_client_pids():
-            return  # nothing holding the files, so that sync wrote the palette
+        if apply_and_check_clear(state_dir, data_dir, action):
+            return  # nothing holding the files, so that run wrote the palette
 
 
 def gsettings_reset(key):
@@ -1008,7 +1009,8 @@ def main():
     sub.add_parser("clear-app-color-schemes")
     sub.add_parser("report-stale-apps")
     sub.add_parser("kde-color-clients")
-    sub.add_parser("watch-kde-exit")
+    kde_wait = sub.add_parser("watch-kde-exit")
+    kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     sub.add_parser("watch-events")
     sub.add_parser("refresh-idle-apps")
     browser_wait = sub.add_parser("watch-browser-exit")
@@ -1026,7 +1028,7 @@ def main():
         for name in kde_color_clients():
             print(name)
     elif args.command == "watch-kde-exit":
-        watch_kde_exit(args.state_dir, args.data_dir)
+        watch_kde_exit(args.state_dir, args.data_dir, args.action)
     elif args.command == "watch-events":
         watch_events(args.state_dir, args.data_dir)
     elif args.command == "refresh-idle-apps":
