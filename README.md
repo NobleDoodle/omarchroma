@@ -306,6 +306,7 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | Pear Desktop toggle on | enable and refresh Pear Desktop's stylesheet |
 | any framework toggle off | revert that framework to its captured values and stop syncing it |
 | Refresh enabled | refresh every currently enabled supported framework |
+| open the panel | lists any applications still drawing the previous theme |
 | `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework panel over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma openPanel` | open the framework panel over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma close` | close the framework panel over IPC |
@@ -343,6 +344,15 @@ that reverts the framework it switches off.
 
 A toggle or refresh is ignored while one is still running, so holding a key down
 cannot stack them up.
+
+The panel also lists applications that are still drawing the previous theme --
+ones with a window open that started before the palette was last written.
+Omarchroma does not touch an application while its window is open, so this is
+the list of things to close when you are ready. It is in the panel rather than
+only in a notification because a notification is gone in seconds and this is a
+list you work through at your own pace. It is measured against the last sync
+rather than the last theme change, so a toggle updates it the same way a theme
+switch does.
 
 ### Binding keys globally
 
