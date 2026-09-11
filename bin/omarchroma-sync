@@ -57,6 +57,25 @@ fail() {
   exit 1
 }
 
+recycle_idle_apps() {
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --written-now || true
+}
+
+# Windows already open cannot be restyled in place, and nothing here touches
+# them; say which ones they are so the choice to restart is the user's.
+report_stale_apps() {
+  local stale_apps stale_list
+  stale_apps=$("$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps 2>/dev/null || true)
+  [[ -n $stale_apps ]] || return 0
+  stale_list=${stale_apps//$'\n'/, }
+  log "restart to pick up the new theme: $stale_list"
+  command -v notify-send >/dev/null && \
+    notify-send -a Omarchroma "Restart to finish theming" \
+      "Still showing the previous theme: $stale_list" || true
+}
+
 color() {
   local value
   value=$(omarchy theme color "$1")
@@ -92,7 +111,13 @@ target_key() {
 target_enabled() {
   local key
   key=$(target_key "$1") || return 1
-  [[ $(jq -r --arg key "$key" '.frameworks[$key] // true' "$SETTINGS_FILE" 2>/dev/null || echo true) == "true" ]]
+  # Not "// true": jq's alternative operator treats false as empty as well as
+  # null, so a framework switched off read back as enabled and every sync
+  # re-applied the theme the toggle had just reverted. Only a missing key means
+  # enabled; a recorded false means false.
+  [[ $(jq -r --arg key "$key" \
+        '.frameworks[$key] | if . == null then true else . end' \
+        "$SETTINGS_FILE" 2>/dev/null || echo true) == "true" ]]
 }
 
 if [[ -n $set_enabled ]]; then
@@ -172,8 +197,13 @@ if [[ $set_enabled == "false" ]]; then
     log "$target disabled, but reverting it failed"
     exit "$revert_exit"
   fi
+  # A revert rewrites the palette exactly as a sync does, so it needs the same
+  # two follow-ups. Without them the files revert and every running application
+  # keeps the colours Omarchroma gave it, with nothing said about why.
+  recycle_idle_apps
   log "$target disabled and reverted to its captured state"
   notify_user "$target disabled and reverted"
+  report_stale_apps
   exit 0
 fi
 
@@ -461,12 +491,25 @@ else
              || echo "Qt and KDE synchronized" ) ;;
     dark-reader) message="Dark Reader synchronized" ;;
     pear) message=$([[ $pear_state == "synchronized" ]] && echo "Pear Desktop synchronized" || echo "Pear Desktop is not installed") ;;
-    *) if (( qt_kde_deferred )); then
-         message="GTK and Dark Reader synchronized; Qt/KDE deferred while KDE apps are open"
-       else
-         message="GTK, Qt/KDE, and Dark Reader synchronized"
+    *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
+       # every time, which was invisible only while no toggle could really
+       # disable anything.
+       synced=()
+       target_enabled gtk && synced+=("GTK")
+       if target_enabled qt-kde; then
+         (( qt_kde_deferred )) || synced+=("Qt/KDE")
        fi
-       (( pear_installed )) && message+=", including Pear Desktop" ;;
+       target_enabled dark-reader && synced+=("Dark Reader")
+       target_enabled pear && (( pear_installed )) && synced+=("Pear Desktop")
+       if (( ${#synced[@]} == 0 )); then
+         message="nothing to synchronize; every framework is switched off"
+       else
+         message=$(printf '%s, ' "${synced[@]}")
+         message="${message%, } synchronized"
+       fi
+       if target_enabled qt-kde && (( qt_kde_deferred )); then
+         message+="; Qt/KDE deferred while KDE apps are open"
+       fi ;;
   esac
 fi
 log "$message"
@@ -485,18 +528,7 @@ fi
 # recycled: the files changed and nothing picked them up until the next theme
 # switch. A forced run has just written the palette, so now is the baseline.
 if (( force )); then
-  "$PLUGIN_DIR/bin/omarchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --written-now || true
+  recycle_idle_apps
 fi
 
-# Windows already open cannot be restyled in place, and nothing here touches
-# them; say which ones they are so the choice to restart is the user's.
-stale_apps=$("$PLUGIN_DIR/bin/omarchroma-state" \
-  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps 2>/dev/null || true)
-if [[ -n $stale_apps ]]; then
-  stale_list=$(sed ':a;N;$!ba;s/\n/, /g' <<<"$stale_apps")
-  log "restart to pick up the new theme: $stale_list"
-  command -v notify-send >/dev/null && \
-    notify-send -a Omarchroma "Restart to finish theming" \
-      "Still showing the previous theme: $stale_list" || true
-fi
+report_stale_apps
