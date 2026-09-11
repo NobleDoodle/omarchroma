@@ -7,7 +7,13 @@ set -euo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
 export PATH
 
-# Remove the Dark Reader browser policy an older Omarchroma installed.
+# Remove the Dark Reader browser policy a version before 1.6.0 installed.
+#
+# TRANSITIONAL. Nothing runs this: not install.sh, not uninstall.sh, not the
+# service. It exists for someone upgrading across 1.6.0, is pointed at from the
+# README, and is meant to be deleted once that upgrade path stops being
+# plausible. It is the only privileged code in the project, and it is only
+# privileged because removing a root-owned file requires it.
 #
 # Omarchroma no longer installs that policy at all: it never themed anything,
 # it made a theming plugin the browser's enterprise administrator, and on

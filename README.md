@@ -61,6 +61,21 @@ policy — that is gone, and upgrading removes any policy left behind.
 `install.sh` reports anything missing and carries on; nothing here has to be in
 place for the install itself to succeed.
 
+### Upgrading from before 1.6.0
+
+Versions before 1.6.0 installed Dark Reader through a browser enterprise
+policy. That is gone. If you ran one of them, a root-owned policy file is still
+on your system; nothing removes it automatically, because nothing in Omarchroma
+asks for privileges any more. Remove it once, deliberately:
+
+```bash
+~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/bin/omarchroma-policy-cleanup
+```
+
+It only removes — the policy file, and the root-owned backup under
+`/var/lib/omarchroma/`. `install.sh` tells you if it is still needed. The
+helper is transitional and will be dropped in a future release.
+
 ## Install
 
 
