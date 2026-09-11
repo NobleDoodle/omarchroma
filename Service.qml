@@ -15,9 +15,20 @@ Item {
     if (!syncProcess.running) syncProcess.running = true
   }
 
+  // Forced, unlike syncColors: a refresh asked for by name should rewrite the
+  // palette and recycle idle applications even when nothing looks changed.
+  function refreshColors() {
+    if (!refreshProcess.running) refreshProcess.running = true
+  }
+
   Process {
     id: syncProcess
     command: [ root.home + "/.local/bin/omarchroma-sync", "--quiet" ]
+  }
+
+  Process {
+    id: refreshProcess
+    command: [ root.home + "/.local/bin/omarchroma-sync", "--force", "--notify" ]
   }
 
   // Setting an Omarchy theme is the trigger, through the theme-set hook. What
@@ -62,6 +73,11 @@ Item {
 
     function sync(): void {
       root.syncColors()
+    }
+
+    // Works with the bar widget absent, the service being keepLoaded.
+    function refresh(): void {
+      root.refreshColors()
     }
   }
 }

@@ -19,6 +19,21 @@ BarWidget {
     if (panelLoader.item) panelLoader.item.closeForPopoutSwitch()
   }
 
+  // Driving the panel's own functions rather than shelling out again keeps one
+  // implementation of "what does toggling this mean": the panel holds the
+  // current state, guards against a run already in progress, and reloads
+  // settings when the run finishes. The panel is loaded eagerly, so these work
+  // whether or not it has ever been opened.
+  function toggleFramework(target) {
+    var panel = panelLoader.item
+    if (!panel) return
+    panel.setTargetEnabled(target, !panel.targetEnabled(target))
+  }
+
+  function refreshEnabled() {
+    if (panelLoader.item) panelLoader.item.refresh("all")
+  }
+
   function injectPanel() {
     var panel = panelLoader.item
     if (!panel) return
@@ -56,6 +71,15 @@ BarWidget {
     // "refresh", which reads as "synchronize now" over IPC -- that is the
     // service's sync method, not this one.
     function openPanel(): void { root.open() }
+
+    // Bind these to keys in your own bindings.lua; the plugin ships the
+    // capability and never writes a binding itself. They notify, since a key
+    // pressed with the panel closed has nothing else to report through.
+    function toggleGtk(): void { root.toggleFramework("gtk") }
+    function toggleQtKde(): void { root.toggleFramework("qt-kde") }
+    function toggleDarkReader(): void { root.toggleFramework("dark-reader") }
+    function togglePear(): void { root.toggleFramework("pear") }
+    function refresh(): void { root.refreshEnabled() }
   }
 
   BarIconButton {

@@ -290,7 +290,13 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | `omarchy-shell io.github.nobledoodle.omarchroma show` | alias of `open` |
 | `omarchy-shell io.github.nobledoodle.omarchroma hide` | alias of `close` |
 | `omarchy-shell io.github.nobledoodle.omarchroma toggle` | open or close the framework panel over IPC |
-| `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | synchronize now, in the background service |
+| `omarchy-shell io.github.nobledoodle.omarchroma toggleGtk` | toggle GTK and GNOME without opening the panel |
+| `omarchy-shell io.github.nobledoodle.omarchroma toggleQtKde` | toggle Qt and KDE without opening the panel |
+| `omarchy-shell io.github.nobledoodle.omarchroma toggleDarkReader` | toggle Dark Reader without opening the panel |
+| `omarchy-shell io.github.nobledoodle.omarchroma togglePear` | toggle Pear Desktop without opening the panel |
+| `omarchy-shell io.github.nobledoodle.omarchroma refresh` | refresh every enabled framework |
+| `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | synchronize if anything changed, in the background service |
+| `omarchy-shell io.github.nobledoodle.omarchroma-service refresh` | force a refresh, with the bar widget absent |
 
 ### Keyboard
 
@@ -315,6 +321,31 @@ that reverts the framework it switches off.
 
 A toggle or refresh is ignored while one is still running, so holding a key down
 cannot stack them up.
+
+### Binding keys globally
+
+Omarchroma ships no keybindings and never edits your Hyprland configuration.
+What it ships is the IPC surface above, so you can bind whichever keys you want
+in your own `~/.config/hypr/bindings.lua`:
+
+```lua
+local om = "omarchy-shell io.github.nobledoodle.omarchroma"
+
+o.bind("SUPER + ALT + G", "Omarchroma: toggle GTK", om .. " toggleGtk")
+o.bind("SUPER + ALT + K", "Omarchroma: toggle Qt/KDE", om .. " toggleQtKde")
+o.bind("SUPER + ALT + D", "Omarchroma: toggle Dark Reader", om .. " toggleDarkReader")
+o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear")
+o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
+```
+
+Pick combinations that are free on your system -- `omarchy menu keybindings
+--print` lists what is already taken. Unlike the in-panel digits, a global
+binding is yours to name, so `K` can mean KDE here.
+
+These notify, since a key pressed with the panel closed has nothing else to
+report through. The toggles live on the bar widget, so they need it on the bar;
+`...omarchroma-service refresh` works without it, the service being always
+loaded.
 
 ## CLI
 
