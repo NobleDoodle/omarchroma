@@ -511,7 +511,7 @@ def window_executable(pid):
         return None
 
 
-def stale_open_apps():
+def stale_open_apps(since=None):
     """Names of apps with a window open that started before the current theme
     was selected, so they are still drawing the previous one.
 
@@ -520,7 +520,12 @@ def stale_open_apps():
 
     Reporting only. Nothing here signals, quits or writes to a running app: an
     open window keeps whatever it started with until its owner restarts it."""
-    since = theme_switched_at()
+    # Same baseline question as refresh_idle_apps: a run that just wrote the
+    # palette must measure against that write, not against the last theme
+    # switch, or a toggle hours later finds every open window "current" and
+    # reports nothing.
+    if since is None:
+        since = theme_switched_at()
     windows = open_windows()
     if since is None or not windows:
         return []
@@ -1133,7 +1138,9 @@ def main():
     rest.add_argument("--target", default="all", choices=("all",) + TARGETS)
     rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
     sub.add_parser("clear-app-color-schemes")
-    sub.add_parser("report-stale-apps")
+    stale = sub.add_parser("report-stale-apps")
+    stale.add_argument("--written-now", action="store_true",
+                       help="the palette was just written, so judge staleness against now")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -1150,7 +1157,8 @@ def main():
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
     elif args.command == "report-stale-apps":
-        for name in stale_open_apps():
+        for name in stale_open_apps(
+                int(time.time()) - LAUNCH_GRACE_SECONDS if args.written_now else None):
             print(name)
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
