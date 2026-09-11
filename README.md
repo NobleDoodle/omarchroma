@@ -98,7 +98,7 @@ packages; everything it touches is inside your home directory. The notice
 explains that the installer may:
 
 - copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
-- overwrite Omarchroma command shims in `~/.local/bin`
+- install Omarchroma's command shims in `~/.local/bin`, replacing any already there
 - install the Omarchy `theme-set` and `font-set` hooks
 - snapshot original state in `~/.local/state/omarchroma/original/`
 - report a browser policy left by a version before 1.6.0, if one is still

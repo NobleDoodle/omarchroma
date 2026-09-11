@@ -56,7 +56,7 @@ privileged command, and writes nothing outside your home directory.
 Before installing, it may:
 - copy this plugin into:
   $TARGET_DIR
-- overwrite Omarchroma command shims in:
+- install Omarchroma's command shims, replacing any already there, at:
   $HOME/.local/bin/omarchroma-sync
   $HOME/.local/bin/omarchroma-dark-reader
   $HOME/.local/bin/omarchroma-state
