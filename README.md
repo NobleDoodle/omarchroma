@@ -142,6 +142,16 @@ had before Omarchroma replaced it. The backup directory is removed once the
 restore succeeds. If the backup record is missing the uninstaller does not
 guess: it names the policy files it left in place so they can be reviewed.
 
+## Security
+
+`docs/security/fixes.md` records what has been found and fixed, and how each
+fix was verified. `docs/security/known-issues.md` records what was assessed and
+deliberately left, with the reasoning.
+
+The only privileged action is writing the Dark Reader browser policy during
+install; everything else is per-user. See the Removal section for what is
+restored and how.
+
 ## Requirements
 
 | Dependency | Why | Where it comes from |
