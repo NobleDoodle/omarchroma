@@ -4,6 +4,7 @@ import base64
 import configparser
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -179,6 +180,21 @@ def dark_reader_installed(info: dict, profile: Path) -> bool:
     return chromium_dark_reader_installed(profile)
 
 
+# A Chromium extension id is exactly 32 characters drawn from a-p: it is a
+# hex digest re-encoded into that alphabet. Anything else is not an id.
+CHROMIUM_ID_PATTERN = re.compile(r"\A[a-p]{32}\Z")
+
+
+def valid_extension_id(value: object) -> bool:
+    """Whether this is shaped like an extension id.
+
+    The id becomes a path component under the profile, and one of the places it
+    is read from is a key in the browser's Preferences JSON. A key is just text,
+    so without this a crafted one -- "../../../.." and so on -- would send the
+    theme write outside the profile entirely."""
+    return isinstance(value, str) and bool(CHROMIUM_ID_PATTERN.match(value))
+
+
 def chromium_extension_id(profile: Path) -> str:
     """Which id Dark Reader actually has in this profile.
 
@@ -204,7 +220,8 @@ def chromium_extension_id(profile: Path) -> str:
                     name = json.loads(manifest.read_text()).get("name", "")
                 except (json.JSONDecodeError, OSError):
                     continue
-                if isinstance(name, str) and name.strip().lower() == "dark reader":
+                if isinstance(name, str) and name.strip().lower() == "dark reader" \
+                        and valid_extension_id(candidate.name):
                     return candidate.name
 
     # An unpacked extension lives wherever it was loaded from, so it has no
@@ -219,7 +236,8 @@ def chromium_extension_id(profile: Path) -> str:
             if not isinstance(entry, dict):
                 continue
             name = (entry.get("manifest") or {}).get("name", "")
-            if isinstance(name, str) and name.strip().lower() == "dark reader":
+            if isinstance(name, str) and name.strip().lower() == "dark reader" \
+                    and valid_extension_id(key):
                 return key
 
     return CHROMIUM_STORE_EXTENSION_ID

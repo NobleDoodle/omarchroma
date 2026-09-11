@@ -306,7 +306,7 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | Pear Desktop toggle on | enable and refresh Pear Desktop's stylesheet |
 | any framework toggle off | revert that framework to its captured values and stop syncing it |
 | Refresh enabled | refresh every currently enabled supported framework |
-| open the panel | lists any applications still drawing the previous theme |
+| `/` in the menu, or the button under Refresh | list the applications still drawing the previous theme |
 | `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework panel over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma openPanel` | open the framework panel over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma close` | close the framework panel over IPC |
@@ -332,7 +332,8 @@ With the panel open:
 | `3` | toggle Dark Reader |
 | `4` | toggle Pear Desktop |
 | `r` | refresh every enabled framework |
-| `Esc` | close the panel |
+| `/` | show or hide the applications still to close |
+| `Esc` | leave that view, or close the panel |
 | `Tab` / `Shift-Tab` | move to the next or previous bar panel |
 
 Each row shows the digit that toggles it, so the shortcuts are readable off the
@@ -345,14 +346,16 @@ that reverts the framework it switches off.
 A toggle or refresh is ignored while one is still running, so holding a key down
 cannot stack them up.
 
-The panel also lists applications that are still drawing the previous theme --
-ones with a window open that started before the palette was last written.
-Omarchroma does not touch an application while its window is open, so this is
-the list of things to close when you are ready. It is in the panel rather than
-only in a notification because a notification is gone in seconds and this is a
-list you work through at your own pace. It is measured against the last sync
-rather than the last theme change, so a toggle updates it the same way a theme
-switch does.
+The button under Refresh carries the number of applications still drawing the
+previous theme -- ones with a window open that started before the palette was
+last written -- and `/` or a click opens the list. Omarchroma does not touch an
+application while its window is open, so this is what to close when you are
+ready. It lives behind that key rather than in the panel body so the panel keeps
+its shape however many applications are waiting, and in the panel rather than
+only in a notification because a notification is gone in seconds. At most eight
+are named and the rest are counted. Staleness is measured against the last sync
+rather than the last theme change, so a toggle updates the list the same way a
+theme switch does.
 
 ### Binding keys globally
 
