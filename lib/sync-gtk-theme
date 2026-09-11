@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+
 color() {
   local value
   value=$(omarchy theme color "$1")

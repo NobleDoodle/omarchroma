@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
 PLUGIN_DIR="${OMARCHROMA_PLUGIN_DIR:-$HOME/.config/omarchy/plugins/$PLUGIN_ID}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
@@ -127,8 +128,38 @@ if [[ -n $set_enabled ]]; then
   settings_key=$(target_key "$target") || fail "unknown target: $target"
   python3 - "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
 import json
+import os
+import stat
+import tempfile
 import sys
 from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Replace path through a temporary nothing else can have opened.
+
+    mkstemp uses O_CREAT|O_EXCL and a random name in the destination directory,
+    so a symlink planted at a guessable "<name>.tmp" cannot be followed, and the
+    destination's own permissions survive the replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 path = Path(sys.argv[1])
 key = sys.argv[2]
@@ -138,9 +169,7 @@ frameworks = settings.setdefault("frameworks", {})
 for name in ("gtk", "qtKde", "darkReader", "pear"):
     frameworks.setdefault(name, True)
 frameworks[key] = enabled
-temporary = path.with_suffix(".tmp")
-temporary.write_text(json.dumps(settings, indent=2) + "\n")
-temporary.replace(path)
+atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
   [[ $set_enabled == "true" ]] && force=1
 fi
@@ -335,6 +364,10 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
   pear_dir="$HOME/.config/YouTube Music"
   pear_css="$pear_dir/omarchroma.css"
   mkdir -p "$pear_dir"
+  # mktemp, not "$pear_css.tmp": a predictable name is a symlink waiting to be
+  # followed. This one is random, created exclusively, and in the directory the
+  # file is replaced into, so the rename stays atomic.
+  pear_tmp=$(mktemp "$pear_dir/.omarchroma.css.XXXXXX") || fail "cannot create a temporary file in $pear_dir"
   sed \
     -e "s/^  --om-bg: .*;/  --om-bg: $background;/" \
     -e "s/^  --om-bg-dark: .*;/  --om-bg-dark: $dark_background;/" \
@@ -349,14 +382,44 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
     -e "s/^  --om-accent: .*;/  --om-accent: $accent;/" \
     -e "s/^  --om-red: .*;/  --om-red: $red;/" \
     -e "s/^  --om-green: .*;/  --om-green: $green;/" \
-    "$PLUGIN_DIR/assets/pear-theme.css.template" >"$pear_css.tmp"
-  chmod 644 "$pear_css.tmp"
-  mv -f "$pear_css.tmp" "$pear_css"
+    "$PLUGIN_DIR/assets/pear-theme.css.template" >"$pear_tmp"
+  chmod 644 "$pear_tmp"
+  mv -f "$pear_tmp" "$pear_css"
 
   python3 - "$pear_dir/config.json" "$pear_css" <<'PY'
 import json
+import os
+import stat
+import tempfile
 import sys
 from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Replace path through a temporary nothing else can have opened.
+
+    mkstemp uses O_CREAT|O_EXCL and a random name in the destination directory,
+    so a symlink planted at a guessable "<name>.tmp" cannot be followed, and the
+    destination's own permissions survive the replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 path = Path(sys.argv[1])
 theme = sys.argv[2]
@@ -367,9 +430,7 @@ themes[:] = [
     if Path(item).name != "omarchroma.css"
 ]
 themes.append(theme)
-temporary = path.with_suffix(".tmp")
-temporary.write_text(json.dumps(config, indent=2) + "\n")
-temporary.replace(path)
+atomic_write(path, json.dumps(config, indent=2) + "\n")
 PY
   pear_state="synchronized"
 fi
@@ -397,8 +458,38 @@ if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark
   "$theme_name" "$background" "$foreground" "$selection" \
   "$dark_background" "$accent" <<'PY'
 import json
+import os
+import stat
+import tempfile
 import sys
 from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Replace path through a temporary nothing else can have opened.
+
+    mkstemp uses O_CREAT|O_EXCL and a random name in the destination directory,
+    so a symlink planted at a guessable "<name>.tmp" cannot be followed, and the
+    destination's own permissions survive the replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 path = Path(sys.argv[1])
 name, background, foreground, selection, dark_background, accent = sys.argv[2:]
@@ -447,9 +538,7 @@ theme = {
     "textStroke": 0,
     "useFont": False,
 }
-temporary = path.with_suffix(".tmp")
-temporary.write_text(json.dumps(theme, indent=2) + "\n")
-temporary.replace(path)
+atomic_write(path, json.dumps(theme, indent=2) + "\n")
 PY
 
   "$PLUGIN_DIR/bin/omarchroma-dark-reader" \
@@ -471,9 +560,39 @@ fi
 
 python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" <<'PY'
 import json
+import os
+import stat
+import tempfile
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Replace path through a temporary nothing else can have opened.
+
+    mkstemp uses O_CREAT|O_EXCL and a random name in the destination directory,
+    so a symlink planted at a guessable "<name>.tmp" cannot be followed, and the
+    destination's own permissions survive the replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 path = Path(sys.argv[1])
 state = json.loads(path.read_text()) if path.exists() else {}
@@ -493,9 +612,7 @@ if target in {"all", "pear"}:
     state["pearDesktop"] = pear_state
 if target in {"all", "dark-reader"} and dark_reader_exit == "0":
     state["darkReader"] = "synchronized"
-temporary = path.with_suffix(".tmp")
-temporary.write_text(json.dumps(state, indent=2) + "\n")
-temporary.replace(path)
+atomic_write(path, json.dumps(state, indent=2) + "\n")
 PY
 
 if (( dark_reader_exit == 2 )); then

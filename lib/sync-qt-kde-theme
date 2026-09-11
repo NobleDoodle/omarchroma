@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
 color() {
   local value
   value=$(omarchy theme color "$1")
@@ -80,6 +81,14 @@ scheme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/color-schemes"
 scheme_file="$scheme_dir/Omarchroma.colors"
 kdeglobals="${XDG_CONFIG_HOME:-$HOME/.config}/kdeglobals"
 mkdir -p "$scheme_dir" "$(dirname "$kdeglobals")"
+# A random name created exclusively in the destination directory, rather than
+# "$scheme_file.tmp": a predictable temporary is a symlink waiting to be
+# followed, and keeping it alongside the destination keeps the rename atomic.
+scheme_tmp=$(mktemp "$scheme_dir/.Omarchroma.colors.XXXXXX") || {
+  echo "sync-qt-kde-theme: cannot create a temporary file in $scheme_dir" >&2
+  exit 1
+}
+trap 'rm -f "$scheme_tmp"' EXIT
 
 write_roles() {
   local normal_bg=$1 alternate_bg=$2 normal_fg=$3 inactive_fg=$4
@@ -185,15 +194,15 @@ inactiveBackground=$darker_background_rgb
 inactiveBlend=$dark_foreground_rgb
 inactiveForeground=$dark_foreground_rgb
 EOF
-} >"$scheme_file.tmp"
-chmod 644 "$scheme_file.tmp"
+} >"$scheme_tmp"
+chmod 644 "$scheme_tmp"
 
 scheme_changed=1
-if cmp -s "$scheme_file.tmp" "$scheme_file"; then
-  rm -f "$scheme_file.tmp"
+if cmp -s "$scheme_tmp" "$scheme_file"; then
+  rm -f "$scheme_tmp"
   scheme_changed=0
 else
-  mv -f "$scheme_file.tmp" "$scheme_file"
+  mv -f "$scheme_tmp" "$scheme_file"
 fi
 
 globals_changed=$(
@@ -201,6 +210,7 @@ globals_changed=$(
 import hashlib
 import os
 import stat
+import tempfile
 import sys
 from pathlib import Path
 
@@ -311,15 +321,28 @@ updated_text = "\n\n".join(part for part in parts if part) + "\n"
 if updated_text == current_text:
     print(0)
 else:
-    temporary = globals_path.with_suffix(".tmp")
-    temporary.write_text(updated_text)
+    # Exclusive random temporary in the destination directory: "<name>.tmp" is
+    # guessable, and a symlink left there would be written through.
     mode = (
         stat.S_IMODE(globals_path.stat().st_mode)
         if globals_path.exists()
         else 0o600
     )
-    os.chmod(temporary, mode)
-    temporary.replace(globals_path)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix="." + globals_path.name + ".", dir=globals_path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(updated_text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, globals_path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
     print(1)
 PY
 )

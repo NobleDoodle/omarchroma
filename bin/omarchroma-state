@@ -10,6 +10,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,37 @@ STOCK_ABSENT_FILES = {
     "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Omarchroma.colors"),
     "pear": (".config/YouTube Music/omarchroma.css",),
 }
+
+
+def atomic_write(path, data, mode=None):
+    """Replace path with data, through a temporary nothing else can have opened.
+
+    mkstemp creates with O_CREAT|O_EXCL and a random name in the destination
+    directory, so a symlink planted at a guessable temporary path -- which
+    "<name>.tmp" very much is -- cannot be followed. The content is flushed to
+    disk before the rename, so an interrupted write leaves the old file intact
+    rather than a truncated one, and the destination's own permissions are
+    carried across instead of being reset to whatever the umask allows."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb" if isinstance(data, bytes) else "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def read_json(path):
@@ -94,25 +126,8 @@ def window_display_name(title, klass):
     return display_name(title)
 
 
-def preserve_mode(path, temporary):
-    """Carry an existing file's permissions onto the replacement.
-
-    Writing a new temporary and renaming it over the original otherwise resets
-    the mode to whatever the umask allows, so a file the user had tightened
-    comes back world-readable. write_lines already does this for the rc files it
-    rewrites; these paths were creating fresh files and dropping it."""
-    try:
-        os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
-    except OSError:
-        pass  # nothing there to copy from, so the umask default stands
-
-
 def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n")
-    preserve_mode(path, tmp)
-    tmp.replace(path)
+    atomic_write(path, json.dumps(value, indent=2) + "\n")
 
 
 def command_output(command):
@@ -264,7 +279,7 @@ def snapshot_file(snapshot_dir, manifest, key, path):
         if cleaned is None:
             shutil.copy2(path, backup)
         else:
-            backup.write_text(cleaned)
+            atomic_write(backup, cleaned)
             shutil.copystat(path, backup)
         entry["backup"] = str(backup.relative_to(snapshot_dir))
     files[key] = entry
@@ -293,7 +308,7 @@ def strip_generated_pear_themes(snapshot_dir, manifest):
     if kept == options["themes"]:
         return
     options["themes"] = kept
-    backup.write_text(json.dumps(config, indent="\t") + "\n")
+    atomic_write(backup, json.dumps(config, indent="\t") + "\n")
     manifest["captureTainted"] = True
 
 
@@ -336,11 +351,15 @@ def snapshot(state_dir, data_dir, target):
 
 def restore_file(snapshot_dir, entry):
     path = Path(entry["path"])
-    if entry.get("existed"):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snapshot_dir / entry["backup"], path)
-    else:
+    if not entry.get("existed"):
         path.unlink(missing_ok=True)
+        return
+    backup = snapshot_dir / entry["backup"]
+    # Replace the destination rather than writing into it. shutil.copy2 opens
+    # the destination by name and follows a symlink left there, so a link where
+    # a config file used to be would send the restore somewhere else entirely;
+    # atomic_write renames over the path, which replaces the link itself.
+    atomic_write(path, backup.read_bytes(), mode=stat.S_IMODE(backup.stat().st_mode))
 
 
 def restore_gsettings(values):
@@ -368,10 +387,7 @@ def find_ini_key(lines, group, key):
 
 
 def write_lines(path, lines):
-    tmp = path.parent / f"{path.name}.omarchroma-tmp"
-    tmp.write_text("".join(lines))
-    os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
-    tmp.replace(path)
+    atomic_write(path, "".join(lines))
 
 
 def readable_rc_files():
@@ -1084,10 +1100,7 @@ def rewrite_pear_themes(chosen):
     if wanted == current:
         return
     options["themes"] = wanted
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(config, indent="\t") + "\n")
-    preserve_mode(path, temporary)
-    temporary.replace(path)
+    atomic_write(path, json.dumps(config, indent="\t") + "\n")
 
 
 def captured_pear_themes(snapshot_dir, manifest):
