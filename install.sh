@@ -15,6 +15,13 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 # install_browser_policy so an upgrade can compare it with what is already on
 # disk -- a world-readable file -- instead of authenticating just to find out
 # nothing changed.
+# The Firefox policy entry install_browser_policy writes. Only ever compared
+# against here, never used to write -- the privileged helper holds its own
+# literal, and these must stay in sync with it the way POLICY_DESTINATIONS does.
+FIREFOX_POLICY_EXTENSION="addon@darkreader.org"
+FIREFOX_POLICY_INSTALL_MODE="force_installed"
+FIREFOX_POLICY_INSTALL_URL="https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi"
+
 CHROMIUM_POLICY_JSON='{
   "ExtensionSettings": {
     "eimadpbcbfnmbkopoojfekhnkhdbieeh": {
@@ -109,7 +116,17 @@ policy_already_current() {
     actual=$(sha256sum <"$file" | awk '{print $1}')
     [[ $actual == "$expected" ]]
   else
-    [[ -f $target ]] && grep -q 'addon@darkreader\.org' "$target"
+    # Not just "the file mentions Dark Reader": another tool's entry, with its
+    # own install_url, would otherwise read as Omarchroma's policy already being
+    # in place and an upgrade would stop re-asserting its own.
+    [[ -f $target ]] || return 1
+    jq -e \
+      --arg id "$FIREFOX_POLICY_EXTENSION" \
+      --arg mode "$FIREFOX_POLICY_INSTALL_MODE" \
+      --arg url "$FIREFOX_POLICY_INSTALL_URL" \
+      '.policies.ExtensionSettings[$id]
+       | (.installation_mode == $mode) and (.install_url == $url)' \
+      "$target" >/dev/null 2>&1
   fi
 }
 
@@ -398,12 +415,25 @@ else:
     path = Path(target)
     ensure_secure_directory(path.parent)
     ensure_safe_file_target(path)
+    # Read through a held O_NOFOLLOW descriptor like every other read in this
+    # privileged script. ensure_safe_file_target above only lstat's the path, so
+    # reopening it by name here would leave a window in which it became a
+    # symlink -- narrow, since /usr/lib is root-owned, but this runs as root and
+    # the rest of this script does not rely on that.
     policy = {}
-    if path.exists():
+    try:
+        raw = read_regular_file(path)
+    except FileNotFoundError:
+        raw = b""
+    except OSError as error:
+        die(f"refusing to read policy file {path}: {error}")
+    if raw:
         try:
-            policy = json.loads(path.read_text())
-        except json.JSONDecodeError:
+            policy = json.loads(raw.decode())
+        except (ValueError, UnicodeDecodeError):
             policy = {}
+    if not isinstance(policy, dict):
+        policy = {}
     policies = policy.setdefault("policies", {})
     settings = policies.setdefault("ExtensionSettings", {})
     settings["addon@darkreader.org"] = {
@@ -498,6 +528,7 @@ for argument in "$@"; do
 done
 
 command -v omarchy >/dev/null || die "omarchy is not available"
+command -v jq >/dev/null || die "jq is not available"
 
 # An existing install is an upgrade. Consent covers changing your system and
 # capturing its original state; both already happened, and neither is repeated
