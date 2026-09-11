@@ -336,6 +336,15 @@ PY
     --status "$STATUS_FILE" || dark_reader_exit=$?
   (( dark_reader_exit == 0 || dark_reader_exit == 2 )) || \
     fail "Dark Reader synchronization failed"
+  if (( dark_reader_exit == 2 )); then
+    # Dark Reader's settings live in the browser's own database, so this waits
+    # for the processes to end, not for the window to close. By the time they do
+    # the window is long gone, so no window event arrives to prompt a retry and
+    # this needs its own wait. 9>&- keeps it from inheriting this run's lock.
+    setsid "$PLUGIN_DIR/bin/omarchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-browser-exit \
+      >/dev/null 2>&1 </dev/null 9>&- &
+  fi
 fi
 
 python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" <<'PY'

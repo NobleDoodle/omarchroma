@@ -500,6 +500,80 @@ def refresh_idle_apps():
         print(f"Omarchroma: closed idle {name} so its next window is themed")
 
 
+def browser_client_pids():
+    """PIDs of the default browser.
+
+    Dark Reader's settings live inside the browser's own database, so unlike the
+    KDE colour files this has to wait for the processes to end rather than for a
+    window to close -- and a browser leaves a good many running for a while after
+    its last window goes. Since the window is already gone by then, no further
+    window event arrives to prompt a retry, which is why this needs its own
+    wait."""
+    result = subprocess.run(
+        [str(Path.home() / ".local/bin/omarchroma-dark-reader"), "--info"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+    )
+    try:
+        executables = set(json.loads(result.stdout).get("executables") or [])
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return []
+    if not executables:
+        return []
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        if window_executable(entry.name) in executables:
+            pids.append(int(entry.name))
+    return pids
+
+
+def watch_browser_exit(state_dir, data_dir):
+    """Apply Dark Reader once the browser has actually exited.
+
+    Waits on pidfds, so the kernel wakes this when the last process ends rather
+    than anything polling for it. Re-arms if the browser spawns more while it
+    waits, holds a lock so one runs at a time, and leaves anything past its
+    bound to the service."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+    runtime.mkdir(parents=True, exist_ok=True)
+    lock = open(runtime / "omarchroma-browser-wait.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another waiter already holds this
+
+    sync = [str(Path.home() / ".local/bin/omarchroma-sync"),
+            "--target=dark-reader", "--quiet"]
+    for _ in range(WATCH_ROUNDS):
+        pids = browser_client_pids()
+        if not pids:
+            subprocess.run(sync, check=False)
+            return
+
+        descriptors = []
+        for pid in pids:
+            try:
+                descriptors.append(os.pidfd_open(pid))
+            except OSError:
+                continue  # exited between listing it and waiting on it
+        if not descriptors:
+            continue
+
+        poller = select.poll()
+        for descriptor in descriptors:
+            poller.register(descriptor, select.POLLIN)
+        remaining = set(descriptors)
+        while remaining:
+            events = poller.poll(WATCH_TIMEOUT_SECONDS * 1000)
+            if not events:
+                return  # nothing ended in all that time; the service covers it
+            for descriptor, _ in events:
+                poller.unregister(descriptor)
+                os.close(descriptor)
+                remaining.discard(descriptor)
+
+
 def watch_events(state_dir, data_dir):
     """Run a sync whenever a window opens or closes.
 
@@ -644,6 +718,7 @@ def main():
     sub.add_parser("watch-kde-exit")
     sub.add_parser("watch-events")
     sub.add_parser("refresh-idle-apps")
+    sub.add_parser("watch-browser-exit")
     args = parser.parse_args()
 
     if args.command == "snapshot":
@@ -662,6 +737,8 @@ def main():
         watch_events(args.state_dir, args.data_dir)
     elif args.command == "refresh-idle-apps":
         refresh_idle_apps()
+    elif args.command == "watch-browser-exit":
+        watch_browser_exit(args.state_dir, args.data_dir)
     else:
         restore(args.state_dir, args.data_dir)
 
