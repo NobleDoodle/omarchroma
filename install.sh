@@ -428,6 +428,10 @@ Before installing, it may:
 - after a change, list the open applications still showing the previous theme,
   excluding those Omarchy re-themes itself, and without signalling, quitting or
   restarting any of them
+- close background application services that are left running with no window and
+  the previous theme, so their next window is themed; anything with a window on
+  screen is never touched, and each is asked through its own quit action rather
+  than signalled
 - run an initial sync that may update:
   $HOME/.config/gtk-3.0/
   $HOME/.config/gtk-4.0/

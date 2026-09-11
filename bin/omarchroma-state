@@ -9,6 +9,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 APP_COLOR_SCHEME_GROUP = "UiSettings"
@@ -325,6 +326,10 @@ WATCH_ROUNDS = 32
 # How long a waiter lingers before leaving it to the recovery service.
 WATCH_TIMEOUT_SECONDS = 900
 
+# A burst of window events -- a workspace of clients opening at login, say --
+# collapses into one sync this many seconds after the last one.
+EVENT_DEBOUNCE_SECONDS = 1.5
+
 
 def kde_color_clients():
     """Names of running processes that would reload if kdeglobals were rewritten
@@ -423,6 +428,129 @@ def watch_windows_close(stream):
                 break  # re-check who is holding the files
 
 
+def gdbus(*args):
+    result = subprocess.run(
+        ["gdbus", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, check=False, timeout=10,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def bus_call(dest, path, method, *args):
+    return gdbus("call", "--session", "--dest", dest, "--object-path", path,
+                 "--method", method, *args)
+
+
+def bus_names(method):
+    raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                   f"org.freedesktop.DBus.{method}")
+    return set(re.findall(r"'([A-Za-z][A-Za-z0-9_.-]+)'", raw or ""))
+
+
+def connection_pid(name):
+    raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                   "org.freedesktop.DBus.GetConnectionUnixProcessID", name)
+    # "(uint32 52840,)" -- match the number only, never the 32 in the type name
+    found = re.search(r"uint32\s+(\d+)", raw or "")
+    return int(found.group(1)) if found else None
+
+
+def has_quit_action(name, path):
+    raw = bus_call(name, path, "org.gtk.Actions.List")
+    return raw is not None and re.search(r"'quit'", raw) is not None
+
+
+def refresh_idle_apps():
+    """Quit background application services still holding the previous theme.
+
+    GTK 4 and libadwaita read the user stylesheet once, at startup. An
+    application that stayed resident after its last window closed therefore
+    hands its next window the palette it started with, so closing and reopening
+    it appears to do nothing. Ending the idle service means the next launch
+    reads the new stylesheet -- the same approach omarchy-nautilus-theme takes
+    with "nautilus -q", generalised.
+
+    No list of applications. One qualifies only on what can be observed about
+    it: D-Bus activatable, so quitting is a no-op the next launch undoes;
+    running; started before the theme it would be serving; showing no window, so
+    nothing on screen is touched; and exposing its own quit action, which is
+    activated rather than signalling the process. Failing any check leaves it
+    alone, and one already newer than the theme never qualifies, so running this
+    repeatedly changes nothing."""
+    newer_than = theme_switched_at()
+    windows = open_windows()
+    if newer_than is None or windows is None:
+        # Without a window list an idle service cannot be told from one in use.
+        return
+    windowed = {klass for _, klass, _ in windows if klass}
+
+    for name in sorted(bus_names("ListActivatableNames") & bus_names("ListNames")):
+        if name.startswith("org.freedesktop.") or name.lower() in windowed:
+            continue
+        pid = connection_pid(name)
+        if pid is None:
+            continue
+        started = process_started_at(pid)
+        if started is None or started >= newer_than:
+            continue
+        path = "/" + name.replace(".", "/").replace("-", "_")
+        if not has_quit_action(name, path):
+            continue
+        bus_call(name, path, "org.gtk.Actions.Activate", "quit", "[]", "{}")
+        print(f"Omarchroma: closed idle {name} so its next window is themed")
+
+
+def watch_events(state_dir, data_dir):
+    """Run a sync whenever a window opens or closes.
+
+    After the theme-set hook the changes this service still has to notice -- a
+    changed default browser, a newly installed Pear Desktop, an application
+    closing that a deferred Dark Reader or Qt/KDE write was waiting on -- all
+    surface on Hyprland's event stream as a window opening or closing. Waking on
+    those and letting the sync decide whether anything actually moved replaces
+    polling on a fixed interval.
+
+    One runs at a time. When the stream closes this returns so the service can
+    restart it; a change in that gap is caught by the next window event or the
+    service's fallback timer."""
+    lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock = open(lock_dir / "omarchroma-watch-events.lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another watcher already owns the stream
+
+    stream_path = hyprland_event_socket()
+    if stream_path is None:
+        return  # no event stream to watch; the fallback timer covers it
+
+    sync = [str(Path.home() / ".local/bin/omarchroma-sync"), "--quiet"]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+        stream.connect(str(stream_path))
+        pending = b""
+        deadline = None
+        while True:
+            if deadline is None:
+                stream.settimeout(None)
+            else:
+                stream.settimeout(max(0.05, deadline - time.monotonic()))
+            try:
+                chunk = stream.recv(4096)
+            except (TimeoutError, socket.timeout):
+                subprocess.run(sync, check=False)
+                deadline = None
+                continue
+            if not chunk:
+                return  # Hyprland went away
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                if (line.startswith((b"openwindow>>", b"closewindow>>"))
+                        and deadline is None):
+                    deadline = time.monotonic() + EVENT_DEBOUNCE_SECONDS
+
+
 def watch_kde_exit(state_dir, data_dir):
     """Wait for the KDE applications holding the colour files to exit, then
     apply the palette once.
@@ -514,6 +642,8 @@ def main():
     sub.add_parser("report-stale-apps")
     sub.add_parser("kde-color-clients")
     sub.add_parser("watch-kde-exit")
+    sub.add_parser("watch-events")
+    sub.add_parser("refresh-idle-apps")
     args = parser.parse_args()
 
     if args.command == "snapshot":
@@ -528,6 +658,10 @@ def main():
             print(name)
     elif args.command == "watch-kde-exit":
         watch_kde_exit(args.state_dir, args.data_dir)
+    elif args.command == "watch-events":
+        watch_events(args.state_dir, args.data_dir)
+    elif args.command == "refresh-idle-apps":
+        refresh_idle_apps()
     else:
         restore(args.state_dir, args.data_dir)
 

@@ -117,7 +117,7 @@ synchronized GTK palette.
 manifest.json                    service + bar-widget plugin manifest
 BarWidget.qml                    palette button and manual sync action
 Panel.qml                        framework toggle panel opened by the widget
-Service.qml                      startup and one-minute recovery sync
+Service.qml                      startup sync and Hyprland event watcher
 bin/omarchroma-sync              synchronization orchestrator
 bin/omarchroma-dark-reader       browser/profile detection and Dark Reader updater
 bin/omarchroma-state             snapshot and restore helper
@@ -170,10 +170,25 @@ nothing. That set is read from Omarchy rather than listed here, so it follows
 along as Omarchy gains more. The list is identified by window class rather than
 window title, so it names the same applications every run.
 
-The native `theme-set` and `font-set` hooks apply changes immediately. A lightweight service
-checks once per minute for a missed event, a changed default browser, a newly
-installed Pear Desktop, or a Dark Reader update waiting for the browser to
-close. A runtime lock prevents overlapping hook, service, and manual runs.
+Setting an Omarchy theme is the trigger: the native `theme-set` and `font-set`
+hooks apply GTK, Qt/KDE, Dark Reader and Pear Desktop immediately. Everything
+after that is event driven rather than polled. A helper watches Hyprland's event
+stream and re-syncs when a window opens or closes, which is when the remaining
+work becomes possible: a browser closing that a Dark Reader update was waiting
+on, a KDE application closing that the palette was deferred for, a changed
+default browser, a newly installed Pear Desktop. A timer remains only as a rare
+safety net for a change that surfaces as no window event at all. A runtime lock
+prevents overlapping hook, service, and manual runs.
+
+GTK 4 and libadwaita read the user stylesheet once, at startup, so an
+application left resident with no window would hand its next window the previous
+palette and look as though restarting it changed nothing. After writing, the
+sync closes those idle services so the next launch reads the new stylesheet --
+the approach `omarchy-nautilus-theme` takes with `nautilus -q`, generalised.
+An application qualifies only on what is observable about it: D-Bus activatable,
+so quitting is a no-op the next launch undoes; started before the current theme;
+showing no window, so nothing on screen is touched; and exposing its own quit
+action, which is activated rather than the process being signalled.
 
 ## Browser support
 

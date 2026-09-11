@@ -395,6 +395,13 @@ if (( notify )); then
     notify-send -a Omarchroma "Colors synchronized" "$message"
 fi
 
+# GTK 4 and libadwaita read their stylesheet once, at startup, so an application
+# left resident with no window would serve its next window the old palette and
+# look as though restarting it did nothing. Close those idle services; anything
+# with a window on screen is left strictly alone.
+"$PLUGIN_DIR/bin/omarchroma-state" \
+  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+
 # Everything is written to disk by this point, so anything started from now on
 # picks up the new theme. Windows already open cannot be restyled in place, and
 # nothing here touches them; say which ones they are so the choice to restart is
