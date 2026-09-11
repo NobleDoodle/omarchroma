@@ -16,7 +16,16 @@ Panel {
   readonly property string stateDir: Quickshell.env("XDG_STATE_HOME") !== ""
     ? Quickshell.env("XDG_STATE_HOME") + "/omarchroma"
     : Quickshell.env("HOME") + "/.local/state/omarchroma"
+  readonly property string dataDir: Quickshell.env("XDG_DATA_HOME") !== ""
+    ? Quickshell.env("XDG_DATA_HOME") + "/omarchroma"
+    : Quickshell.env("HOME") + "/.local/share/omarchroma"
   readonly property string settingsPath: stateDir + "/settings.json"
+
+  // Applications with a window open that started before the palette was last
+  // written, so they are still drawing the previous theme. Kept in the panel
+  // rather than only in a notification: a notification is gone in seconds, and
+  // this is a list you work through at your own pace.
+  property var staleApps: []
 
   property string activeTarget: ""
 
@@ -100,6 +109,20 @@ Panel {
     }
   }
 
+  function refreshStaleApps() {
+    if (!staleProcess.running) staleProcess.running = true
+  }
+
+  function applyStaleApps(output) {
+    var names = []
+    var lines = (output || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var name = lines[i].trim()
+      if (name !== "") names.push(name)
+    }
+    root.staleApps = names
+  }
+
   function switchPanel(direction) {
     if (root.bar && typeof root.bar.switchPanelFrom === "function")
       return root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -111,8 +134,28 @@ Panel {
     onExited: function() {
       root.activeTarget = ""
       settingsFile.reload()
+      root.refreshStaleApps()
     }
   }
+
+  // Measured against the last recorded sync rather than the last theme switch:
+  // the question this answers is "did this application start before the palette
+  // it is drawing was written", which a toggle changes just as a theme does.
+  Process {
+    id: staleProcess
+    command: [
+      Quickshell.env("HOME") + "/.local/bin/omarchroma-state",
+      "--state-dir", root.stateDir,
+      "--data-dir", root.dataDir,
+      "report-stale-apps", "--since-last-sync"
+    ]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyStaleApps(text)
+    }
+  }
+
+  onOpenedChanged: if (root.opened) root.refreshStaleApps()
 
   FileView {
     id: settingsFile
@@ -172,8 +215,7 @@ Panel {
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
                 : "Reverting " + root.activeTarget + "...")
-            : "Press a number to toggle, r to refresh. Switching one off "
-              + "restores how it looked before Omarchroma."
+            : "Switching one off restores how it looked before Omarchroma."
           color: Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -242,6 +284,46 @@ Panel {
 
         PanelSeparator {
           foreground: root.bar ? root.bar.foreground : Color.popups.text
+        }
+
+        Column {
+          id: stale
+          visible: root.staleApps.length > 0
+          width: content.width
+          spacing: Style.space(4)
+
+          Text {
+            text: "Close to finish theming"
+            color: root.bar ? root.bar.foreground : Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+
+          Repeater {
+            model: root.staleApps
+
+            delegate: Text {
+              required property string modelData
+              width: stale.width
+              text: "\u2022  " + modelData
+              color: Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+
+          Text {
+            width: stale.width
+            text: "These started before the current colors were written. Nothing "
+              + "here is touched while it is open."
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            bottomPadding: Style.space(4)
+          }
         }
 
         Button {

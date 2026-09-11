@@ -11,6 +11,7 @@ import socket
 import stat
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 APP_COLOR_SCHEME_GROUP = "UiSettings"
@@ -438,6 +439,21 @@ def running_executables():
         except OSError:
             continue
     return names
+
+
+def last_sync_at(state_dir):
+    """When Omarchroma last wrote the palette, as epoch seconds.
+
+    The honest baseline for a standing display: an application is showing the
+    previous theme if it started before Omarchroma last wrote one, which is not
+    the same question as when the Omarchy theme last changed."""
+    stamp = read_json(state_dir / "status.json").get("lastSync")
+    if not isinstance(stamp, str):
+        return None
+    try:
+        return int(datetime.fromisoformat(stamp).timestamp())
+    except ValueError:
+        return None
 
 
 def theme_switched_at():
@@ -1141,6 +1157,8 @@ def main():
     stale = sub.add_parser("report-stale-apps")
     stale.add_argument("--written-now", action="store_true",
                        help="the palette was just written, so judge staleness against now")
+    stale.add_argument("--since-last-sync", action="store_true",
+                       help="judge staleness against the last recorded sync, for a standing display")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -1157,8 +1175,13 @@ def main():
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
     elif args.command == "report-stale-apps":
-        for name in stale_open_apps(
-                int(time.time()) - LAUNCH_GRACE_SECONDS if args.written_now else None):
+        if args.written_now:
+            since = int(time.time()) - LAUNCH_GRACE_SECONDS
+        elif args.since_last_sync:
+            since = last_sync_at(args.state_dir)
+        else:
+            since = None
+        for name in stale_open_apps(since):
             print(name)
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
