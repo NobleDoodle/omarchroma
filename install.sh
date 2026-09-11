@@ -13,7 +13,6 @@ PLUGIN_ID="io.github.nobledoodle.omarchroma"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 ENABLE=0
-INSTALL_PACKAGES=1
 REINSTALL=0
 UPGRADE=0
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
@@ -24,7 +23,7 @@ die() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Usage: ./install.sh [--enable] [--no-packages] [--reinstall]
+Usage: ./install.sh [--enable] [--reinstall]
 
 Installs Omarchroma, its theme-change hook, GTK and Qt/KDE support, and the
 command used by its service and bar widget. It does not install Dark Reader:
@@ -36,7 +35,6 @@ Your captured original state is left
 untouched, so nothing is re-captured.
 
   --enable       Enable Omarchroma and place its icon before the power widget
-  --no-packages  Do not install adw-gtk-theme or python-plyvel
   --reinstall    Treat an existing install as a first install (asks again)
 EOF
 }
@@ -51,11 +49,11 @@ require_install_acknowledgement() {
   cat <<EOF
 Omarchroma install consent
 
-This installer changes user and system configuration so Omarchy theme changes
-can be synchronized outside the Omarchy shell.
+This installer changes your own configuration so Omarchy theme changes can be
+synchronized outside the Omarchy shell. It installs no packages and asks for no
+privileges, with one exception noted below.
 
 Before installing, it may:
-- install missing outside packages with pacman: adw-gtk-theme, python-plyvel
 - copy this plugin into:
   $TARGET_DIR
 - overwrite Omarchroma command shims in:
@@ -116,7 +114,6 @@ EOF
 for argument in "$@"; do
   case "$argument" in
     --enable) ENABLE=1 ;;
-    --no-packages) INSTALL_PACKAGES=0 ;;
     --reinstall) REINSTALL=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $argument" ;;
@@ -142,19 +139,26 @@ else
   require_install_acknowledgement
 fi
 
-if (( INSTALL_PACKAGES )); then
-  missing=()
-  for package in adw-gtk-theme python-plyvel; do
-    pacman -Qq "$package" &>/dev/null || missing+=("$package")
+# Report what is missing; never install it. Omarchroma changes your own
+# configuration, and asking for root to add system packages on top of that is a
+# bigger ask than the job needs. The command is printed so it can be run
+# deliberately, with pacman showing what it would do.
+missing=()
+for package in adw-gtk-theme python-plyvel; do
+  pacman -Qq "$package" &>/dev/null || missing+=("$package")
+done
+if (( ${#missing[@]} )); then
+  warn "Missing packages: ${missing[*]}"
+  for package in "${missing[@]}"; do
+    case "$package" in
+      adw-gtk-theme)
+        warn "  adw-gtk-theme  -- without it GTK 3 applications will not follow the theme" ;;
+      python-plyvel)
+        warn "  python-plyvel  -- without it Dark Reader cannot be themed in Chromium browsers" ;;
+    esac
   done
-  if (( ${#missing[@]} )); then
-    info "Installing dependencies: ${missing[*]}"
-    if [[ -t 0 ]]; then
-      sudo pacman -S --needed --noconfirm "${missing[@]}"
-    else
-      pkexec pacman -S --needed --noconfirm "${missing[@]}"
-    fi
-  fi
+  warn "Install them with:  sudo pacman -S --needed ${missing[*]}"
+  warn "Omarchroma will install and run without them; those parts will not work."
 fi
 
 info "Installing Omarchroma"

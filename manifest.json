@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nobledoodle.omarchroma",
   "name": "Omarchroma",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "author": "NobleDoodle",
   "license": "MIT",
   "description": "Keep GTK, Qt/KDE, Dark Reader, and Pear Desktop matched to the active Omarchy theme.",
