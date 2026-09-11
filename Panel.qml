@@ -241,19 +241,15 @@ Panel {
           width: content.width
           spacing: Style.space(6)
 
+          // The heading already says what the list is, so nothing is said twice.
+          // Only the empty case needs a word, because an empty list says nothing.
           Text {
+            visible: root.staleApps.length === 0
             width: guide.width
-            text: root.staleApps.length > 0
-              ? "These have a window open that started before the current colors "
-                + "were written, so they are still showing the previous theme. "
-                + "Omarchroma never touches an application while its window is "
-                + "open, so closing them is yours to do."
-              : "Nothing is waiting. Every application with a window open is "
-                + "already showing the current colors."
+            text: "Nothing to close."
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
           }
 
           Repeater {
