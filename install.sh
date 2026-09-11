@@ -50,8 +50,8 @@ require_install_acknowledgement() {
 Omarchroma install consent
 
 This installer changes your own configuration so Omarchy theme changes can be
-synchronized outside the Omarchy shell. It installs no packages and asks for no
-privileges, with one exception noted below.
+synchronized outside the Omarchy shell. It installs no packages, runs no
+privileged command, and writes nothing outside your home directory.
 
 Before installing, it may:
 - copy this plugin into:
@@ -65,10 +65,9 @@ Before installing, it may:
   $HOME/.config/omarchy/hooks/font-set.d/omarchroma
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
-- remove the browser policy an earlier Omarchroma installed, if one is still
-  present, together with the root-owned backup it kept under
-  /var/lib/omarchroma/. Omarchroma installs no browser policy of its own;
-  Dark Reader is yours to install and yours to remove
+- say so, and do nothing about it, if a browser policy from a version before
+  1.6.0 is still present. Omarchroma installs no browser policy and removes
+  none; the command to remove that one is printed for you to run
 - set the KDE color scheme for every app once in kdeglobals, and clear
   per-application pins that would override it, recording each original value
   for the uninstaller, never editing the configuration of an application that
@@ -97,8 +96,7 @@ Before installing, it may:
 
 The uninstaller restores the state captured before Omarchroma first changed
 each integration. Dark Reader sync and restore require the target browser to be
-closed. Removing a browser policy left by an earlier version is performed by a
-fixed privileged helper and prompts for administrator authentication.
+closed; the extension itself is never installed or removed.
 
 Type "I understand" to continue:
 EOF
