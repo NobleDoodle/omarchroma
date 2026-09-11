@@ -54,31 +54,25 @@ synchronized outside the Omarchy shell. It installs no packages, runs no
 privileged command, and writes nothing outside your home directory.
 
 Before installing, it may:
-- copy this plugin into:
+- install itself, replacing any earlier copy already there:
   $TARGET_DIR
-- install Omarchroma's command shims, replacing any already there, at:
   $HOME/.local/bin/omarchroma-sync
   $HOME/.local/bin/omarchroma-dark-reader
   $HOME/.local/bin/omarchroma-state
-- install the native Omarchy theme and font hooks:
   $HOME/.config/omarchy/hooks/theme-set.d/omarchroma
   $HOME/.config/omarchy/hooks/font-set.d/omarchroma
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
-- set the KDE color scheme for every app once in kdeglobals, and clear
-  per-application pins that would override it, recording each original value
-  for the uninstaller, never editing the configuration of an application that
-  is currently running
-- leave kdeglobals and the generated color scheme untouched while a KDE
-  application has a window open, and start a helper that sleeps until that
-  application exits and then applies them
-- after a change, list the open applications still showing the previous theme,
-  excluding those Omarchy re-themes itself, and without signalling, quitting or
-  restarting any of them
-- close background application services that are left running with no window and
-  the previous theme, so their next window is themed; anything with a window on
-  screen is never touched, and each is asked through its own quit action rather
-  than signalled
+- set the KDE color scheme in kdeglobals and clear per-application pins that
+  would override it (original values recorded for the uninstaller), skipping
+  any application that is currently running
+- defer that kdeglobals write while a KDE application has a window open,
+  applying it once the window closes
+- list, after a change, any open applications still showing the previous
+  theme -- except ones Omarchy re-themes itself -- without touching them
+- quit idle background services left running with no window and the previous
+  theme, so their next launch is themed; anything with a window open is left
+  alone, and each is asked to quit through its own action rather than signalled
 - run an initial sync that may update:
   $HOME/.config/gtk-3.0/
   $HOME/.config/gtk-4.0/
