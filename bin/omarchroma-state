@@ -640,7 +640,12 @@ def has_quit_action(name, path):
     return raw is not None and re.search(r"'quit'", raw) is not None
 
 
-def refresh_idle_apps():
+# Long enough that an application the user launched a moment ago, which has not
+# put a window on screen yet, is never mistaken for an idle service.
+LAUNCH_GRACE_SECONDS = 5
+
+
+def refresh_idle_apps(since=None):
     """Quit background application services still holding the previous theme.
 
     GTK 4 and libadwaita read the user stylesheet once, at startup. An
@@ -657,7 +662,11 @@ def refresh_idle_apps():
     activated rather than signalling the process. Failing any check leaves it
     alone, and one already newer than the theme never qualifies, so running this
     repeatedly changes nothing."""
-    newer_than = theme_switched_at()
+    # Staleness is measured against when the palette on disk was last written.
+    # A theme switch and a forced run both write it now, so they pass `since`;
+    # an event-driven run writes nothing new and measures against the theme
+    # instead, or closing a window would quit every idle service every time.
+    newer_than = since if since is not None else theme_switched_at()
     windows = open_windows()
     if newer_than is None or windows is None:
         # Without a window list an idle service cannot be told from one in use.
@@ -1012,7 +1021,9 @@ def main():
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     sub.add_parser("watch-events")
-    sub.add_parser("refresh-idle-apps")
+    idle = sub.add_parser("refresh-idle-apps")
+    idle.add_argument("--written-now", action="store_true",
+                      help="the palette was just written, so judge staleness against now")
     browser_wait = sub.add_parser("watch-browser-exit")
     browser_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     args = parser.parse_args()
@@ -1032,7 +1043,8 @@ def main():
     elif args.command == "watch-events":
         watch_events(args.state_dir, args.data_dir)
     elif args.command == "refresh-idle-apps":
-        refresh_idle_apps()
+        refresh_idle_apps(
+            int(time.time()) - LAUNCH_GRACE_SECONDS if args.written_now else None)
     elif args.command == "watch-browser-exit":
         watch_browser_exit(args.state_dir, args.data_dir, args.action)
     else:
