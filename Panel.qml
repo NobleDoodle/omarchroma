@@ -277,7 +277,7 @@ Panel {
 
           Button {
             width: guide.width
-            text: "Back"
+            text: "Back  (/)"
             iconText: "\udb80\udf0d"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.guideOpen = false
