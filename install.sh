@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# sudo and pkexec are resolved from here rather than from the inherited PATH:
-# this script authenticates, and a planted "sudo" earlier in PATH would be a
-# credential prompt under someone else's control. Omarchy's own privileged
-# helper pins PATH for the same reason and accepts the same cost -- a dev-linked
-# Omarchy checkout is shadowed by the packaged one.
+# Commands are resolved from a trusted PATH rather than whatever was inherited:
+# a planted "jq", "pacman", or "omarchy" earlier in PATH would run with this
+# script's authority. Omarchy's own privileged helper pins PATH for the same
+# reason, accepting the same cost -- a dev-linked Omarchy checkout is shadowed
+# by the packaged one.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
 export PATH
 
@@ -168,8 +168,6 @@ if [[ "$SOURCE_DIR" != "$TARGET_DIR" ]]; then
   install -m 755 "$SOURCE_DIR/bin/omarchroma-sync" "$TARGET_DIR/bin/omarchroma-sync"
   install -m 755 "$SOURCE_DIR/bin/omarchroma-dark-reader" \
     "$TARGET_DIR/bin/omarchroma-dark-reader"
-  install -m 755 "$SOURCE_DIR/bin/omarchroma-policy-cleanup" \
-    "$TARGET_DIR/bin/omarchroma-policy-cleanup"
   install -m 755 "$SOURCE_DIR/bin/omarchroma-state" \
     "$TARGET_DIR/bin/omarchroma-state"
   install -m 755 "$SOURCE_DIR/hooks/omarchroma" "$TARGET_DIR/hooks/omarchroma"
@@ -206,17 +204,6 @@ else
   info "Omarchroma will theme it from the next sync -- it installs nothing for you."
 fi
 
-# Versions before 1.6.0 installed a browser policy. Say so, and leave running
-# the removal to the user: detecting it needs no privilege, and an installer
-# that authenticates on its own is the habit this release is getting rid of.
-# The helper is transitional and will be dropped once it is no longer plausible
-# that anyone is upgrading across that boundary.
-if [[ -e /var/lib/omarchroma/policy-backup/manifest.json ]]; then
-  warn "A browser policy from a version before 1.6.0 is still installed."
-  warn "Omarchroma no longer uses one. Remove it and its root-owned backup with:"
-  warn "  $TARGET_DIR/bin/omarchroma-policy-cleanup"
-  warn "It only removes, and asks for authentication once."
-fi
 
 omarchy plugin validate "$TARGET_DIR"
 command -v omarchy-shell >/dev/null && \

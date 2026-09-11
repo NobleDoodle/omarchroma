@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# sudo and pkexec are resolved from here rather than from the inherited PATH:
-# this script authenticates, and a planted "sudo" earlier in PATH would be a
-# credential prompt under someone else's control. Omarchy's own privileged
-# helper pins PATH for the same reason and accepts the same cost -- a dev-linked
-# Omarchy checkout is shadowed by the packaged one.
+# Commands are resolved from a trusted PATH rather than whatever was inherited:
+# a planted "jq", "pacman", or "omarchy" earlier in PATH would run with this
+# script's authority. Omarchy's own privileged helper pins PATH for the same
+# reason, accepting the same cost -- a dev-linked Omarchy checkout is shadowed
+# by the packaged one.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
 export PATH
 
@@ -161,14 +161,6 @@ fi
 
 run_state_helper --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
   restore --mode "$mode" || restore_exit=$?
-# Not run from here either. Uninstalling should not be the moment a script
-# decides to authenticate on the user's behalf; it is said plainly instead.
-if [[ -e /var/lib/omarchroma/policy-backup/manifest.json ]]; then
-  echo "Omarchroma: a browser policy from a version before 1.6.0 is still installed."
-  echo "Omarchroma: remove it with $PLUGIN_DIR/bin/omarchroma-policy-cleanup before"
-  echo "Omarchroma: this directory is deleted, or with the copy in your clone afterwards."
-fi
-
 if (( restore_exit != 0 )); then
   echo "Restore failed; Omarchroma was not removed." >&2
   exit "$restore_exit"

@@ -49,19 +49,6 @@ anyway and says so plainly in its last line rather than failing.
 Re-run `install.sh` to upgrade — it detects the existing install and skips the
 consent prompt. `--reinstall` forces the first-install path.
 
-### Upgrading from before 1.6.0
-
-If you ran a version before 1.6.0, a root-owned Dark Reader policy file may
-still be on your system; nothing removes it automatically. Run this once — it
-only removes, never writes:
-
-```bash
-~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/bin/omarchroma-policy-cleanup
-```
-
-`install.sh` tells you if it's still needed. The helper will be dropped once
-this upgrade path is no longer plausible.
-
 ## Showcase
 
 Omarchroma carries one Omarchy palette across desktop applications, browser
@@ -107,10 +94,6 @@ reinstate colours it was meant to remove.
 packages, writes a browser policy, or touches anything outside your home
 directory.
 
-If a browser policy from a version before 1.6.0 is still on the system,
-`install.sh` reports it and prints the command to remove it — see "Upgrading
-from before 1.6.0" above. Nothing runs that command automatically.
-
 ## Requirements
 
 | Dependency | Why | Where it comes from |
@@ -138,7 +121,6 @@ Service.qml                      startup sync and Hyprland event watcher
 bin/omarchroma-sync              synchronization orchestrator
 bin/omarchroma-dark-reader       browser/profile detection and Dark Reader updater
 bin/omarchroma-state             snapshot and restore helper
-bin/omarchroma-policy-cleanup    removes a browser policy left by an earlier version
 hooks/omarchroma                 native theme-set hook
 lib/sync-gtk-theme               GTK 3/4 and libadwaita palette generator
 lib/sync-qt-kde-theme            Qt/KDE color-scheme generator
@@ -202,7 +184,6 @@ never touched while the browser is running; the update waits for it to close.
 ~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
 ~/.config/*rc                        (only the [UiSettings] ColorScheme key, removed)
-/var/lib/omarchroma/policy-backup/   (root-owned; only if an earlier version left one)
 ```
 
 Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
