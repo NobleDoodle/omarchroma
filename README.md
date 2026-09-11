@@ -37,6 +37,13 @@ waits for the browser to exit.
 
 ## Install
 
+**Omarchroma does not install Dark Reader.** Install the extension yourself
+from your browser's store; Omarchroma themes it from the next sync and does
+nothing to your browser until it is there. Earlier versions force-installed it
+through an enterprise browser policy — that is gone, and upgrading removes any
+policy left behind.
+
+
 ```bash
 omarchy plugin add https://github.com/NobleDoodle/omarchroma
 ~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/install.sh --enable
@@ -44,7 +51,7 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma
 
 The first command installs the plugin through Omarchy. The second installs its
 commands and native `theme-set` hook, adds missing dependencies, configures
-Dark Reader for the default browser, enables the service, and places the
+enables the service, and places the
 palette icon in the right bar section immediately before the power widget. If
 Dark Reader is already installed in the active browser profile on first
 install, Omarchroma leaves extension installation unmanaged and only
@@ -58,9 +65,8 @@ requires typing `I understand`. The notice explains that the installer may:
 - overwrite Omarchroma command shims in `~/.local/bin`
 - install the Omarchy `theme-set` and `font-set` hooks
 - snapshot original state in `~/.local/state/omarchroma/original/`
-- configure Dark Reader browser policy when Omarchroma needs to install it,
-  keeping a root-owned backup of each replaced policy file under
-  `/var/lib/omarchroma/policy-backup/`
+- remove a browser policy an earlier Omarchroma installed, and its root-owned
+  backup under `/var/lib/omarchroma/`
 - clear per-application KDE color scheme pins (`[UiSettings] ColorScheme` in
   `~/.config/*rc`), recording each original value for the uninstaller, and
   skipping any application that is running so its configuration is untouched
@@ -92,9 +98,7 @@ asks how to put your theming back:
   the default, and what earlier versions always did.
 
 Re-run `install.sh` to upgrade. It detects an existing install, says it is
-upgrading, and skips both the consent prompt and re-authenticating a browser
-policy that is already current -- so an upgrade needs no password unless the
-policy actually changed. `--reinstall` forces the first-install path.
+upgrading, and skips the consent prompt. `--reinstall` forces the first-install path.
 
 Capture happens once per file, so upgrading never overwrites a baseline that
 was already recorded. A snapshot taken while Omarchroma output
@@ -111,36 +115,13 @@ too. Without this a restore would put back the colours it was meant to remove,
 and the next capture would carry them forward again.
 
 Pass `--stock` or `--captured` to skip the question; without a terminal the
-default is `--captured`. Either way the browser policy is restored the same
-way. If Dark Reader was already installed when Omarchroma was
-installed, uninstall restores its original settings and does not remove the
-extension. Dark Reader restore requires the target browser to be closed,
+default is `--captured`. Dark Reader's own settings are restored and the
+extension is never removed -- installing it was always your choice. Dark Reader restore requires the target browser to be closed,
 matching the sync path's LevelDB safety rule.
 
-The Dark Reader extension policy is an enterprise policy, which the browser
-treats as mandated by an administrator -- and on this mechanism the
-administrator is whatever root wrote into the browser's managed-policy
-directory, which is Omarchroma. `force_installed` therefore does not mean
-"please install this"; it means the user may not change it. A browser that
-registers the policy and never completes the download is then stuck: the
-automatic install cannot finish and the browser refuses a manual one, reporting
-it blocked by the administrator. Omarchroma detects that, withdraws the policy
-on the next `install.sh`, records the browser in
-`~/.local/state/omarchroma/no-extension-policy` so it is not written again, and
-leaves installing Dark Reader to you. It still themes it once it is there:
-the extension's id is looked up in the profile rather than assumed, so a
-side-loaded build is themed like a Web Store one.
-
-The system browser policy is restored by a fixed privileged helper that
-rederives each policy path from the built-in browser allowlist and replays the
-root-owned backup under `/var/lib/omarchroma/policy-backup/` only after
-verifying its digest; it prompts for administrator authentication and never
-runs a user-writable script. One backup is recorded per policy destination, so
-if the default browser changed while Omarchroma was installed, every policy
-file it wrote is restored or removed, with the permissions and ownership it
-had before Omarchroma replaced it. The backup directory is removed once the
-restore succeeds. If the backup record is missing the uninstaller does not
-guess: it names the policy files it left in place so they can be reviewed.
+Any browser policy an earlier Omarchroma installed is removed, along with its
+root-owned backup under `/var/lib/omarchroma/`. That removal is the last
+privileged thing Omarchroma does, and it only ever removes.
 
 ## Security
 
@@ -148,16 +129,12 @@ guess: it names the policy files it left in place so they can be reviewed.
 fix was verified. `docs/security/known-issues.md` records what was assessed and
 deliberately left, with the reasoning.
 
-`install.sh` takes two privileged actions, each skippable:
-
-- installing `adw-gtk-theme` and `python-plyvel` with `pacman` — skipped by
-  `--no-packages`, and skipped anyway when both are already present. It runs
-  with `--noconfirm`, so pacman does not prompt separately;
-- writing, and later withdrawing, the Dark Reader browser policy — skipped by
-  `--no-policy`.
-
-`uninstall.sh` takes one: restoring that policy from its root-owned backup.
-Everything else Omarchroma does is per-user.
+`install.sh` takes one privileged action: installing `adw-gtk-theme` and
+`python-plyvel` with `pacman`, skipped by `--no-packages` and skipped anyway
+when both are present. It runs with `--noconfirm`, so pacman does not prompt
+separately. If a browser policy from an earlier version is still on the system,
+removing it takes a second, one-off prompt. Omarchroma writes no browser policy
+of its own. Everything else it does is per-user.
 
 ## Requirements
 
@@ -185,6 +162,7 @@ Service.qml                      startup sync and Hyprland event watcher
 bin/omarchroma-sync              synchronization orchestrator
 bin/omarchroma-dark-reader       browser/profile detection and Dark Reader updater
 bin/omarchroma-state             snapshot and restore helper
+bin/omarchroma-policy-cleanup    removes a browser policy left by an earlier version
 hooks/omarchroma                 native theme-set hook
 lib/sync-gtk-theme               GTK 3/4 and libadwaita palette generator
 lib/sync-qt-kde-theme            Qt/KDE color-scheme generator
@@ -286,9 +264,9 @@ supports:
 - Floorp
 - Zen Browser
 
-For Chromium-family browsers, Omarchroma installs Dark Reader through the
-browser's managed-extension policy and updates the extension's active profile
-LevelDB. For Firefox-family browsers, it installs Dark Reader through the
+For Chromium-family browsers, Omarchroma updates the extension's active profile
+LevelDB once you have installed Dark Reader yourself. For Firefox-family
+browsers, it updates the
 browser's `policies.json` when needed and updates the active profile's
 `storage-sync-v2.sqlite` settings for `addon@darkreader.org`. Browser extension
 settings are never modified while the target browser is running; the update is
@@ -307,7 +285,7 @@ marked `pending-browser-exit` and retried after the browser closes.
 ~/.local/state/omarchroma/settings.json
 ~/.local/state/omarchroma/status.json
 ~/.config/*rc                        (only the [UiSettings] ColorScheme key, removed)
-/var/lib/omarchroma/policy-backup/   (root-owned; only when a browser policy is installed)
+/var/lib/omarchroma/policy-backup/   (root-owned; only if an earlier version left one)
 ```
 
 Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
