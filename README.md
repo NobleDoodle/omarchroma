@@ -90,9 +90,13 @@ asks how to put your theming back:
   deleted, the two interface keys only Omarchroma sets (`accent-color` and
   `monospace-font-name`) are reset, and Omarchy re-authors the three it owns.
 - **captured** replays what was on disk before Omarchroma first ran. This is
-  the default, and what earlier versions always did. If Omarchroma has been
-  installed on this machine before, that snapshot is itself a previous
-  Omarchroma generation, which is why stock is offered alongside it.
+  the default, and what earlier versions always did.
+
+Capture happens once per file, so updating the plugin never overwrites a
+baseline that was already recorded. A snapshot taken while Omarchroma output
+was already on disk -- which can happen if a previous install's state directory
+was lost -- is detected and marked, and the uninstaller then recommends stock
+and says why. Omarchroma's own generated files are never recorded as originals.
 
 Pass `--stock` or `--captured` to skip the question; without a terminal the
 default is `--captured`. Either way the browser policy is restored the same
