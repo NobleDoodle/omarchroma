@@ -35,13 +35,33 @@ waits for the browser to exit.
 | ![Custom theme synchronized across desktop apps](screenshots/custom-theme.png) | GTK/libadwaita, Qt/KDE surfaces, Dark Reader, and Pear styling following a custom Omarchy palette. |
 | ![Nord theme synchronized across desktop apps](screenshots/nord.png) | The same app set following a Nord palette after an Omarchy theme change. |
 
-## Install
+## Before you install
 
-**Omarchroma does not install Dark Reader.** Install the extension yourself
-from your browser's store; Omarchroma themes it from the next sync and does
-nothing to your browser until it is there. Earlier versions force-installed it
-through an enterprise browser policy — that is gone, and upgrading removes any
-policy left behind.
+Omarchroma installs nothing on your behalf and asks for no privileges. Two
+packages and one browser extension are yours to install first:
+
+```bash
+sudo pacman -S --needed adw-gtk-theme python-plyvel
+```
+
+| | Needed for | Without it |
+|---|---|---|
+| `adw-gtk-theme` | GTK 3 applications | GTK 3 apps will not follow the theme |
+| `python-plyvel` | Dark Reader in Chromium browsers | Dark Reader cannot be themed there |
+| Dark Reader | browser page theming | nothing to theme; everything else still works |
+
+**Omarchroma does not install Dark Reader, and `install.sh` will not do it for
+you.** Install it from your browser's own store — [Chrome Web
+Store](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh)
+or [Firefox Add-ons](https://addons.mozilla.org/firefox/addon/darkreader/).
+Omarchroma themes it from the next sync and does nothing to your browser until
+it is there. Earlier versions force-installed it through an enterprise browser
+policy — that is gone, and upgrading removes any policy left behind.
+
+`install.sh` reports anything missing and carries on; nothing here has to be in
+place for the install itself to succeed.
+
+## Install
 
 
 ```bash
@@ -129,19 +149,21 @@ privileged thing Omarchroma does, and it only ever removes.
 fix was verified. `docs/security/known-issues.md` records what was assessed and
 deliberately left, with the reasoning.
 
-`install.sh` takes one privileged action: installing `adw-gtk-theme` and
-`python-plyvel` with `pacman`, skipped by `--no-packages` and skipped anyway
-when both are present. It runs with `--noconfirm`, so pacman does not prompt
-separately. If a browser policy from an earlier version is still on the system,
-removing it takes a second, one-off prompt. Omarchroma writes no browser policy
-of its own. Everything else it does is per-user.
+`install.sh` takes no privileged action. It installs no packages, writes no
+browser policy, and touches nothing outside your home directory.
+
+The one exception is transitional: if a browser policy from an earlier version
+is still on the system, `install.sh` runs `bin/omarchroma-policy-cleanup` once
+to take it back out, which prompts for authentication. That helper only ever
+removes. On a machine that never ran an older version it does not run at all.
 
 ## Requirements
 
 | Dependency | Why | Where it comes from |
 |---|---|---|
-| `adw-gtk-theme` | GTK 3 compatibility with GTK 4/libadwaita | Arch package; installed by `install.sh` |
-| `python-plyvel` | safe Chromium Dark Reader LevelDB updates | Arch package; installed by `install.sh` |
+| `adw-gtk-theme` | GTK 3 compatibility with GTK 4/libadwaita | Arch package; **you install it** |
+| `python-plyvel` | safe Chromium Dark Reader LevelDB updates | Arch package; **you install it** |
+| Dark Reader | browser page theming | browser extension; **you install it** |
 | `jq` | reading the settings, status, and browser-detection JSON | ships with Omarchy |
 | `python3` | the state and Dark Reader helpers, and every JSON write | ships with Omarchy |
 
