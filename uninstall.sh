@@ -8,12 +8,62 @@ FONT_HOOK="$HOME/.config/omarchy/hooks/font-set.d/omarchroma"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
 restore_exit=0
+mode=""
+
+usage() {
+  cat <<'EOF'
+Usage: ./uninstall.sh [--stock | --captured]
+
+  --stock     Return each framework to Omarchy's own defaults.
+  --captured  Put back what was on disk when Omarchroma first ran.
+
+With neither, you are asked. Non-interactively the default is --captured.
+EOF
+}
+
+while (( $# )); do
+  case "$1" in
+    --stock) mode="stock" ;;
+    --captured) mode="captured" ;;
+    -h | --help) usage; exit 0 ;;
+    *) printf 'Unknown option: %s\n' "$1" >&2; usage >&2; exit 1 ;;
+  esac
+  shift
+done
+
+if [[ -z $mode ]]; then
+  if [[ -t 0 ]]; then
+    cat <<'EOF'
+How should Omarchroma put your theming back?
+
+  1) stock     Omarchy's own defaults. Deletes the files Omarchy never creates
+               -- gtk.css, kdeglobals, the generated colour scheme -- and lets
+               Omarchy re-author the settings it owns.
+
+  2) captured  Exactly what was on disk when Omarchroma first ran. If
+               Omarchroma has been installed on this machine before, be aware
+               that snapshot is itself a previous Omarchroma generation.
+
+EOF
+    read -r -p "Choose [1/2, default 2]: " choice
+    case "$choice" in
+      1 | stock) mode="stock" ;;
+      *) mode="captured" ;;
+    esac
+  else
+    mode="captured"
+  fi
+fi
+printf 'Omarchroma: restoring to %s state.\n' "$mode"
 
 run_state_helper() {
   if [[ -x "$PLUGIN_DIR/bin/omarchroma-state" ]]; then
     "$PLUGIN_DIR/bin/omarchroma-state" "$@"
   elif command -v omarchroma-state >/dev/null; then
     omarchroma-state "$@"
+  else
+    echo "Omarchroma: state helper is missing; cannot restore." >&2
+    return 1
   fi
 }
 
@@ -22,7 +72,24 @@ run_dark_reader_helper() {
     "$PLUGIN_DIR/bin/omarchroma-dark-reader" "$@"
   elif command -v omarchroma-dark-reader >/dev/null; then
     omarchroma-dark-reader "$@"
+  else
+    echo "Omarchroma: Dark Reader helper is missing; cannot restore." >&2
+    return 1
   fi
+}
+
+# Disarm before restoring anything. Both theme hooks and every watcher in
+# omarchroma-state re-apply by exec'ing ~/.local/bin/omarchroma-sync, so with
+# that one path gone nothing can rewrite a file between the restore below and
+# the plugin being removed. The helpers themselves keep working: they are run
+# from $PLUGIN_DIR, which is only removed once the restore has succeeded.
+disarm() {
+  rm -f \
+    "$HOOK" \
+    "$FONT_HOOK" \
+    "$HOME/.local/bin/omarchroma-sync" \
+    "$HOME/.local/bin/omarchroma-dark-reader" \
+    "$HOME/.local/bin/omarchroma-state"
 }
 
 # Restore the system browser policy from the root-owned backup that install.sh
@@ -345,7 +412,10 @@ print("Omarchroma: browser policy restored")
 PY
 }
 
-run_dark_reader_helper --restore --state-dir "$STATE_DIR" --status "$STATE_DIR/status.json" || restore_exit=$?
+disarm
+
+run_dark_reader_helper --restore --mode="$mode" \
+  --state-dir "$STATE_DIR" --status "$STATE_DIR/status.json" || restore_exit=$?
 
 if (( restore_exit == 2 )); then
   echo "Close the browser and run the uninstaller again to finish restoring Dark Reader."
@@ -356,7 +426,8 @@ if (( restore_exit != 0 )); then
   exit "$restore_exit"
 fi
 
-run_state_helper --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restore || restore_exit=$?
+run_state_helper --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+  restore --mode "$mode" || restore_exit=$?
 restore_policy || restore_exit=$?
 
 if (( restore_exit != 0 )); then
@@ -368,13 +439,6 @@ if command -v omarchy >/dev/null; then
   omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
 fi
 
-rm -f \
-  "$HOOK" \
-  "$FONT_HOOK" \
-  "$HOME/.local/bin/omarchroma-sync" \
-  "$HOME/.local/bin/omarchroma-dark-reader" \
-  "$HOME/.local/bin/omarchroma-state"
-
 if [[ -d "$PLUGIN_DIR" ]]; then
   rm -rf -- "$PLUGIN_DIR"
 fi
@@ -383,4 +447,4 @@ command -v omarchy-shell >/dev/null && \
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
 
 rm -rf -- "$STATE_DIR" "$DATA_DIR"
-echo "Omarchroma removed and original application theme state restored."
+printf 'Omarchroma removed; frameworks restored to their %s state.\n' "$mode"

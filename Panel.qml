@@ -139,8 +139,8 @@ Panel {
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
-                : "Disabling " + root.activeTarget + "...")
-            : "Enable the frameworks Omarchroma keeps synchronized."
+                : "Reverting " + root.activeTarget + "...")
+            : "Switching one off restores how it looked before Omarchroma."
           color: Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
