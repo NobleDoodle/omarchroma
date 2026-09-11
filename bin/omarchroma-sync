@@ -179,6 +179,13 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
 fi
 
+# An application with a window open is skipped here, so the run that closes it
+# is the one that has to recycle it -- and that run is usually a no-op for the
+# palette. Do this before the unchanged-state short-circuit, or an application
+# that was open during the theme change never gets recycled at all.
+"$PLUGIN_DIR/bin/omarchroma-state" \
+  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
    [[ $dark_reader_state != "pending-browser-exit" ]] && \
    [[ $qt_kde_state != "deferred" ]] && [[ $target == "all" ]]; then
@@ -403,13 +410,6 @@ if (( notify )); then
   command -v notify-send >/dev/null && \
     notify-send -a Omarchroma "Colors synchronized" "$message"
 fi
-
-# GTK 4 and libadwaita read their stylesheet once, at startup, so an application
-# left resident with no window would serve its next window the old palette and
-# look as though restarting it did nothing. Close those idle services; anything
-# with a window on screen is left strictly alone.
-"$PLUGIN_DIR/bin/omarchroma-state" \
-  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
 
 # Everything is written to disk by this point, so anything started from now on
 # picks up the new theme. Windows already open cannot be restyled in place, and
