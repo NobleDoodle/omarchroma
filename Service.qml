@@ -8,6 +8,14 @@ Item {
   readonly property string home: Quickshell.env("HOME")
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") !== ""
     ? Quickshell.env("XDG_STATE_HOME") : home + "/.local/state") + "/omarchroma"
+  // Commands these run resolve from here, not from the PATH the shell happened
+  // to inherit. They start unattended -- at login, and on every window event --
+  // so a directory earlier in the ambient PATH holding something called jq or
+  // hyprctl would be executed with nobody watching. Everything they call lives
+  // in a root-owned system directory; the last entry is Omarchy's own. The
+  // rest of the environment is preserved, so HOME and the session bus survive.
+  readonly property string trustedPath: "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
+
   readonly property string dataDir: (Quickshell.env("XDG_DATA_HOME") !== ""
     ? Quickshell.env("XDG_DATA_HOME") : home + "/.local/share") + "/omarchroma"
 
@@ -24,11 +32,13 @@ Item {
   Process {
     id: syncProcess
     command: [ root.home + "/.local/bin/omarchroma-sync", "--quiet" ]
+    environment: ({ PATH: root.trustedPath })
   }
 
   Process {
     id: refreshProcess
     command: [ root.home + "/.local/bin/omarchroma-sync", "--force", "--notify" ]
+    environment: ({ PATH: root.trustedPath })
   }
 
   // Setting an Omarchy theme is the trigger, through the theme-set hook. What
@@ -46,6 +56,7 @@ Item {
       "--data-dir", root.dataDir,
       "watch-events"
     ]
+    environment: ({ PATH: root.trustedPath })
     onExited: relaunch.restart()
   }
 

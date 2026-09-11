@@ -6,9 +6,40 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+
+def atomic_write(path: Path, data: str, mode: int | None = None) -> None:
+    """Replace path with data, through a temporary nothing else can have opened.
+
+    mkstemp creates with O_CREAT|O_EXCL under a random name in the destination
+    directory, so a symlink planted at a guessable temporary path cannot be
+    followed, and the content is flushed before the rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            mode = 0o644
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
 
 # The id Dark Reader has when it comes from the Chrome Web Store. It is a hash
 # of the publisher's key, so every store install shares it -- but a build the
@@ -392,9 +423,7 @@ def write_status(path: Path | None, **values: object) -> None:
         except (json.JSONDecodeError, OSError):
             current = {}
     current.update(values)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(current, indent=2) + "\n")
-    temporary.replace(path)
+    atomic_write(path, json.dumps(current, indent=2) + "\n")
 
 
 def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, database: Path) -> None:
@@ -408,8 +437,7 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
             "value": base64.b64encode(value).decode() if value is not None else "",
         }
     snapshot_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary = snapshot_file.with_suffix(".tmp")
-    temporary.write_text(json.dumps({
+    atomic_write(snapshot_file, json.dumps({
         "browser": info["name"],
         "browserDesktop": info["desktop"],
         "browserFamily": "chromium",
@@ -417,7 +445,6 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
         "database": str(database),
         "entries": entries,
     }, indent=2) + "\n")
-    temporary.replace(snapshot_file)
 
 
 def restore_theme(state_dir: Path, status_file: Path | None) -> int:
@@ -546,8 +573,7 @@ def snapshot_firefox_settings(snapshot_file: Path, info: dict, profile: Path, da
         return
     data = firefox_storage_data(database)
     snapshot_file.parent.mkdir(parents=True, exist_ok=True)
-    temporary = snapshot_file.with_suffix(".tmp")
-    temporary.write_text(json.dumps({
+    atomic_write(snapshot_file, json.dumps({
         "browser": info["name"],
         "browserDesktop": info["desktop"],
         "browserFamily": "firefox",
@@ -556,7 +582,6 @@ def snapshot_firefox_settings(snapshot_file: Path, info: dict, profile: Path, da
         "dataExisted": bool(data),
         "data": data,
     }, indent=2) + "\n")
-    temporary.replace(snapshot_file)
 
 
 def restore_firefox_theme(snapshot: dict) -> None:

@@ -19,6 +19,14 @@ Panel {
   readonly property string dataDir: Quickshell.env("XDG_DATA_HOME") !== ""
     ? Quickshell.env("XDG_DATA_HOME") + "/omarchroma"
     : Quickshell.env("HOME") + "/.local/share/omarchroma"
+  // Commands these run resolve from here, not from the PATH the shell happened
+  // to inherit. They start unattended -- at login, and on every window event --
+  // so a directory earlier in the ambient PATH holding something called jq or
+  // hyprctl would be executed with nobody watching. Everything they call lives
+  // in a root-owned system directory; the last entry is Omarchy's own. The
+  // rest of the environment is preserved, so HOME and the session bus survive.
+  readonly property string trustedPath: "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
+
   readonly property string settingsPath: stateDir + "/settings.json"
 
   // Applications with a window open that started before the palette was last
@@ -151,6 +159,7 @@ Panel {
 
   Process {
     id: refreshProcess
+    environment: ({ PATH: root.trustedPath })
     onExited: function() {
       root.activeTarget = ""
       settingsFile.reload()
@@ -169,6 +178,7 @@ Panel {
       "--data-dir", root.dataDir,
       "report-stale-apps", "--since-last-sync"
     ]
+    environment: ({ PATH: root.trustedPath })
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyStaleApps(text)
