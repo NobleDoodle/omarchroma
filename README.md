@@ -148,9 +148,16 @@ guess: it names the policy files it left in place so they can be reviewed.
 fix was verified. `docs/security/known-issues.md` records what was assessed and
 deliberately left, with the reasoning.
 
-The only privileged action is writing the Dark Reader browser policy during
-install; everything else is per-user. See the Removal section for what is
-restored and how.
+`install.sh` takes two privileged actions, each skippable:
+
+- installing `adw-gtk-theme` and `python-plyvel` with `pacman` — skipped by
+  `--no-packages`, and skipped anyway when both are already present. It runs
+  with `--noconfirm`, so pacman does not prompt separately;
+- writing, and later withdrawing, the Dark Reader browser policy — skipped by
+  `--no-policy`.
+
+`uninstall.sh` takes one: restoring that policy from its root-owned backup.
+Everything else Omarchroma does is per-user.
 
 ## Requirements
 
