@@ -67,7 +67,7 @@ recycle_idle_apps() {
 report_stale_apps() {
   local stale_apps stale_list
   stale_apps=$("$PLUGIN_DIR/bin/omarchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps 2>/dev/null || true)
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps "$@" 2>/dev/null || true)
   [[ -n $stale_apps ]] || return 0
   stale_list=${stale_apps//$'\n'/, }
   log "restart to pick up the new theme: $stale_list"
@@ -203,7 +203,7 @@ if [[ $set_enabled == "false" ]]; then
   recycle_idle_apps
   log "$target disabled and reverted to its captured state"
   notify_user "$target disabled and reverted"
-  report_stale_apps
+  report_stale_apps --written-now
   exit 0
 fi
 
@@ -229,10 +229,13 @@ bright_yellow=$(color bright_yellow)
 blue=$(color blue)
 magenta=$(color magenta)
 mode=$(omarchy theme color mode)
-browser_desktop=$(
-  "$PLUGIN_DIR/bin/omarchroma-dark-reader" --info |
-    jq -r '.desktop // ""'
-)
+browser_info=$("$PLUGIN_DIR/bin/omarchroma-dark-reader" --info 2>/dev/null || printf '{}')
+browser_desktop=$(jq -r '.desktop // ""' <<<"$browser_info")
+browser_name=$(jq -r '.name // "the browser"' <<<"$browser_info")
+# True only once the browser has accepted the force-install policy and failed to
+# act on it, so this reports a browser that cannot fetch the extension rather
+# than one that simply has not started yet.
+browser_stalled=$(jq -r '.darkReaderStalled // false' <<<"$browser_info")
 pear_installed=0
 if command -v pear-desktop >/dev/null || [[ -d "$HOME/.config/YouTube Music" ]]; then
   pear_installed=1
@@ -370,6 +373,17 @@ PY
 fi
 
 dark_reader_exit=0
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
+   && [[ $browser_stalled == "true" ]]; then
+  # Ungoogled-chromium derivatives rewrite every Google hostname to one that
+  # cannot resolve, so the Web Store URL the policy names is unreachable and the
+  # extension never arrives. Nothing here can fix that, and silence would leave
+  # the browser looking unthemed for no visible reason.
+  log "$browser_name accepted the Dark Reader policy but cannot fetch the extension;" \
+      "install Dark Reader manually to theme pages there"
+  notify_user "$browser_name cannot install Dark Reader itself; install it manually"
+fi
+
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
   dark_reader_theme="$DATA_DIR/dark-reader-theme.json"
   python3 - "$dark_reader_theme" \
@@ -529,6 +543,7 @@ fi
 # switch. A forced run has just written the palette, so now is the baseline.
 if (( force )); then
   recycle_idle_apps
+  report_stale_apps --written-now
+else
+  report_stale_apps
 fi
-
-report_stale_apps

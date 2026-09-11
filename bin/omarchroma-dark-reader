@@ -163,6 +163,8 @@ def browser_info() -> dict:
     profile = active_profile(result)
     result["profile"] = str(profile)
     result["darkReaderInstalled"] = dark_reader_installed(result, profile)
+    if result["family"] == "chromium":
+        result["darkReaderStalled"] = chromium_dark_reader_stalled(profile)
     return result
 
 
@@ -172,21 +174,46 @@ def dark_reader_installed(info: dict, profile: Path) -> bool:
     return chromium_dark_reader_installed(profile)
 
 
-def chromium_dark_reader_installed(profile: Path) -> bool:
+def chromium_preferences_entry(profile: Path) -> dict | None:
     preferences = profile / "Preferences"
-    if preferences.is_file():
-        try:
-            settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
-            if CHROMIUM_EXTENSION_ID in settings:
-                return True
-        except (json.JSONDecodeError, OSError):
-            pass
+    if not preferences.is_file():
+        return None
+    try:
+        settings = json.loads(preferences.read_text()).get("extensions", {}).get("settings", {})
+    except (json.JSONDecodeError, OSError):
+        return None
+    entry = settings.get(CHROMIUM_EXTENSION_ID)
+    return entry if isinstance(entry, dict) else None
 
+
+def chromium_dark_reader_installed(profile: Path) -> bool:
+    """Whether Dark Reader is really installed, not merely spoken for.
+
+    Deliberately does not count "Sync Extension Settings/<id>": apply_theme
+    creates that directory itself, so counting it made this return true for any
+    browser Omarchroma had ever themed, whether or not the extension existed.
+
+    A bare key in Preferences does not count either. A force-install policy the
+    browser accepted but could not fetch leaves an empty entry there -- a
+    pending install, not an installed extension."""
     if (profile / "Extensions" / CHROMIUM_EXTENSION_ID).exists():
         return True
-    if (profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID).exists():
-        return True
-    return False
+    entry = chromium_preferences_entry(profile)
+    return bool(entry) and any(key in entry for key in ("manifest", "path"))
+
+
+def chromium_dark_reader_stalled(profile: Path) -> bool:
+    """A force-install the browser registered and then never completed.
+
+    Ungoogled-chromium derivatives substitute every Google hostname for an
+    unresolvable one, so the Web Store update URL the policy names cannot be
+    reached and the extension never arrives. The policy is not at fault and
+    retrying will not help, which is worth saying rather than leaving a browser
+    silently unthemed."""
+    if chromium_dark_reader_installed(profile):
+        return False
+    entry = chromium_preferences_entry(profile)
+    return entry is not None and not entry
 
 
 def firefox_dark_reader_installed(profile: Path) -> bool:
