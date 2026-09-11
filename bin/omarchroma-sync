@@ -237,9 +237,12 @@ fi
 # An application with a window open is skipped here, so the run that closes it
 # is the one that has to recycle it -- and that run is usually a no-op for the
 # palette. Do this before the unchanged-state short-circuit, or an application
-# that was open during the theme change never gets recycled at all.
-"$PLUGIN_DIR/bin/omarchroma-state" \
-  --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+# that was open during the theme change never gets recycled at all. A forced run
+# never short-circuits, so it recycles after writing instead: see below.
+if (( ! force )); then
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+fi
 
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
    [[ $dark_reader_state != "pending-browser-exit" ]] && \
@@ -467,9 +470,21 @@ if (( notify )); then
 fi
 
 # Everything is written to disk by this point, so anything started from now on
-# picks up the new theme. Windows already open cannot be restyled in place, and
-# nothing here touches them; say which ones they are so the choice to restart is
-# the user's.
+# picks up the new theme -- which is what makes this the right moment to recycle
+# idle services, rather than before the write as an event-driven run must.
+#
+# Judging staleness against the theme switch is wrong here. Toggling a framework
+# on, or pressing refresh, writes a new palette without changing the theme, so
+# every application started since the last switch looked current and nothing was
+# recycled: the files changed and nothing picked them up until the next theme
+# switch. A forced run has just written the palette, so now is the baseline.
+if (( force )); then
+  "$PLUGIN_DIR/bin/omarchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --written-now || true
+fi
+
+# Windows already open cannot be restyled in place, and nothing here touches
+# them; say which ones they are so the choice to restart is the user's.
 stale_apps=$("$PLUGIN_DIR/bin/omarchroma-state" \
   --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps 2>/dev/null || true)
 if [[ -n $stale_apps ]]; then
