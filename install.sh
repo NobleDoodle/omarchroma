@@ -130,6 +130,81 @@ policy_already_current() {
   fi
 }
 
+# Browsers Omarchroma must never write an extension policy for, one desktop id
+# per line. Withdrawing a policy is pointless if the next install puts it back,
+# and the condition that justified withdrawing it disappears with the policy.
+# User-writable on purpose: every entry only makes the installer do less.
+POLICY_OPT_OUT="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/no-extension-policy"
+
+policy_opted_out() {
+  [[ -f $POLICY_OPT_OUT ]] && grep -qxF "$1" "$POLICY_OPT_OUT"
+}
+
+record_policy_opt_out() {
+  mkdir -p "$(dirname "$POLICY_OPT_OUT")"
+  policy_opted_out "$1" || printf '%s\n' "$1" >>"$POLICY_OPT_OUT"
+}
+
+# Remove the Dark Reader extension policy for one chromium-family browser.
+#
+# Written as a mandated enterprise policy, force_installed does not mean "please
+# install this" -- it means the user may not touch it. A browser that registers
+# the policy and never completes the download leaves the extension permanently
+# unavailable: the automatic install cannot finish and Chrome refuses a manual
+# one, reporting it blocked by the administrator. The administrator is
+# Omarchroma. Withdrawing the policy hands the choice back.
+withdraw_browser_policy() {
+  local desktop="$1"
+
+  local -a runner
+  if [[ -t 0 ]]; then
+    runner=(sudo python3 -)
+  else
+    runner=(pkexec python3 -)
+  fi
+
+  "${runner[@]}" "$desktop" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+# Fixed allowlist; a desktop id only ever looks a destination up, never supplies
+# one. Mirrors POLICY_DESTINATIONS for the chromium family.
+POLICY_DIRS = {
+    "helium.desktop": "/etc/chromium/policies/managed",
+    "chromium.desktop": "/etc/chromium/policies/managed",
+    "google-chrome.desktop": "/etc/opt/chrome/policies/managed",
+    "google-chrome-stable.desktop": "/etc/opt/chrome/policies/managed",
+    "brave-browser.desktop": "/etc/brave/policies/managed",
+    "vivaldi-stable.desktop": "/etc/chromium/policies/managed",
+    "microsoft-edge.desktop": "/etc/opt/edge/policies/managed",
+}
+
+directory = POLICY_DIRS.get(sys.argv[1])
+if directory is None:
+    print(f"Omarchroma: not a chromium browser policy destination: {sys.argv[1]}",
+          file=sys.stderr)
+    raise SystemExit(1)
+
+target = Path(directory) / "99-omarchroma-dark-reader.json"
+try:
+    metadata = os.lstat(target)
+except FileNotFoundError:
+    print("Omarchroma: no extension policy to withdraw")
+    raise SystemExit(0)
+if stat.S_ISLNK(metadata.st_mode):
+    print(f"Omarchroma: refusing symlinked policy file: {target}", file=sys.stderr)
+    raise SystemExit(1)
+if not stat.S_ISREG(metadata.st_mode):
+    print(f"Omarchroma: refusing non-file policy target: {target}", file=sys.stderr)
+    raise SystemExit(1)
+
+os.unlink(target)
+print(f"Omarchroma: withdrew {target}")
+PY
+}
+
 install_browser_policy() {
   local desktop="$1"
   local family="$2"
@@ -464,7 +539,9 @@ Before installing, it may:
   $HOME/.config/omarchy/hooks/font-set.d/omarchroma
 - snapshot original application and browser state under:
   ${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma/original/
-- configure Dark Reader for the current default browser unless --no-policy is used
+- configure Dark Reader for the current default browser unless --no-policy is used,
+  as an enterprise policy the browser treats as administrator-mandated, and
+  withdraw that policy again if the browser proves unable to act on it
   or Dark Reader was already installed before Omarchroma first changed it
 - for Chromium-family browsers, write managed policy under the browser's
   system policy directory, such as /etc/chromium/policies/managed
@@ -613,7 +690,20 @@ if (( INSTALL_POLICY )); then
     # helper (install_browser_policy -> snapshot_destination_once). Its manifest
     # the record of "Omarchroma has managed this browser policy before".
     policy_backup_manifest="/var/lib/omarchroma/policy-backup/manifest.json"
-    if (( UPGRADE )) && policy_already_current "$browser_family" "$policy_target"; then
+    dark_reader_stalled=$(jq -r '.darkReaderStalled // false' \
+      <<<"$browser_info" 2>/dev/null || printf false)
+    if policy_opted_out "$browser_desktop"; then
+      info "Not managing Dark Reader for $browser_name; install it yourself and Omarchroma will theme it"
+    elif [[ $dark_reader_stalled == "true" ]]; then
+      # The browser took the policy and never completed the install, which also
+      # left it refusing manual installation. Give the choice back rather than
+      # writing the same policy again.
+      info "$browser_name accepted the Dark Reader policy but never installed the extension"
+      withdraw_browser_policy "$browser_desktop" || \
+        warn "Could not withdraw the Dark Reader policy for $browser_name"
+      record_policy_opt_out "$browser_desktop"
+      info "Withdrew it, so you can install Dark Reader yourself; Omarchroma will theme it once you do"
+    elif (( UPGRADE )) && policy_already_current "$browser_family" "$policy_target"; then
       info "Browser policy for $browser_name is already current; no authentication needed"
     elif [[ $dark_reader_installed == "true" && ! -e "$policy_backup_manifest" ]]; then
       info "Dark Reader is already installed for $browser_name; leaving extension installation unmanaged"
