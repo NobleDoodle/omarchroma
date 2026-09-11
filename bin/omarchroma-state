@@ -75,6 +75,25 @@ def display_name(value):
     return cleaned[:64] or "?"
 
 
+def window_display_name(title, klass):
+    """A readable name for a window.
+
+    The class is the stable choice where it is reverse-DNS: "org.gnome.Nautilus"
+    is Nautilus whatever document it happens to be showing, whereas the title is
+    that document and changes minute to minute.
+
+    A Chromium web app is not named that way. Its class is built from the URL,
+    so "chrome-maps.google.com__-Default" reduced to its last dotted segment
+    gives "Com__-Default", which names nothing anyone would recognise. Those
+    windows carry the page name in the title instead, which is what the user
+    opened and what they would look for."""
+    if klass and (klass.startswith("chrome-") or "__" in klass):
+        return display_name(title or klass)
+    if klass:
+        return display_name(klass.rsplit(".", 1)[-1])
+    return display_name(title)
+
+
 def preserve_mode(path, temporary):
     """Carry an existing file's permissions onto the replacement.
 
@@ -492,10 +511,22 @@ def open_windows():
     except json.JSONDecodeError:
         return None
     return [
-        (c.get("initialTitle") or c.get("title") or c.get("class") or "?",
-         (c.get("class") or "").lower(), c.get("pid"))
+        (window_title(c), (c.get("class") or "").lower(), c.get("pid"))
         for c in clients if c.get("pid", 0) > 0
     ]
+
+
+def window_title(client):
+    """The name a window keeps.
+
+    initialTitle is what the window opened with and does not churn the way title
+    does as the user moves between documents -- except for a Chromium web app,
+    whose initial title is the URL it was launched from ("maps.google.com_/")
+    while its current title is the page name ("Google Maps")."""
+    klass = client.get("class") or ""
+    if klass.startswith("chrome-") or "__" in klass:
+        return client.get("title") or client.get("initialTitle") or klass or "?"
+    return client.get("initialTitle") or client.get("title") or klass or "?"
 
 
 def omarchy_reloaded_executables():
@@ -555,11 +586,7 @@ def stale_open_apps(since=None):
         # told it to; naming it would send someone to restart nothing.
         if window_executable(pid) in reloaded:
             continue
-        # Identify by window class, not title: a title is the document being
-        # shown and changes minute to minute, which would make this report
-        # neither stable nor readable. "org.gnome.Nautilus" reads as "Nautilus".
-        name = klass.rsplit(".", 1)[-1] if klass else title
-        name = display_name(name)
+        name = window_display_name(title, klass)
         names.add(name[:1].upper() + name[1:])
     return sorted(names)
 
