@@ -18,8 +18,6 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
 STATUS_FILE="$STATE_DIR/status.json"
 SETTINGS_FILE="$STATE_DIR/settings.json"
-# Browsers whose extension policy Omarchroma has withdrawn; install.sh owns it.
-POLICY_OPT_OUT="$STATE_DIR/no-extension-policy"
 # Lock in the per-user runtime dir when available, otherwise the user-owned
 # state dir. Never /tmp: a fixed name there is a symlink/squatting target on a
 # shared host.
@@ -273,10 +271,8 @@ mode=$(omarchy theme color mode)
 browser_info=$("$PLUGIN_DIR/bin/omarchroma-dark-reader" --info 2>/dev/null || printf '{}')
 browser_desktop=$(jq -r '.desktop // ""' <<<"$browser_info")
 browser_name=$(jq -r '.name // "the browser"' <<<"$browser_info")
-# True only once the browser has accepted the force-install policy and failed to
-# act on it, so this reports a browser that cannot fetch the extension rather
-# than one that simply has not started yet.
-browser_stalled=$(jq -r '.darkReaderStalled // false' <<<"$browser_info")
+browser_supported=$(jq -r '.supported // false' <<<"$browser_info")
+browser_has_dark_reader=$(jq -r '.darkReaderInstalled // false' <<<"$browser_info")
 pear_installed=0
 if command -v pear-desktop >/dev/null || [[ -d "$HOME/.config/YouTube Music" ]]; then
   pear_installed=1
@@ -446,20 +442,12 @@ PY
 fi
 
 dark_reader_exit=0
+# Omarchroma installs nothing into the browser. If Dark Reader is not there,
+# say so once -- there is nothing to theme until the user installs it.
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
-   && [[ $browser_stalled == "true" ]]; then
-  # The browser registered the extension policy and never completed the install.
-  # Once the policy has been withdrawn the browser keeps its half-made record
-  # until it restarts, so say which situation this is rather than repeating a
-  # complaint about a policy that is already gone.
-  if [[ -f $POLICY_OPT_OUT ]] && grep -qxF "$browser_desktop" "$POLICY_OPT_OUT"; then
-    log "Dark Reader is not installed in $browser_name; install it and Omarchroma will theme it"
-    notify_user "Install Dark Reader in $browser_name and Omarchroma will theme it"
-  else
-    log "$browser_name accepted the Dark Reader policy but never installed the extension;" \
-        "re-run install.sh to withdraw it so you can install Dark Reader yourself"
-    notify_user "$browser_name could not install Dark Reader; re-run install.sh to unblock it"
-  fi
+   && [[ $browser_supported == "true" && $browser_has_dark_reader != "true" ]]; then
+  log "Dark Reader is not installed in $browser_name; install it and Omarchroma will theme it"
+  notify_user "Install Dark Reader in $browser_name and Omarchroma will theme it"
 fi
 
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then

@@ -206,8 +206,6 @@ def browser_info() -> dict:
     profile = active_profile(result)
     result["profile"] = str(profile)
     result["darkReaderInstalled"] = dark_reader_installed(result, profile)
-    if result["family"] == "chromium":
-        result["darkReaderStalled"] = chromium_dark_reader_stalled(profile)
     return result
 
 
@@ -359,18 +357,6 @@ def chromium_dark_reader_installed(profile: Path) -> bool:
     return bool(entry) and any(key in entry for key in ("manifest", "path"))
 
 
-def chromium_dark_reader_stalled(profile: Path) -> bool:
-    """A force-install the browser registered and then never completed.
-
-    Ungoogled-chromium derivatives substitute every Google hostname for an
-    unresolvable one, so the Web Store update URL the policy names cannot be
-    reached and the extension never arrives. The policy is not at fault and
-    retrying will not help, which is worth saying rather than leaving a browser
-    silently unthemed."""
-    if chromium_dark_reader_installed(profile):
-        return False
-    entry = chromium_preferences_entry(profile)
-    return entry is not None and not entry
 
 
 def firefox_dark_reader_installed(profile: Path) -> bool:
