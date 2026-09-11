@@ -22,8 +22,12 @@ content, toolkit widgets, and app-specific styles.
 ![Tokyo Night theme synchronized across browser, Files, terminal, and KDE Connect](screenshots/tokyo-night.png)
 
 The bar widget exposes each integration as a toggle. Turning a framework on
-refreshes it immediately; turning it off keeps future theme changes from
-touching that framework.
+refreshes it immediately. Turning one off reverts it: that framework goes back
+to the values captured before Omarchroma first changed it, rather than keeping
+Omarchroma's colours in place with synchronization merely stopped. The snapshot
+is kept, so switching the framework back on re-syncs from the same baseline.
+Dark Reader reverts once the browser exits, matching the LevelDB safety rule
+the sync path follows.
 
 | Theme | What it shows |
 |---|---|
@@ -78,10 +82,21 @@ bar icon:
 ~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma/uninstall.sh
 ```
 
-The uninstaller removes the plugin, commands, hook, and bar integration.
-It also restores the GTK, GNOME, Qt/KDE, Pear Desktop, Dark Reader, and
-browser policy state captured before Omarchroma first changed each
-integration. If Dark Reader was already installed when Omarchroma was
+The uninstaller removes the plugin, commands, hook, and bar integration, and
+asks how to put your theming back:
+
+- **stock** returns each framework to Omarchy's own defaults. Files Omarchy
+  never creates -- `gtk.css`, `kdeglobals`, the generated colour scheme -- are
+  deleted, the two interface keys only Omarchroma sets (`accent-color` and
+  `monospace-font-name`) are reset, and Omarchy re-authors the three it owns.
+- **captured** replays what was on disk before Omarchroma first ran. This is
+  the default, and what earlier versions always did. If Omarchroma has been
+  installed on this machine before, that snapshot is itself a previous
+  Omarchroma generation, which is why stock is offered alongside it.
+
+Pass `--stock` or `--captured` to skip the question; without a terminal the
+default is `--captured`. Either way the browser policy is restored the same
+way. If Dark Reader was already installed when Omarchroma was
 installed, uninstall restores its original settings and does not remove the
 extension. Dark Reader restore requires the target browser to be closed,
 matching the sync path's LevelDB safety rule.
@@ -257,7 +272,7 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | Qt and KDE toggle on | enable and refresh the Qt/KDE palette |
 | Dark Reader toggle on | enable and refresh the selected browser's Dark Reader theme |
 | Pear Desktop toggle on | enable and refresh Pear Desktop's stylesheet |
-| any framework toggle off | disable that framework for manual, service, and theme-hook sync |
+| any framework toggle off | revert that framework to its captured values and stop syncing it |
 | Refresh enabled | refresh every currently enabled supported framework |
 | `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework refresh menu over IPC |
 | `omarchy-shell io.github.nobledoodle.omarchroma refresh` | open the framework refresh menu over IPC |

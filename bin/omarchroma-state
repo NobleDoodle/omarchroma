@@ -16,6 +16,39 @@ from pathlib import Path
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
 
+TARGETS = ("gtk", "qt-kde", "pear")
+
+# Which snapshot entries belong to which framework, so a single framework can be
+# reverted on its own when its toggle is switched off.
+TARGET_FILE_KEYS = {
+    "gtk": ("gtk3_css", "gtk4_css"),
+    "qt-kde": ("kdeglobals", "omarchroma_colors"),
+    "pear": ("pear_config", "pear_css"),
+}
+
+# Reverting to "stock" cannot mean replaying the snapshot: on a machine that has
+# had Omarchroma before, the snapshot's "originals" are themselves Omarchroma
+# output from an earlier install. Stock is derived from Omarchy instead, and
+# these two groups are the whole of the distinction.
+#
+# Omarchy writes these three in omarchy-theme-set-gnome, so stock is whatever
+# Omarchy would write for the current theme -- not the schema default.
+OMARCHY_OWNED_GSETTINGS = ("gtk-theme", "color-scheme", "icon-theme")
+# Omarchy never writes these: omarchy-font-set edits fontconfig, kitty and
+# alacritty but no gsettings key, and nothing in Omarchy sets an accent colour
+# (grep -rl accent-color over /usr/share/omarchy finds nothing). Only Omarchroma
+# sets them, so stock is the schema default.
+OMARCHROMA_ONLY_GSETTINGS = ("accent-color", "monospace-font-name")
+
+# Files Omarchy itself never creates, so stock means absent rather than any
+# recorded content. gtk.css, kdeglobals and a color-scheme are all Omarchroma's
+# alone; Omarchy ships no GTK-CSS and no KDE theming at all.
+STOCK_ABSENT_FILES = {
+    "gtk": (".config/gtk-3.0/gtk.css", ".config/gtk-4.0/gtk.css"),
+    "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Omarchroma.colors"),
+    "pear": (".config/YouTube Music/omarchroma.css",),
+}
+
 
 def read_json(path):
     if not path.is_file():
@@ -591,8 +624,8 @@ def browser_client_pids():
     return pids
 
 
-def watch_browser_exit(state_dir, data_dir):
-    """Apply Dark Reader once the browser has actually exited.
+def watch_browser_exit(state_dir, data_dir, action="sync"):
+    """Apply or revert Dark Reader once the browser has actually exited.
 
     Waits on pidfds, so the kernel wakes this when the last process ends rather
     than anything polling for it. Re-arms if the browser spawns more while it
@@ -606,12 +639,20 @@ def watch_browser_exit(state_dir, data_dir):
     except OSError:
         return  # another waiter already holds this
 
-    sync = [str(Path.home() / ".local/bin/omarchroma-sync"),
-            "--target=dark-reader", "--quiet"]
+    if action == "revert":
+        # Switching the toggle off already recorded darkReader as disabled, so a
+        # sync would now skip this framework entirely. Call the helper directly
+        # instead, or the revert the toggle promised would never happen.
+        finish = [str(Path.home() / ".local/bin/omarchroma-dark-reader"),
+                  "--restore", "--mode=captured",
+                  "--state-dir", str(state_dir), "--status", str(state_dir / "status.json")]
+    else:
+        finish = [str(Path.home() / ".local/bin/omarchroma-sync"),
+                  "--target=dark-reader", "--quiet"]
     for _ in range(WATCH_ROUNDS):
         pids = browser_client_pids()
         if not pids:
-            subprocess.run(sync, check=False)
+            subprocess.run(finish, check=False)
             return
 
         descriptors = []
@@ -748,23 +789,131 @@ def watch_kde_exit(state_dir, data_dir):
             return  # nothing holding the files, so that sync wrote the palette
 
 
-def restore(state_dir, data_dir):
+def gsettings_reset(key):
+    subprocess.run(["gsettings", "reset", "org.gnome.desktop.interface", key], check=False)
+
+
+def reauthor_omarchy_gsettings():
+    """Let Omarchy write the three interface keys it owns.
+
+    omarchy-theme-set-gnome sets exactly gtk-theme, color-scheme and icon-theme
+    from the current theme and calls no hook, so this re-authors them without
+    running a whole theme switch -- which would fire the Omarchroma theme-set
+    hook and immediately re-apply what was just reverted."""
+    if shutil.which("omarchy-theme-set-gnome") is None:
+        return False
+    subprocess.run(["omarchy-theme-set-gnome"], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return True
+
+
+def rewrite_pear_themes(chosen):
+    """Replace options.themes in Pear's config.json and nothing else.
+
+    That file also carries window geometry, the current track URL and plugin
+    state, none of which Omarchroma ever writes. Copying the whole backup over
+    it -- which is what restoring it as a plain file did -- would roll all of
+    that back to whenever the snapshot was taken."""
+    path = Path.home() / ".config/YouTube Music/config.json"
+    if path.is_symlink() or not path.is_file():
+        return
+    try:
+        config = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    options = config.get("options")
+    if not isinstance(options, dict):
+        return
+    current = options.get("themes")
+    if not isinstance(current, list):
+        current = []
+    wanted = chosen(current)
+    if wanted == current:
+        return
+    options["themes"] = wanted
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(config, indent="\t") + "\n")
+    temporary.replace(path)
+
+
+def captured_pear_themes(snapshot_dir, manifest):
+    entry = manifest.get("files", {}).get("pear_config", {})
+    if not entry.get("existed"):
+        return []
+    try:
+        backup = json.loads((snapshot_dir / entry["backup"]).read_text())
+    except (OSError, ValueError):
+        return None
+    themes = backup.get("options", {}).get("themes")
+    return themes if isinstance(themes, list) else []
+
+
+def restore_target_captured(snapshot_dir, manifest, target):
+    for key in TARGET_FILE_KEYS[target]:
+        # Pear's config.json is edited in place rather than copied back whole.
+        if key == "pear_config":
+            continue
+        entry = manifest.get("files", {}).get(key)
+        if entry is not None:
+            restore_file(snapshot_dir, entry)
+    if target == "pear":
+        captured = captured_pear_themes(snapshot_dir, manifest)
+        if captured is not None:
+            rewrite_pear_themes(lambda current: captured)
+    elif target == "gtk":
+        restore_gsettings(manifest.get("gsettings", {}))
+    elif target == "qt-kde":
+        restore_app_color_schemes(manifest)
+
+
+def restore_target_stock(snapshot_dir, manifest, target):
+    home = Path.home()
+    for relative in STOCK_ABSENT_FILES[target]:
+        (home / relative).unlink(missing_ok=True)
+    if target == "pear":
+        rewrite_pear_themes(lambda current: [
+            entry for entry in current
+            if "omarchroma" not in os.path.basename(str(entry)).lower()
+        ])
+    elif target == "gtk":
+        for key in OMARCHROMA_ONLY_GSETTINGS:
+            gsettings_reset(key)
+        if not reauthor_omarchy_gsettings():
+            # Without Omarchy on PATH there is nothing authoritative to ask, so
+            # fall back to what was captured for the keys Omarchy owns.
+            restore_gsettings({key: value
+                               for key, value in manifest.get("gsettings", {}).items()
+                               if key in OMARCHY_OWNED_GSETTINGS})
+    elif target == "qt-kde":
+        # Omarchy pins no per-app colour scheme, so it has no stock value to
+        # offer. The recorded one is the app's own: Omarchroma only ever deleted
+        # these keys and never wrote them, so it cannot be Omarchroma output.
+        restore_app_color_schemes(manifest)
+        try:
+            (home / ".local/share/color-schemes").rmdir()
+        except OSError:
+            pass
+
+
+def restore(state_dir, data_dir, targets, mode):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
-    for entry in manifest.get("files", {}).values():
-        restore_file(snapshot_dir, entry)
-    restore_gsettings(manifest.get("gsettings", {}))
-    restore_app_color_schemes(manifest)
+    for target in targets:
+        if mode == "stock":
+            restore_target_stock(snapshot_dir, manifest, target)
+        else:
+            restore_target_captured(snapshot_dir, manifest, target)
+        print(f"Omarchroma: {target} reverted to its {mode} state")
 
-    for path in (
-        Path.home() / ".local/share/color-schemes/Omarchroma.colors",
-        Path.home() / ".config/YouTube Music/omarchroma.css",
-        data_dir / "dark-reader-theme.json",
-        state_dir / "settings.json",
-        state_dir / "status.json",
-    ):
-        if not any(str(path) == entry.get("path") and entry.get("existed") for entry in manifest.get("files", {}).values()):
-            path.unlink(missing_ok=True)
+    if set(targets) != set(TARGETS):
+        return
+    # Omarchroma's own runtime state, which belongs to no framework. Only
+    # cleared on a full revert; a single toggle must not drop settings.json,
+    # which is where that toggle was just recorded.
+    for path in (data_dir / "dark-reader-theme.json",
+                 state_dir / "settings.json",
+                 state_dir / "status.json"):
+        path.unlink(missing_ok=True)
 
 
 def main():
@@ -774,14 +923,17 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     snap = sub.add_parser("snapshot")
     snap.add_argument("--target", required=True)
-    sub.add_parser("restore")
+    rest = sub.add_parser("restore")
+    rest.add_argument("--target", default="all", choices=("all",) + TARGETS)
+    rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
     sub.add_parser("clear-app-color-schemes")
     sub.add_parser("report-stale-apps")
     sub.add_parser("kde-color-clients")
     sub.add_parser("watch-kde-exit")
     sub.add_parser("watch-events")
     sub.add_parser("refresh-idle-apps")
-    sub.add_parser("watch-browser-exit")
+    browser_wait = sub.add_parser("watch-browser-exit")
+    browser_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     args = parser.parse_args()
 
     if args.command == "snapshot":
@@ -801,9 +953,10 @@ def main():
     elif args.command == "refresh-idle-apps":
         refresh_idle_apps()
     elif args.command == "watch-browser-exit":
-        watch_browser_exit(args.state_dir, args.data_dir)
+        watch_browser_exit(args.state_dir, args.data_dir, args.action)
     else:
-        restore(args.state_dir, args.data_dir)
+        targets = TARGETS if args.target == "all" else (args.target,)
+        restore(args.state_dir, args.data_dir, targets, args.mode)
 
 
 if __name__ == "__main__":

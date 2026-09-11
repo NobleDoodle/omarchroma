@@ -45,6 +45,12 @@ log() {
   (( quiet )) || printf 'Omarchroma: %s\n' "$*"
 }
 
+notify_user() {
+  (( notify )) || return 0
+  command -v notify-send >/dev/null || return 0
+  notify-send -a Omarchroma "Omarchroma" "$*"
+}
+
 fail() {
   printf 'Omarchroma: %s\n' "$*" >&2
   (( notify )) && notify-send -a Omarchroma "Color synchronization failed" "$*" || true
@@ -103,16 +109,49 @@ temporary = path.with_suffix(".tmp")
 temporary.write_text(json.dumps(settings, indent=2) + "\n")
 temporary.replace(path)
 PY
-  if [[ $set_enabled == "false" ]]; then
-    log "$target disabled"
-    exit 0
-  fi
-  force=1
+  [[ $set_enabled == "true" ]] && force=1
 fi
 
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   log "another synchronization is already running"
+  exit 0
+fi
+
+# Switching a framework off reverts it, rather than only stopping future syncs:
+# leaving Omarchroma's colours in place while claiming the framework is off gave
+# no way back short of uninstalling. Reverting to the captured value -- what the
+# framework looked like when Omarchroma first touched it -- keeps the snapshot
+# in place, so switching back on re-syncs from a known baseline.
+if [[ $set_enabled == "false" ]]; then
+  revert_exit=0
+  if [[ $target == "dark-reader" ]]; then
+    "$PLUGIN_DIR/bin/omarchroma-dark-reader" --restore --mode=captured \
+      --state-dir "$STATE_DIR" --status "$STATUS_FILE" || revert_exit=$?
+    if (( revert_exit == 2 )); then
+      # Dark Reader's settings live in the browser's own database, so the revert
+      # has to wait for the processes to end. It cannot be left to a later sync:
+      # darkReader is disabled as of a moment ago, so every sync from here skips
+      # this framework and the revert would never happen. 9>&- keeps the waiter
+      # from inheriting this run's lock.
+      setsid "$PLUGIN_DIR/bin/omarchroma-state" \
+        --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-browser-exit --action revert \
+        >/dev/null 2>&1 </dev/null 9>&- &
+      log "$target disabled; it reverts when the browser exits"
+      notify_user "Dark Reader disabled; it reverts when the browser exits"
+      exit 0
+    fi
+  else
+    "$PLUGIN_DIR/bin/omarchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+      restore --target "$target" --mode captured || revert_exit=$?
+  fi
+  if (( revert_exit != 0 )); then
+    log "$target disabled, but reverting it failed"
+    exit "$revert_exit"
+  fi
+  log "$target disabled and reverted to its captured state"
+  notify_user "$target disabled and reverted"
   exit 0
 fi
 

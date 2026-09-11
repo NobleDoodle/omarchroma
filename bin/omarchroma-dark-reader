@@ -12,6 +12,20 @@ from pathlib import Path
 CHROMIUM_EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
 FIREFOX_EXTENSION_ID = "addon@darkreader.org"
 
+# Every key Omarchroma writes or edits. Snapshotting records these, and a stock
+# reset deletes them so Dark Reader regenerates its own defaults on next start.
+MANAGED_KEYS = [
+    b"theme",
+    b"enabled",
+    b"enabledByDefault",
+    b"detectDarkTheme",
+    b"automation",
+    b"changeBrowserTheme",
+    b"syncSettings",
+    b"customThemes",
+    b"presets",
+]
+
 BROWSERS = {
     "helium.desktop": {
         "name": "Helium",
@@ -290,19 +304,8 @@ def write_status(path: Path | None, **values: object) -> None:
 def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, database: Path) -> None:
     if snapshot_file.exists():
         return
-    keys = [
-        b"theme",
-        b"enabled",
-        b"enabledByDefault",
-        b"detectDarkTheme",
-        b"automation",
-        b"changeBrowserTheme",
-        b"syncSettings",
-        b"customThemes",
-        b"presets",
-    ]
     entries = {}
-    for key in keys:
+    for key in MANAGED_KEYS:
         value = db.get(key)
         entries[key.decode()] = {
             "existed": value is not None,
@@ -356,6 +359,56 @@ def restore_theme(state_dir: Path, status_file: Path | None) -> int:
 
     write_status(status_file, darkReader="restored")
     print(f"Omarchroma: Dark Reader restored for {snapshot.get('browser', 'browser')}")
+    return 0
+
+
+def reset_theme(status_file: Path | None) -> int:
+    """Return Dark Reader to its factory defaults.
+
+    Deliberately independent of the snapshot. On a machine that has had
+    Omarchroma before, the recorded "original" is itself Omarchroma output --
+    its theme and every builtIn entry in customThemes already name the generated
+    scheme -- so replaying it reinstates a previous generation rather than
+    stock. Deleting the managed keys instead lets Dark Reader rebuild its own
+    defaults, and costs nothing user-made: Omarchroma only ever overwrote the
+    built-in schemes in place."""
+    info = browser_info()
+    if not info["supported"]:
+        print(f"Omarchroma: {info['name']} is not a supported browser")
+        return 0
+    if browser_running(info["executables"]):
+        write_status(status_file, darkReader="reset-pending-browser-exit")
+        print(f"Omarchroma: close {info['name']} before resetting Dark Reader")
+        return 2
+
+    profile = active_profile(info)
+    if info["family"] == "firefox":
+        database = profile / "storage-sync-v2.sqlite"
+        if database.exists():
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "DELETE FROM storage_sync_data WHERE ext_id = ?",
+                    (FIREFOX_EXTENSION_ID,),
+                )
+                connection.commit()
+    else:
+        try:
+            import plyvel
+        except ImportError:
+            print("Omarchroma: python-plyvel is required", file=sys.stderr)
+            return 1
+
+        database = profile / "Sync Extension Settings" / CHROMIUM_EXTENSION_ID
+        if not database.is_dir():
+            print("Omarchroma: no Dark Reader settings to reset")
+            write_status(status_file, darkReader="reset")
+            return 0
+        with plyvel.DB(str(database), create_if_missing=False) as db:
+            for key in MANAGED_KEYS:
+                db.delete(key)
+
+    write_status(status_file, darkReader="reset")
+    print(f"Omarchroma: Dark Reader reset to defaults for {info['name']}")
     return 0
 
 
@@ -563,14 +616,17 @@ def main() -> int:
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--status", type=Path)
     parser.add_argument("--restore", action="store_true")
+    parser.add_argument("--mode", default="captured", choices=("captured", "stock"))
     args = parser.parse_args()
 
     if args.info:
         print(json.dumps(browser_info()))
         return 0
     if args.restore:
+        if args.mode == "stock":
+            return reset_theme(args.status)
         if args.state_dir is None:
-            parser.error("--state-dir is required with --restore")
+            parser.error("--state-dir is required with --restore --mode=captured")
         return restore_theme(args.state_dir, args.status)
     if args.theme is None:
         parser.error("--theme is required unless --info is used")
