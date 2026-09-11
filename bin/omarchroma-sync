@@ -65,6 +65,12 @@ color() {
 }
 
 command -v omarchy >/dev/null || fail "omarchy is not available"
+# Checked rather than assumed: jq gates every framework through target_enabled,
+# whose "|| echo true" fallback would silently report each one enabled if jq
+# were missing, and python3 writes the settings and status files. Both ship with
+# Omarchy, so this reports a broken system rather than guarding a likely case.
+command -v jq >/dev/null || fail "jq is not available"
+command -v python3 >/dev/null || fail "python3 is not available"
 [[ -x "$PLUGIN_DIR/lib/sync-gtk-theme" ]] || fail "GTK synchronizer is missing"
 [[ -x "$PLUGIN_DIR/lib/sync-qt-kde-theme" ]] || fail "Qt/KDE synchronizer is missing"
 [[ -f "$PLUGIN_DIR/assets/pear-theme.css.template" ]] || fail "Pear CSS template is missing"

@@ -57,8 +57,6 @@ requires typing `I understand`. The notice explains that the installer may:
 - copy the plugin into `~/.config/omarchy/plugins/io.github.nobledoodle.omarchroma`
 - overwrite Omarchroma command shims in `~/.local/bin`
 - install the Omarchy `theme-set` and `font-set` hooks
-- remove stale Omarchroma compatibility hook shims and the unused
-  `assets/dark-reader-policy.json` left by earlier versions
 - snapshot original state in `~/.local/state/omarchroma/original/`
 - configure Dark Reader browser policy when Omarchroma needs to install it,
   keeping a root-owned backup of each replaced policy file under
@@ -128,6 +126,8 @@ guess: it names the policy files it left in place so they can be reviewed.
 |---|---|---|
 | `adw-gtk-theme` | GTK 3 compatibility with GTK 4/libadwaita | Arch package; installed by `install.sh` |
 | `python-plyvel` | safe Chromium Dark Reader LevelDB updates | Arch package; installed by `install.sh` |
+| `jq` | reading the settings, status, and browser-detection JSON | ships with Omarchy |
+| `python3` | the state and Dark Reader helpers, and every JSON write | ships with Omarchy |
 
 Everything else Omarchroma uses ships with Omarchy or the base system it
 provides.
@@ -284,9 +284,13 @@ Unrelated GTK, KDE, Pear Desktop, and browser settings are preserved.
 | Pear Desktop toggle on | enable and refresh Pear Desktop's stylesheet |
 | any framework toggle off | revert that framework to its captured values and stop syncing it |
 | Refresh enabled | refresh every currently enabled supported framework |
-| `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework refresh menu over IPC |
-| `omarchy-shell io.github.nobledoodle.omarchroma refresh` | open the framework refresh menu over IPC |
-| `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | invoke the background service over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma open` | open the framework panel over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma openPanel` | open the framework panel over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma close` | close the framework panel over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma show` | alias of `open` |
+| `omarchy-shell io.github.nobledoodle.omarchroma hide` | alias of `close` |
+| `omarchy-shell io.github.nobledoodle.omarchroma toggle` | open or close the framework panel over IPC |
+| `omarchy-shell io.github.nobledoodle.omarchroma-service sync` | synchronize now, in the background service |
 
 ## CLI
 
