@@ -161,17 +161,13 @@ privileged thing Omarchroma does, and it only ever removes.
 
 ## Security
 
-`docs/security/fixes.md` records what has been found and fixed, and how each
-fix was verified. `docs/security/known-issues.md` records what was assessed and
-deliberately left, with the reasoning.
+`install.sh` and `uninstall.sh` take no privileged action. Neither installs
+packages, writes a browser policy, or touches anything outside your home
+directory.
 
-`install.sh` takes no privileged action. It installs no packages, writes no
-browser policy, and touches nothing outside your home directory.
-
-The one exception is transitional: if a browser policy from an earlier version
-is still on the system, `install.sh` runs `bin/omarchroma-policy-cleanup` once
-to take it back out, which prompts for authentication. That helper only ever
-removes. On a machine that never ran an older version it does not run at all.
+If a browser policy from a version before 1.6.0 is still on the system,
+`install.sh` reports it and prints the command to remove it — see "Upgrading
+from before 1.6.0" above. Nothing runs that command automatically.
 
 ## Requirements
 
