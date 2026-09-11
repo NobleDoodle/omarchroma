@@ -173,11 +173,17 @@ window title, so it names the same applications every run.
 Setting an Omarchy theme is the trigger: the native `theme-set` and `font-set`
 hooks apply GTK, Qt/KDE, Dark Reader and Pear Desktop immediately. Everything
 after that is event driven rather than polled. A helper watches Hyprland's event
-stream and re-syncs when a window opens or closes, which is when the remaining
-work becomes possible: a browser closing that a Dark Reader update was waiting
-on, a KDE application closing that the palette was deferred for, a changed
-default browser, a newly installed Pear Desktop. A timer remains only as a rare
-safety net for a change that surfaces as no window event at all. A runtime lock
+stream and re-syncs when a window opens or closes, which is when most of the
+remaining work becomes possible: a KDE application closing that the palette was
+deferred for, a changed default browser, a newly installed Pear Desktop.
+
+Dark Reader is waited for differently, because what it needs is different. Its
+settings live inside the browser's own database, so it has to wait for the
+browser's processes to end rather than for its window to close -- and a browser
+leaves a good many running for a while after the last window goes. By then the
+window event has been and gone, so a second helper waits on those processes
+directly and applies Dark Reader the moment the last one exits. A timer remains
+only as a rare safety net for a change that surfaces as neither. A runtime lock
 prevents overlapping hook, service, and manual runs.
 
 GTK 4 and libadwaita read the user stylesheet once, at startup, so an
