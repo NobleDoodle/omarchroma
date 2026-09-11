@@ -196,6 +196,14 @@ so quitting is a no-op the next launch undoes; started before the current theme;
 showing no window, so nothing on screen is touched; and exposing its own quit
 action, which is activated rather than the process being signalled.
 
+Inside `org.gnome.` the application's own `--quit` is used instead, because
+activating the quit action leaves GApplication to time out before it releases
+the bus name -- ten seconds for Nautilus, against under half a second for
+`nautilus -q`, which reaches `g_application_quit()`. The binary comes from the
+application's D-Bus service file rather than from a list here, `--quit` is only
+assumed in that namespace where it is the convention, and anything still running
+a moment later falls back to the action.
+
 ## Browser support
 
 Omarchroma detects the current default browser through XDG settings and

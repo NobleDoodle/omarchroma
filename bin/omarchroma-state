@@ -5,6 +5,7 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import socket
 import stat
@@ -455,6 +456,68 @@ def connection_pid(name):
     return int(found.group(1)) if found else None
 
 
+# Only inside this namespace is "--quit" assumed. It is the GNOME convention,
+# and guessing a flag at an application that does not know it could as easily
+# open a window as close one.
+GNOME_NAMESPACE = "org.gnome."
+
+# How long an application's own --quit is given before falling back.
+QUIT_GRACE_SECONDS = 1.5
+
+
+def name_has_owner(name):
+    raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                   "org.freedesktop.DBus.NameHasOwner", name)
+    return raw is not None and "true" in raw
+
+
+def service_file_exec(name):
+    """The binary a D-Bus service file launches, so an application's own quit
+    flag can be used without keeping a list of binaries."""
+    roots = [Path.home() / ".local/share"]
+    roots += [Path(part) for part in (os.environ.get("XDG_DATA_DIRS")
+                                      or "/usr/local/share:/usr/share").split(":") if part]
+    for root in roots:
+        try:
+            text = (root / "dbus-1" / "services" / f"{name}.service").read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("Exec="):
+                try:
+                    parts = shlex.split(line[len("Exec="):])
+                except ValueError:
+                    return None
+                return parts[0] if parts else None
+    return None
+
+
+def quit_application(name, path):
+    """Ask an application to quit, preferring its own --quit for GNOME ones.
+
+    Activating the quit action leaves GApplication to time out before it gives
+    up the bus name -- ten seconds for nautilus -- whereas the same
+    application's own --quit reaches g_application_quit() and is gone in under
+    half a second. The binary comes from the D-Bus service file rather than from
+    a list here, and if the application is still there after a moment this falls
+    back to the action, so a flag that turns out not to be understood costs a
+    pause rather than the result."""
+    if name.startswith(GNOME_NAMESPACE):
+        binary = service_file_exec(name)
+        if binary:
+            try:
+                subprocess.run([binary, "--quit"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=False, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            deadline = time.monotonic() + QUIT_GRACE_SECONDS
+            while time.monotonic() < deadline:
+                if not name_has_owner(name):
+                    return
+                time.sleep(0.1)
+    bus_call(name, path, "org.gtk.Actions.Activate", "quit", "[]", "{}")
+
+
 def has_quit_action(name, path):
     raw = bus_call(name, path, "org.gtk.Actions.List")
     return raw is not None and re.search(r"'quit'", raw) is not None
@@ -496,7 +559,7 @@ def refresh_idle_apps():
         path = "/" + name.replace(".", "/").replace("-", "_")
         if not has_quit_action(name, path):
             continue
-        bus_call(name, path, "org.gtk.Actions.Activate", "quit", "[]", "{}")
+        quit_application(name, path)
         print(f"Omarchroma: closed idle {name} so its next window is themed")
 
 
