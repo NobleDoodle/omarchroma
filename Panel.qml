@@ -27,6 +27,15 @@ Panel {
   // this is a list you work through at your own pace.
   property var staleApps: []
 
+  // The guide replaces the panel body rather than sitting inside it: the list
+  // is as long as the user has windows open, and growing the panel by one row
+  // per application would push the frameworks off the screen.
+  property bool guideOpen: false
+
+  // However many are open, the panel stays a readable size and says how many
+  // it did not name.
+  readonly property int staleShown: 8
+
   property string activeTarget: ""
 
   // One list drives both the rows and the keyboard shortcuts, so the digit a
@@ -98,6 +107,17 @@ Panel {
   // digits match each row's position, which the row displays.
   function handleKey(text) {
     var key = (text || "").toLowerCase()
+    // "/" rather than "?" so no shift is needed, and rather than "h" because
+    // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
+    // reason the framework rows are numbered.
+    if (key === "/") {
+      root.guideOpen = !root.guideOpen
+      if (root.guideOpen) root.refreshStaleApps()
+      return
+    }
+    // While the guide is up its contents are being read, not acted on; a digit
+    // would otherwise toggle a framework whose row is not on screen.
+    if (root.guideOpen) return
     if (key === "r") {
       root.refresh("all")
       return
@@ -193,7 +213,12 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      onCloseRequested: root.close()
+      // Escape leaves the guide first, so it never strands the user on a view
+      // they cannot back out of.
+      onCloseRequested: {
+        if (root.guideOpen) root.guideOpen = false
+        else root.close()
+      }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) { root.handleKey(text) }
 
@@ -203,14 +228,68 @@ Panel {
         spacing: Style.space(8)
 
         Text {
-          text: "Omarchroma"
+          text: root.guideOpen ? "Applications to close" : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.body
           font.bold: true
         }
 
+        Column {
+          id: guide
+          visible: root.guideOpen
+          width: content.width
+          spacing: Style.space(6)
+
+          Text {
+            width: guide.width
+            text: root.staleApps.length > 0
+              ? "These have a window open that started before the current colors "
+                + "were written, so they are still showing the previous theme. "
+                + "Omarchroma never touches an application while its window is "
+                + "open, so closing them is yours to do."
+              : "Nothing is waiting. Every application with a window open is "
+                + "already showing the current colors."
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Repeater {
+            model: root.staleApps.slice(0, root.staleShown)
+
+            delegate: Text {
+              required property string modelData
+              width: guide.width
+              text: "\u2022  " + modelData
+              color: root.bar ? root.bar.foreground : Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
+          }
+
+          Text {
+            visible: root.staleApps.length > root.staleShown
+            width: guide.width
+            text: "and " + (root.staleApps.length - root.staleShown) + " more"
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Button {
+            width: guide.width
+            text: "Back"
+            iconText: "\udb80\udf0d"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.guideOpen = false
+          }
+        }
+
         Text {
+          visible: !root.guideOpen
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
@@ -228,6 +307,7 @@ Panel {
 
           delegate: Item {
             id: row
+            visible: !root.guideOpen
             required property var modelData
             required property int index
             width: content.width
@@ -283,56 +363,35 @@ Panel {
         }
 
         PanelSeparator {
+          visible: !root.guideOpen
           foreground: root.bar ? root.bar.foreground : Color.popups.text
         }
 
-        Column {
-          id: stale
-          visible: root.staleApps.length > 0
-          width: content.width
-          spacing: Style.space(4)
-
-          Text {
-            text: "Close to finish theming"
-            color: root.bar ? root.bar.foreground : Color.popups.text
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-
-          Repeater {
-            model: root.staleApps
-
-            delegate: Text {
-              required property string modelData
-              width: stale.width
-              text: "\u2022  " + modelData
-              color: Color.muted
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
-            }
-          }
-
-          Text {
-            width: stale.width
-            text: "These started before the current colors were written. Nothing "
-              + "here is touched while it is open."
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-            bottomPadding: Style.space(4)
-          }
-        }
 
         Button {
+          visible: !root.guideOpen
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
           foreground: root.bar ? root.bar.foreground : Color.popups.text
           enabled: !refreshProcess.running
           onClicked: root.refresh("all")
+        }
+
+        // Reachable by mouse as well as by "/", and carries the count so the
+        // number of applications waiting is visible without opening it.
+        Button {
+          visible: !root.guideOpen
+          width: content.width
+          text: root.staleApps.length > 0
+            ? root.staleApps.length + " to close  (/)"
+            : "Nothing to close  (/)"
+          iconText: "󰖯"
+          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          onClicked: {
+            root.refreshStaleApps()
+            root.guideOpen = true
+          }
         }
       }
     }
