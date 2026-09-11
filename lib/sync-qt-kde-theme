@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Resolved from a trusted PATH rather than the inherited one; see the note in
+# bin/omarchroma-sync.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+export PATH
+
 
 color() {
   local value
