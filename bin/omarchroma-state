@@ -135,11 +135,84 @@ GENERATED_PROBES = {
     "pear_css": always_generated,
 }
 
-# Files only Omarchroma ever writes, so no user content can be mixed in and a
-# capture that finds one records it as absent -- which is also its correct stock
-# value, Omarchy creating neither. Everything else may hold real settings
-# alongside Omarchroma's, so the backup is kept and the entry flagged instead.
-WHOLLY_GENERATED = frozenset({"omarchroma_colors", "pear_css"})
+# Files that are Omarchroma's in their entirety once a probe recognizes them, so
+# a capture records them absent and stores nothing -- which is also their correct
+# stock value, Omarchy writing none of them. A gtk.css carrying the generated
+# header is ours whole; one without it is the user's and is captured normally.
+WHOLLY_GENERATED = frozenset({"omarchroma_colors", "pear_css", "gtk3_css", "gtk4_css"})
+
+# kdeglobals is the one file Omarchroma shares with its owner: KDE and the user
+# keep real settings there. These are the parts Omarchroma writes -- whole
+# sections it replaces from the generated scheme, and individual keys it sets in
+# sections it does not own -- mirroring lib/sync-qt-kde-theme.
+OMARCHROMA_KDE_SECTION_PREFIXES = ("[Colors:", "[ColorEffects:")
+OMARCHROMA_KDE_SECTIONS = frozenset({"[WM]"})
+OMARCHROMA_KDE_KEYS = {
+    "[General]": {"ColorScheme", "ColorSchemeHash"},
+    "[KDE]": {"contrast"},
+    "[UiSettings]": {"ColorScheme"},
+    "[Icons]": {"Theme"},
+}
+
+
+def strip_generated_kdeglobals(path):
+    """kdeglobals with everything Omarchroma wrote removed, or None if nothing
+    of the user's is left.
+
+    A backup must never hold Omarchroma's own output: restoring it would put
+    back the colours the restore was meant to remove, and capturing it again
+    later would carry the same content forward indefinitely."""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return None
+
+    kept, section, owned = [], None, False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            # "[Colors:Header][Inactive]" is a subgroup of a section we own.
+            section = stripped
+            owned = (section in OMARCHROMA_KDE_SECTIONS
+                     or section.startswith(OMARCHROMA_KDE_SECTION_PREFIXES))
+            if not owned:
+                kept.append(line)
+            continue
+        if owned:
+            continue
+        if section in OMARCHROMA_KDE_KEYS and "=" in stripped:
+            if stripped.split("=", 1)[0].strip() in OMARCHROMA_KDE_KEYS[section]:
+                continue
+        kept.append(line)
+
+    # Drop sections left with nothing under them, then decide if anything real
+    # survived at all.
+    result, index = [], 0
+    while index < len(kept):
+        line = kept[index].strip()
+        if line.startswith("[") and line.endswith("]"):
+            body = []
+            probe = index + 1
+            while probe < len(kept):
+                nxt = kept[probe].strip()
+                if nxt.startswith("[") and nxt.endswith("]"):
+                    break
+                if nxt:
+                    body.append(kept[probe])
+                probe += 1
+            if body:
+                result.append(kept[index])
+                result.extend(body)
+            index = probe
+            continue
+        if line:
+            result.append(kept[index])
+        index += 1
+
+    return "\n".join(result) + "\n" if result else None
+
+
+GENERATED_CLEANERS = {"kdeglobals": strip_generated_kdeglobals}
 
 
 def snapshot_file(snapshot_dir, manifest, key, path):
@@ -154,12 +227,25 @@ def snapshot_file(snapshot_dir, manifest, key, path):
         # reason, so flag the manifest as a whole rather than just this entry.
         entry["generated"] = True
         manifest["captureTainted"] = True
-    if generated and key in WHOLLY_GENERATED:
-        entry["existed"] = False
-    elif entry["existed"]:
+    cleaned = None
+    if generated:
+        if key in WHOLLY_GENERATED:
+            entry["existed"] = False
+        else:
+            cleaner = GENERATED_CLEANERS.get(key)
+            cleaned = cleaner(path) if cleaner else None
+            # Nothing of the user's left once Omarchroma's part is removed, so
+            # there is no original to keep.
+            if cleaned is None:
+                entry["existed"] = False
+    if entry["existed"]:
         backup = snapshot_dir / "files" / key
         backup.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, backup)
+        if cleaned is None:
+            shutil.copy2(path, backup)
+        else:
+            backup.write_text(cleaned)
+            shutil.copystat(path, backup)
         entry["backup"] = str(backup.relative_to(snapshot_dir))
     files[key] = entry
 
