@@ -92,8 +92,13 @@ asks how to put your theming back:
 - **captured** replays what was on disk before Omarchroma first ran. This is
   the default, and what earlier versions always did.
 
-Capture happens once per file, so updating the plugin never overwrites a
-baseline that was already recorded. A snapshot taken while Omarchroma output
+Re-run `install.sh` to upgrade. It detects an existing install, says it is
+upgrading, and skips both the consent prompt and re-authenticating a browser
+policy that is already current -- so an upgrade needs no password unless the
+policy actually changed. `--reinstall` forces the first-install path.
+
+Capture happens once per file, so upgrading never overwrites a baseline that
+was already recorded. A snapshot taken while Omarchroma output
 was already on disk -- which can happen if a previous install's state directory
 was lost -- is detected and marked, and the uninstaller then recommends stock
 and says why. Omarchroma's own generated files are never recorded as originals.
