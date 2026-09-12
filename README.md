@@ -30,6 +30,12 @@ cd omarchroma/packaging && makepkg -si
 systemctl --user enable --now hyprchromad.service
 ```
 
+Updating this way, re-run the same three commands. `enable --now` only starts
+the service if it was not already running, so on an update it keeps executing
+whatever it had already loaded — add `systemctl --user restart hyprchromad.service`
+afterward to pick up the new build. The bar widget's setup terminal offers
+this restart, and the Omarchy shell's own, automatically.
+
 ## Showcase
 
 ![Tokyo Night theme synchronized across browser, Files, terminal, and KDE Connect](screenshots/tokyo-night.png)
@@ -96,6 +102,7 @@ stops and changes nothing.
 | `adw-gtk-theme` | GTK 3 applications | GTK 3 apps keep system defaults |
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
+| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
 
 ## What it changes
 
