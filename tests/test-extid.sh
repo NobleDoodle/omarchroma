@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-python3 - <<'PY'
+python3 - "$REPO" <<'PY'
 import json, pathlib, tempfile, types
+import sys
 st = types.ModuleType("st")
-src = pathlib.Path("$REPO/lib/hyprchroma-dark-reader").read_text() \
+src = pathlib.Path(f"{sys.argv[1]}/lib/hyprchroma-dark-reader").read_text() \
     .replace('if __name__ == "__main__":\n    raise SystemExit(main())','')
 exec(compile(src,"st","exec"), st.__dict__)
 STORE = st.CHROMIUM_STORE_EXTENSION_ID
@@ -41,10 +42,11 @@ chk("traversal key rejected",
 chk("empty policy stub is not mistaken for an install",
     st.chromium_extension_id(profile(prefs={STORE: {}})), STORE)
 PY
-python3 - <<'PY'
+python3 - "$REPO" <<'PY'
 import json, pathlib, tempfile, types
+import sys
 st = types.ModuleType("st")
-src = pathlib.Path("$REPO/lib/hyprchroma-dark-reader").read_text() \
+src = pathlib.Path(f"{sys.argv[1]}/lib/hyprchroma-dark-reader").read_text() \
     .replace('if __name__ == "__main__":\n    raise SystemExit(main())','')
 exec(compile(src,"st","exec"), st.__dict__)
 STORE = st.CHROMIUM_STORE_EXTENSION_ID

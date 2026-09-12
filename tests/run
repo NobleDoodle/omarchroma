@@ -10,6 +10,14 @@ for suite in tests/test-*.sh; do
     printf '%-26s %2d failed\n' "$(basename "$suite")" "$bad"
     grep FAIL <<<"$output" | sed 's/^/    /'
   fi
+  # A suite that asserts nothing is not a passing suite. Four of these once
+  # crashed on an unexpanded path and contributed zero for several releases,
+  # which counting only PASS and FAIL lines could not see.
+  if (( passed == 0 && bad == 0 )); then
+    failed=$((failed + 1))
+    printf '%-26s asserted nothing\n' "$(basename "$suite")"
+    grep -iE 'error|traceback' <<<"$output" | head -2 | sed 's/^/    /'
+  fi
 done
 
 # "omarchy plugin validate" reads the manifest only, so nothing was checking

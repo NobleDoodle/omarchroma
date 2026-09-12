@@ -24,7 +24,6 @@ omarchroma_trusted_path() {
 PATH=$(omarchroma_trusted_path)
 export PATH
 
-REPO="https://github.com/NobleDoodle/omarchroma"
 bold=$'\033[1m'; dim=$'\033[2m'; reset=$'\033[0m'; warn=$'\033[1;33m'
 
 say()  { printf '%s\n' "$*"; }
