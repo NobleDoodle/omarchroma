@@ -131,17 +131,21 @@ fi
 # package in the official repos to hand to pacman the way the others above
 # do. Same check bin/hyprchroma itself uses to decide whether Pear is worth
 # syncing at all, so this offers exactly when that would otherwise find
-# nothing to theme.
+# nothing to theme. pear-desktop-bin, not pear-desktop: both provide the same
+# pear-desktop binary the check above looks for, but the plain package builds
+# a full Electron app from source on install -- heavy enough, live on this
+# project's own 7.2GB test machine, to have pushed the whole session into
+# swap and taken the terminal down with it. -bin skips that build entirely.
 if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
    [[ ! -d "$HOME/.config/YouTube Music" ]]; then
   say ""
   note "Pear Desktop is not installed."
-  say "  omarchy pkg aur add pear-desktop"
+  say "  omarchy pkg aur add pear-desktop-bin"
   say ""
   if ask "Install it now"; then
     if command -v omarchy >/dev/null; then
-      omarchy pkg aur add pear-desktop ||
-        note "Could not install pear-desktop; you can run the command above later."
+      omarchy pkg aur add pear-desktop-bin ||
+        note "Could not install pear-desktop-bin; you can run the command above later."
     else
       note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
     fi

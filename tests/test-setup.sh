@@ -90,8 +90,10 @@ pear_out=$(export HOME="$pear_home"
            printf 'y\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
 chk "a missing, wanted Pear Desktop is named" \
   "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
-chk "with the AUR command to get it" \
-  "$(grep -c 'omarchy pkg aur add pear-desktop' <<<"$pear_out")" "1"
+# -bin specifically, not the plain package: that one builds a full Electron
+# app from source, which is what took the terminal down earlier this session.
+chk "with the AUR command to get it, the prebuilt package" \
+  "$(grep -c 'omarchy pkg aur add pear-desktop-bin' <<<"$pear_out")" "1"
 chk "declining leaves it uninstalled and says so" \
   "$(grep -c 'still offer Pear Desktop once you install it yourself' <<<"$pear_out")" "1"
 # Reuses $out from the top of this file, where Pear was declined outright:

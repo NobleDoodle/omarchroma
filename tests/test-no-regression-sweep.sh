@@ -45,7 +45,7 @@ chk "setup's only direct privileged call is pacman" \
 chk "and its package list is literal, not built from input" \
   "$(grep -cE 'missing\+=\((adw-gtk-theme|python-plyvel)\)' bin/hyprchroma-setup)" "2"
 chk "the one indirect privileged call names a literal package too" \
-  "$(grep -c 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
+  "$(grep -c 'pkg aur add pear-desktop-bin' bin/hyprchroma-setup)" "2"
 
 # Nothing is fetched and then executed: the build runs on the checkout.
 chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -cE 'curl|wget|git clone')" "0"
