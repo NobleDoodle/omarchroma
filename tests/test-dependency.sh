@@ -58,7 +58,30 @@ chk "the panel knows it may be outdated" "$(grep -c 'property bool outdated' Pan
 chk "outdated blocks the toggles like missing does" \
   "$(grep -c 'dependencyPresent && daemonRunning && !outdated' Panel.qml)" "1"
 chk "the banner has an install, an update and a start" \
-  "$(grep -ohE 'Press i to (install|update|start) it' Panel.qml | sort -u | wc -l)" "3"
+  "$(grep -ohE '"(Install|Update|Start)  \(i\)"' Panel.qml | sort -u | wc -l)" "3"
+chk "\"i\" is still the key for all three, not just named in the button" \
+  "$(grep -c 'root.installDependency' Panel.qml)" "2"
+
+# --- nothing else renders until hyprchroma is ready ------------------------
+# The separator and the refresh/close-apps buttons once checked only
+# !guideOpen, so with no service installed they still drew over an otherwise
+# empty panel -- controls for a framework list that had nothing in it.
+for control in 'PanelSeparator {' 'text: "Refresh enabled' 'to close  (/)"'; do
+  chk "gated on root.ready: $control" \
+    "$(code Panel.qml | grep -B3 -A2 "$control" | grep -c 'visible:.*root\.ready')" "1"
+done
+# "/" used to flip the guide open regardless of readiness, showing an
+# always-empty "Nothing to close" screen with no framework list behind it.
+chk "the guide key is refused before the ready check, not after" \
+  "$(python3 -c "
+import re
+s = open('Panel.qml').read()
+start = s.index('function handleKey')
+body = s[start:s.index('function ', start + 10)]
+ready_at = body.index('if (!root.ready) return')
+slash_at = body.index('key === \"/\"')
+print('ok' if ready_at < slash_at else 'wrong-order')
+")" "ok"
 
 # --- installing and updating are the same mechanism ------------------------
 chk "one script serves both" "$(grep -c 'readonly property string setupScript' Panel.qml)" "1"

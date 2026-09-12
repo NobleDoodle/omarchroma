@@ -1079,6 +1079,12 @@ GNOME_NAMESPACE = "org.gnome."
 # How long an application's own --quit is given before falling back.
 QUIT_GRACE_SECONDS = 1.5
 
+# GApplication's own documented ceiling for the action-based fallback to give
+# up the bus name once its quit action is activated. Matched here rather than
+# guessed shorter, so a quit that was always going to succeed is not reported
+# as failed for having taken as long as GApplication itself allows.
+QUIT_ACTION_TIMEOUT_SECONDS = 10
+
 
 def name_has_owner(name):
     raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
@@ -1153,11 +1159,19 @@ def quit_application(name, path):
 
     Activating the quit action leaves GApplication to time out before it gives
     up the bus name -- ten seconds for nautilus -- whereas the same
-    application's own --quit reaches g_application_quit() and is gone in under
-    half a second. The binary comes from the D-Bus service file rather than from
-    a list here, and if the application is still there after a moment this falls
-    back to the action, so a flag that turns out not to be understood costs a
-    pause rather than the result."""
+    application's own --quit is supposed to reach g_application_quit() and be
+    gone in under half a second. In practice that is optimistic: some versions
+    still take several seconds even on the fast path, so this waits for
+    whichever path actually worked rather than assuming the first one did, and
+    reports which happened. The binary comes from the D-Bus service file rather
+    than from a list here, and if the application is still there after a
+    moment this falls back to the action, so a flag that turns out not to be
+    understood costs a pause rather than the result.
+
+    Returns whether the application is actually gone by the time this returns,
+    so a caller never reports something closed that is still running -- a
+    guess here is exactly what would leave a reopened window stuck on the
+    stale instance rather than a fresh one."""
     if name.startswith(GNOME_NAMESPACE):
         binary = service_file_exec(name)
         if binary:
@@ -1169,9 +1183,19 @@ def quit_application(name, path):
             deadline = time.monotonic() + QUIT_GRACE_SECONDS
             while time.monotonic() < deadline:
                 if not name_has_owner(name):
-                    return
+                    return True
                 time.sleep(0.1)
     bus_call(name, path, "org.gtk.Actions.Activate", "quit", "[]", "{}")
+    # The action's own timeout is the only upper bound GApplication documents,
+    # so this waits up to it rather than firing and hoping: a shorter wait
+    # would report failure for a quit that was always going to land a moment
+    # later, and the caller depends on this answer being right, not fast.
+    deadline = time.monotonic() + QUIT_ACTION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not name_has_owner(name):
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def has_quit_action(name, path):
@@ -1224,8 +1248,14 @@ def refresh_idle_apps(since=None):
         path = "/" + name.replace(".", "/").replace("-", "_")
         if not has_quit_action(name, path):
             continue
-        quit_application(name, path)
-        print(f"Hyprchroma: closed idle {name} so its next window is themed")
+        if quit_application(name, path):
+            print(f"Hyprchroma: closed idle {name} so its next window is themed")
+        else:
+            # Neither its own --quit nor the generic action worked in time.
+            # Silently doing nothing here would look identical to success in
+            # the log; naming the holdout is what makes a genuine failure
+            # findable instead of just a window someone reports as stale.
+            print(f"Hyprchroma: {name} did not quit; its next window may still be themed")
 
 
 def browser_client_pids():
