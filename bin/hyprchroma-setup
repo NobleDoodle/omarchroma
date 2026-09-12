@@ -44,6 +44,35 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
+# Checked before a single question is asked, not alongside the optional
+# frameworks' dependencies below: jq is what the Dark Reader check right
+# after that question reads its answer with, and python is what every helper
+# this project ships is written in. Missing either does not just leave
+# something optional inactive -- jq missing makes that very check silently
+# wrong, reading "not installed" no matter what is actually true, the same
+# failure mode this project already fixed once for the wrong reason. So this
+# is not offered like the others: declining leaves nothing safe to continue
+# into, and the script stops rather than run partly broken.
+base_missing=()
+for pkg in jq python; do
+  pacman -Qq "$pkg" &>/dev/null || base_missing+=("$pkg")
+done
+if (( ${#base_missing[@]} )); then
+  head2 "Before anything else"
+  say "hyprchroma needs these, and this script itself uses them before it can ask you anything else:"
+  say "  sudo pacman -S --needed ${base_missing[*]}"
+  say ""
+  if ask "Install them now"; then
+    sudo pacman -S --needed "${base_missing[@]}" || {
+      say "That did not finish, and nothing past this point works without them. Stopping."
+      exit 1
+    }
+  else
+    say "Setup cannot continue without them."
+    exit 1
+  fi
+fi
+
 cat <<'INTRO'
 Hyprchroma setup
 

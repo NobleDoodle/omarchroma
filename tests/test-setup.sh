@@ -11,6 +11,39 @@ S=bin/hyprchroma-setup
 chk "the setup script ships and is executable" "$([ -x $S ] && echo yes || echo no)" "yes"
 chk "it parses" "$(bash -n $S 2>&1 && echo ok)" "ok"
 
+# --- what this script itself needs is checked before anything else ---------
+# jq is what the Dark Reader check reads its own answer with, and that check
+# now runs before a single question about Pear or Dark Reader is even asked.
+# A missing jq there does not fail loudly -- it reads as "not installed" no
+# matter what is true, the same silent-wrong failure this project already hit
+# once from calling the wrong binary path. So this has to run first, and
+# unlike the optional frameworks, declining has to stop the script rather
+# than continue into checks it cannot answer correctly.
+base_probe=$(mktemp); trap 'rm -f "$base_probe"' EXIT
+sed 's/for pkg in jq python/for pkg in definitely-not-jq definitely-not-python/' $S > "$base_probe"
+chmod +x "$base_probe"
+chk "the probe's substitution actually targets the real check" \
+  "$(grep -c 'for pkg in jq python' $S)" "1"
+base_out=$(timeout 5 "$base_probe" </dev/null 2>&1)
+chk "a missing base requirement is caught before the intro banner ever prints" \
+  "$(grep -c 'Hyprchroma setup' <<<"$base_out")" "0"
+chk "it names what is missing and how to get it" \
+  "$(grep -c 'sudo pacman -S --needed definitely-not-jq definitely-not-python' <<<"$base_out")" "1"
+# No stdin at all (</dev/null above): "Install them now" reads EOF, which
+# bash treats as an empty answer -- the same as declining -- so this proves
+# the decline path stops rather than falling through into the real questions.
+chk "declining -- or having nothing to answer with -- stops the script" \
+  "$(grep -c 'cannot continue without them' <<<"$base_out")" "1"
+chk "and never reaches a single question about Pear or Dark Reader" \
+  "$(grep -cE 'Include (Pear Desktop|Dark Reader)' <<<"$base_out")" "0"
+chk "declining exits non-zero rather than continuing" \
+  "$(timeout 5 "$base_probe" </dev/null >/dev/null 2>&1; echo $?)" "1"
+# Real jq and python are already required just to run this test suite, so the
+# unmodified script never reaches this section at all on the machine running
+# it -- confirmed against $S itself rather than a probe.
+chk "the real script finds nothing missing on this machine" \
+  "$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
+
 # --- nothing is built without the consent we had before --------------------
 out=$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
