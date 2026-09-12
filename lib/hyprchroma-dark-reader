@@ -933,7 +933,28 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         "stylesheet",
     }
 
-    with plyvel.DB(str(database), create_if_missing=True) as db:
+    try:
+        db = plyvel.DB(str(database), create_if_missing=True)
+    except plyvel.IOError as error:
+        # browser_running() above is not atomic with this open: the browser can
+        # start, or grab the lock for its own writes, in the gap between that
+        # check and here. Rather than assume the check is enough and let the
+        # database's own lock surface as an unhandled crash, this treats the
+        # one error LevelDB raises for "someone else has it open" exactly like
+        # the check finding the browser already running -- everything else
+        # from a corrupt database is a real failure and still propagates.
+        if "lock" not in str(error).lower():
+            raise
+        write_status(
+            status_file,
+            browser=info["name"],
+            browserDesktop=info["desktop"],
+            darkReader="pending-browser-exit",
+        )
+        print(f"Hyprchroma: Dark Reader update queued until {info['name']} exits")
+        return 2
+
+    with db:
         if state_dir is not None:
             snapshot_settings(db, state_dir / "original/dark-reader.json", info, profile, database)
         db.put(b"theme", json.dumps(theme, separators=(",", ":")).encode())
