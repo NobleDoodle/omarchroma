@@ -269,7 +269,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.2.9"
+    echo "hyprchroma 2.2.10"
     exit 0
     ;;
 esac
@@ -332,12 +332,29 @@ recycle_idle_apps() {
 # Windows already open cannot be restyled in place, and nothing here touches
 # them; say which ones they are so the choice to restart is the user's.
 report_stale_apps() {
-  local stale_apps stale_list
+  local stale_apps stale_list last_notified
   stale_apps=$("$HYPRCHROMA_LIB/hyprchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps "$@" 2>/dev/null || true)
-  [[ -n $stale_apps ]] || return 0
+  if [[ -z $stale_apps ]]; then
+    # Nothing stale now, so the next time something is, it is worth saying
+    # again rather than mistaken for the same staleness already reported.
+    rm -f -- "$STATE_DIR/last-stale-notify"
+    return 0
+  fi
   stale_list=${stale_apps//$'\n'/, }
   log "restart to pick up the new theme: $stale_list"
+  # A quiet, event-driven sync runs on every window opened or closed nearby --
+  # not only ones this caused -- so with an app left open and no gate here,
+  # this fired the same popup on every one of them. The daemon never passes
+  # --notify at all; only a person acting in the panel does.
+  (( notify )) || return 0
+  # Even a --notify run repeats this exact call each time the panel is used
+  # while the same app is still open, so a popup already shown for this list
+  # is not shown again until the list actually changes.
+  last_notified=$(cat "$STATE_DIR/last-stale-notify" 2>/dev/null || true)
+  [[ $stale_list == "$last_notified" ]] && return 0
+  printf '%s' "$stale_list" | "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
+    --path "$STATE_DIR/last-stale-notify" --mode 644
   command -v notify-send >/dev/null && \
     notify-send -a Hyprchroma "Restart to finish theming" \
       "Still showing the previous theme: $stale_list" || true

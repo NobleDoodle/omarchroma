@@ -1633,7 +1633,8 @@ def restore(state_dir, data_dir, targets, mode):
     # which is where that toggle was just recorded.
     for path in (data_dir / "dark-reader-theme.json",
                  state_dir / "settings.json",
-                 state_dir / "status.json"):
+                 state_dir / "status.json",
+                 state_dir / "last-stale-notify"):
         path.unlink(missing_ok=True)
 
 
