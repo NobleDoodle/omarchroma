@@ -99,14 +99,24 @@ chk "declining leaves it uninstalled and says so" \
 chk "Pear's own check is skipped entirely when it was not wanted" \
   "$(grep -c 'Pear Desktop is not installed' <<<"$out")" "0"
 
-# --- finishing restarts what would otherwise keep running stale code -----
-chk "the restart offer comes after the build, not before" \
-  "$(awk '/makepkg -si --needed/{seen=1} /Restart hyprchromad.service and the Omarchy shell now/{print (seen?"after":"before")}' $S)" "after"
-chk "declining is not the default here, unlike every other question" \
-  "$(grep -c 'ask_default_yes' $S)" "2"
-chk "it restarts the service rather than only re-enabling it" \
-  "$(grep -c 'systemctl --user restart hyprchromad.service' $S)" "2"
-chk "and restarts the Omarchy shell too" "$(grep -c 'omarchy restart shell' $S)" "2"
+# --- finishing tells the user what to restart, rather than doing it --------
+# omarchy restart shell was tried here and pulled back: live on this
+# project's own test machine, its relaunch step failed silently once,
+# leaving no shell running at all until retried by hand. That is worse than
+# the stale-code problem it exists to fix, so this only prints the commands.
+chk "no question is asked about restarting" \
+  "$(grep -c 'ask_default_yes' $S)" "0"
+chk "the restart commands come after the build, not before" \
+  "$(awk '/makepkg -si --needed/{seen=1} /Restart to finish/{print (seen?"after":"before")}' $S)" "after"
+chk "the service restart command is shown" \
+  "$(grep -c 'systemctl --user restart hyprchromad.service' $S)" "1"
+chk "the shell restart command is shown" \
+  "$(grep -c '  omarchy restart shell$' $S)" "1"
+# Neither command appears as code outside the printed block -- only as text
+# inside it, and once more in the comment above explaining why.
+without_heredoc=$(awk '/^cat <<.RESTARTINFO.$/{skip=1; next} /^RESTARTINFO$/{skip=0; next} !skip' $S)
+chk "neither restart command is ever executed automatically" \
+  "$(grep -cE '^[[:space:]]*systemctl --user restart hyprchromad\.service[[:space:]]*$|^[[:space:]]*omarchy restart shell[[:space:]]*$' <<<"$without_heredoc")" "0"
 
 # --- the panel hands off to it -------------------------------------------
 chk "the panel runs the setup script" "$(grep -c 'bin/hyprchroma-setup' Panel.qml)" "1"

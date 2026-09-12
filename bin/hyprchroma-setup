@@ -44,17 +44,6 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
-# Default yes, unlike ask() above: the one thing this is used for is the
-# restart that makes everything else in this script actually take effect.
-# Holding return through this should finish the job, not leave a fresh build
-# sitting on disk while the running service and shell keep whatever they
-# already loaded -- which looks exactly like the setup did nothing.
-ask_default_yes() {
-  local prompt=$1 answer
-  read -r -p "$prompt [Y/n]: " answer
-  [[ -z $answer || ${answer,,} == y || ${answer,,} == yes ]]
-}
-
 cat <<'INTRO'
 Hyprchroma setup
 
@@ -217,25 +206,23 @@ systemctl --user enable --now hyprchromad.service ||
 # into memory. pacman does not restart a running service, and the Omarchy
 # shell does not notice a changed plugin file the same way either: this is
 # exactly what made a real fix look like it had not happened at all.
+#
+# Not run automatically. omarchy restart shell was tried here and pulled back:
+# live on this project's own test machine, its relaunch step failed silently
+# once, leaving no shell running at all until it was retried by hand -- worse
+# than the stale-code problem it exists to fix. Printing the commands and
+# leaving them to be run and watched is the safer default until that is
+# understood.
 head2 "Restart to finish"
 cat <<'RESTARTINFO'
-A fresh install or an update just landed on disk, but hyprchromad.service and
-the Omarchy shell both keep running whatever they already had loaded --
-neither restarts on its own when the files underneath it change.
+hyprchromad.service and the Omarchy shell both keep running whatever they
+already had loaded -- neither restarts on its own when the files underneath
+it change. Run these yourself once this window closes, and watch that each
+one actually finishes before assuming it did:
+
+  systemctl --user restart hyprchromad.service
+  omarchy restart shell
 RESTARTINFO
-if ask_default_yes "Restart hyprchromad.service and the Omarchy shell now"; then
-  systemctl --user restart hyprchromad.service ||
-    note "Could not restart hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
-  if command -v omarchy >/dev/null; then
-    omarchy restart shell
-  else
-    note "\"omarchy\" was not found, so the shell was not restarted."
-  fi
-else
-  note "Not restarted. Do it yourself when convenient, or the change stays invisible:"
-  note "  systemctl --user restart hyprchromad.service"
-  note "  omarchy restart shell"
-fi
 
 head2 "Done"
 say "Anything you left out can be put back from the panel: press / and then its number."
