@@ -43,12 +43,28 @@ Panel {
   property bool installing: false
   readonly property bool ready: dependencyPresent && daemonRunning && !outdated
 
-  // What the manifest says this panel needs. Kept there rather than here so the
-  // requirement is visible to anyone reading the manifest.
-  readonly property string requiredVersion: "1.5.0"
+  // The service and this panel ship from one repository, so what the panel
+  // expects is simply its own version -- read from the manifest beside it
+  // rather than written down twice. They are still installed by different
+  // things, "omarchy plugin update" and makepkg, so the installed service can
+  // lag behind the checkout and this is what notices.
+  property string expectedVersion: ""
   property string installedVersion: ""
   readonly property bool outdated: dependencyPresent && installedVersion !== ""
-    && root.olderThan(installedVersion, requiredVersion)
+    && expectedVersion !== "" && root.olderThan(installedVersion, expectedVersion)
+
+  FileView {
+    id: manifestFile
+    path: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName + "/manifest.json"
+    printErrors: false
+    onLoaded: {
+      try {
+        root.expectedVersion = String(JSON.parse(text()).version || "")
+      } catch (error) {
+        root.expectedVersion = ""
+      }
+    }
+  }
 
   // Numeric compare, field by field. "1.10.0" is newer than "1.9.0", which a
   // string compare gets backwards.
@@ -543,7 +559,7 @@ Panel {
                   ? "hyprchroma is not installed. It is the package that does the theming; this panel only drives it."
                   : root.outdated
                     ? "hyprchroma " + root.installedVersion + " is installed; this panel needs "
-                      + root.requiredVersion + " or newer."
+                      + root.expectedVersion + " or newer."
                     : "hyprchroma is installed but its background service is not running, so nothing is being kept in step.")
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family

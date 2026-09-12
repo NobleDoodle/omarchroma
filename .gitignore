@@ -1,3 +1,7 @@
+.claude/worktrees/
+/pkg/
+*.pkg.tar.*
+*.pyc
 __pycache__/
 *.py[cod]
-.claude/worktrees/
+/src/

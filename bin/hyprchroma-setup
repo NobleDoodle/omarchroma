@@ -24,7 +24,7 @@ omarchroma_trusted_path() {
 PATH=$(omarchroma_trusted_path)
 export PATH
 
-REPO="https://github.com/NobleDoodle/hyprchroma"
+REPO="https://github.com/NobleDoodle/omarchroma"
 bold=$'\033[1m'; dim=$'\033[2m'; reset=$'\033[0m'; warn=$'\033[1;33m'
 
 say()  { printf '%s\n' "$*"; }
@@ -107,8 +107,8 @@ cat <<CONSENT
 hyprchroma is built from source and installed with pacman, so it can be
 listed, upgraded and removed like any other package. Building it:
 
-- clones $REPO into a temporary directory
-- runs makepkg, which builds the package and asks pacman to install it
+- builds the service from this checkout with makepkg, which asks pacman to
+  install the result -- nothing is downloaded, and no QML is installed
 - pacman will ask for your password and show you exactly what it will install
 - enables hyprchromad.service for your user, which watches for theme changes
 
@@ -127,10 +127,17 @@ if [[ $acknowledgement != "I understand" ]]; then
 fi
 
 head2 "Building"
-tmp=$(mktemp -d) || { say "Could not create a temporary directory."; exit 1; }
-trap 'rm -rf "$tmp"' EXIT
-git clone --depth 1 "$REPO" "$tmp/hyprchroma" || { say "Could not clone $REPO"; exit 1; }
-cd "$tmp/hyprchroma/packaging" || exit 1
+# Built from the checkout this script sits in, not from a fresh download. The
+# plugin and the service are the same repository, so what Omarchy already
+# cloned is the source -- which means what gets installed is what you have in
+# front of you, and on a published listing, what was reviewed. Cloning again
+# here would let those be different things.
+here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+if [[ ! -f $here/packaging/PKGBUILD ]]; then
+  say "Could not find the package recipe next to this script ($here/packaging)."
+  exit 1
+fi
+cd "$here/packaging" || exit 1
 makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
 
 # --- apply the choices, now that the tool exists --------------------------

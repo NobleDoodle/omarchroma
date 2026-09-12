@@ -10,12 +10,21 @@ chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$
 code(){ sed -e 's#^[[:space:]]*//.*##' "$@"; }
 countcode(){ local pat=$1; shift; code "$@" | grep -ohE "$pat" | wc -l; }
 
-# --- the requirement is declared once and agreed on twice ------------------
-manifest=$(python3 -c "import json;print(json.load(open('manifest.json'))['hyprchroma']['minimumVersion'])")
-panel=$(grep -oP 'readonly property string requiredVersion: "\K[^"]+' Panel.qml)
-chk "manifest and panel agree on the required version" "$panel" "$manifest"
-chk "the manifest names the package" \
-  "$(python3 -c "import json;print(json.load(open('manifest.json'))['hyprchroma']['package'])")" "hyprchroma"
+# --- one version, in one place ---------------------------------------------
+# The service and the plugin ship together now, so there is no minimum to
+# maintain by hand -- the plugin expects its own version. These three must
+# agree or the package, the manifest and the panel disagree about what this is.
+version=$(cat VERSION)
+chk "manifest version matches VERSION" \
+  "$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")" "$version"
+chk "PKGBUILD pkgver matches VERSION" \
+  "$(grep -oP '^pkgver=\K.*' packaging/PKGBUILD)" "$version"
+chk "the service reports that version" \
+  "$(./bin/hyprchroma --version | awk '{print $2}')" "$version"
+chk "the panel reads the manifest rather than hardcoding a number" \
+  "$(grep -c 'JSON.parse(text()).version' Panel.qml)" "1"
+chk "no hand-maintained minimum is left" \
+  "$(grep -c 'minimumVersion\|requiredVersion' Panel.qml manifest.json | grep -v ':0$' | wc -l)" "0"
 
 # --- version comparison is numeric, not lexical ----------------------------
 # "1.10.0" is newer than "1.9.0". A string compare says otherwise.
@@ -73,17 +82,24 @@ chk "nothing is written to /tmp" "$(grep -c 'XDG_RUNTIME_DIR:-/tmp' Panel.qml)" 
 chk "the plugin runs no privileged command itself" \
   "$(grep -cE '^\s*(sudo|pkexec) ' Panel.qml BarWidget.qml | grep -v ':0$' | wc -l)" "0"
 
-# --- the contract across the repo boundary --------------------------------
-# Two repositories move independently, so what this plugin calls in hyprchroma
-# is an interface, not an implementation detail. Listed here so changing it is
-# a visible diff in review rather than a silent version skew: the plugin once
-# declared 1.4.1 while calling a subcommand that only existed from 1.5.0, and
-# the panel reported itself ready.
-# Panel.qml calls it through a QML argument list; the setup script calls it as
-# a shell command. Both are normalized to "<subcommand> <action>" so the set is
-# comparable whatever the caller looks like.
-calls=$( { grep -ohE '"framework", "[a-z]+"' Panel.qml | tr -d '",' | sed 's/  */ /g'
-           grep -ohE 'hyprchroma (framework|palette) [a-z-]+' bin/hyprchroma-setup | sed 's/^hyprchroma //'
-         } | sort -u | paste -sd, )
-chk "the hyprchroma subcommands this plugin depends on" "$calls" "framework remove,framework restore"
-chk "the version it declares covers them" "$panel" "1.5.0"
+# --- the panel still only calls what the service offers --------------------
+# One repository now, so this can check the actual dispatch rather than a
+# version number standing in for it.
+for sub in $(grep -ohE '"framework", "[a-z]+"' Panel.qml | tr -d '",' | awk '{print $2}' | sort -u); do
+  chk "the service still offers: framework $sub" \
+    "$(grep -cE "^      (list|remove\\|restore)\\)" bin/hyprchroma)" "2"
+done
+# Expand the case labels into the set of actions the dispatch accepts, so an
+# alternation like "remove|restore)" counts as both rather than neither.
+accepted=$(grep -oE '^      [a-z|]+\)' bin/hyprchroma | tr -d ' )' | tr '|' '\n' | sort -u)
+missing=0
+for called in $(grep -ohE 'hyprchroma framework [a-z-]+' bin/hyprchroma-setup | awk '{print $3}' | sort -u); do
+  grep -qx "$called" <<<"$accepted" || missing=$((missing + 1))
+done
+chk "the setup script only calls actions the service accepts" "$missing" "0"
+chk "and the panel does too" "$(
+  missing=0
+  for called in $(grep -ohE '"framework", "[a-z]+"' Panel.qml | tr -d '",' | awk '{print $2}' | sort -u); do
+    grep -qx "$called" <<<"$accepted" || missing=$((missing + 1))
+  done
+  echo $missing)" "0"

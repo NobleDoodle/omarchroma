@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
+# Every suite, plus a parse check on the QML. Exit non-zero if anything fails.
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
 total=0; failed=0
 for suite in tests/test-*.sh; do
   output=$(bash "$suite" 2>&1)
-  total=$((total + $(grep -c PASS <<<"$output"))); bad=$(grep -c FAIL <<<"$output")
-  failed=$((failed + bad))
-  (( bad )) && { printf '%-24s %2d failed\n' "$(basename "$suite")" "$bad"; grep FAIL <<<"$output" | sed 's/^/    /'; }
+  passed=$(grep -c PASS <<<"$output"); bad=$(grep -c FAIL <<<"$output")
+  total=$((total + passed)); failed=$((failed + bad))
+  if (( bad )); then
+    printf '%-26s %2d failed\n' "$(basename "$suite")" "$bad"
+    grep FAIL <<<"$output" | sed 's/^/    /'
+  fi
 done
-# QML is not checked by "omarchy plugin validate", which reads the manifest
-# only. qmlformat parses or it does not, which is the check that was missing
-# while these files were being edited.
+
+# "omarchy plugin validate" reads the manifest only, so nothing was checking
+# whether the QML still parsed while it was being edited. qmlformat parses it
+# or it does not.
 if [[ -x /usr/lib/qt6/bin/qmlformat ]]; then
   for qml in ./*.qml; do
     if /usr/lib/qt6/bin/qmlformat "$qml" >/dev/null 2>&1; then
       total=$((total + 1))
     else
-      failed=$((failed + 1)); printf '%-24s QML parse error\n' "$(basename "$qml")"
+      failed=$((failed + 1)); printf '%-26s QML parse error\n' "$(basename "$qml")"
     fi
   done
 fi
