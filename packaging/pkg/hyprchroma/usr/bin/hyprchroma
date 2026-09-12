@@ -1,0 +1,914 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Commands are resolved from a fixed, verified set of directories rather than
+# from whatever PATH was inherited. Most of these scripts run unattended --
+# from the shell service and from theme hooks -- so a directory someone else
+# can write to appearing earlier in PATH would hand them every command run
+# here; the installer and uninstaller pin it for the same reason even though
+# a person starts those.
+# /usr/local/bin and /usr/local/sbin are not in the set -- nothing this plugin
+# invokes lives there, and they are the entries most often left group-writable
+# on a real machine -- and /bin, /sbin and /usr/sbin are usrmerge symlinks to
+# /usr/bin that add nothing. What is left is checked to be root-owned and
+# unwritable by anyone else rather than assumed to be. /usr/bin/stat is named
+# absolutely because it is the trust root the check is anchored to: if it
+# cannot be trusted, nothing here can be.
+hyprchroma_trusted_path() {
+  local directory owner mode trusted=""
+  for directory in /usr/bin /usr/share/omarchy/bin; do
+    [[ -d $directory ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
+    # Root, or an owner not mapped into this namespace: under systemd's
+    # sandboxing /usr reports the overflow uid rather than root.
+    [[ $owner == 0 || $owner == "$(</proc/sys/kernel/overflowuid)" ]] || continue
+    (( (8#$mode & 8#022) == 0 )) || continue
+    trusted="${trusted:+$trusted:}$directory"
+  done
+  # With stat itself unavailable there is nothing to validate against, so fall
+  # back to the same fixed identities rather than to the inherited PATH.
+  printf '%s' "${trusted:-/usr/bin:/usr/share/omarchy/bin}"
+}
+PATH=$(hyprchroma_trusted_path)
+export PATH
+
+
+# Where the helpers live is derived from this script's own resolved location,
+# never from the environment. HYPRCHROMA_LIB used to be an override, which meant
+# a single line in ~/.config/environment.d -- read by systemd --user at login --
+# chose which executables the daemon ran and which file was installed as an
+# Omarchy theme hook. That is arbitrary code execution and persistence handed
+# over by a variable, exactly what pinning PATH exists to prevent. There is no
+# override now: installed under /usr it finds /usr/lib/hyprchroma, and run from
+# a checkout it finds the checkout's own lib, because both are simply "next to
+# me".
+HYPRCHROMA_SELF=$(realpath -- "${BASH_SOURCE[0]}")
+hyprchroma_prefix=$(dirname -- "$(dirname -- "$HYPRCHROMA_SELF")")
+if [[ -d $hyprchroma_prefix/lib/hyprchroma ]]; then
+  HYPRCHROMA_LIB="$hyprchroma_prefix/lib/hyprchroma"
+else
+  HYPRCHROMA_LIB="$hyprchroma_prefix/lib"
+fi
+if [[ -d $hyprchroma_prefix/share/hyprchroma ]]; then
+  HYPRCHROMA_SHARE="$hyprchroma_prefix/share/hyprchroma"
+else
+  HYPRCHROMA_SHARE="$hyprchroma_prefix/share"
+fi
+unset hyprchroma_prefix
+# Exported for the embedded Python below, which uses it to find the state
+# helper. This is the value derived above, not anything read from the
+# environment, and the sync libraries derive their own the same way rather than
+# trusting what they inherit.
+export HYPRCHROMA_LIB HYPRCHROMA_SHARE
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hyprchroma"
+STATUS_FILE="$STATE_DIR/status.json"
+SETTINGS_FILE="$STATE_DIR/settings.json"
+# Lock in the per-user runtime dir when available, otherwise the user-owned
+# state dir. Never /tmp: a fixed name there is a symlink/squatting target on a
+# shared host.
+LOCK_FILE="${XDG_RUNTIME_DIR:-$STATE_DIR}/hyprchroma-sync.lock"
+
+# Migrate a state directory left by Omarchroma, the single-repo predecessor.
+# The captured baseline is the only record of what the desktop looked like
+# before any of this ran, so it is moved rather than left behind and orphaned.
+migrate_from_omarchroma() {
+  local old="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
+  local old_data="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
+  [[ -d $old && ! -d $STATE_DIR ]] && mv -- "$old" "$STATE_DIR"
+  [[ -d $old_data && ! -d $DATA_DIR ]] && mv -- "$old_data" "$DATA_DIR"
+  # Its generated files carry the old name; drop them so a machine is not left
+  # showing two color schemes, one of which nothing maintains any more.
+  rm -f -- "${XDG_DATA_HOME:-$HOME/.local/share}/color-schemes/Omarchroma.colors" \
+           "$HOME/.config/YouTube Music/omarchroma.css"
+  return 0
+}
+
+# The Omarchy theme and font hooks are per-user files; a system package cannot
+# place them. The daemon runs as the user, so it installs them itself and keeps
+# them current, which is also what makes a theme change apply immediately
+# rather than waiting for the next poll.
+install_hooks() {
+  local hook source="$HYPRCHROMA_SHARE/hooks/hyprchroma"
+  [[ -r $source ]] || return 0
+  # Only where Omarchy is actually the palette source. These hooks exist to
+  # catch an Omarchy theme change; on a system driven by a palette file they
+  # would be directories nothing owns holding a hook nothing runs. Asking the
+  # resolver is the precise question -- "is omarchy on PATH" is not, since a
+  # machine can have the binary and still be driven by a file.
+  [[ $("$HYPRCHROMA_LIB/hyprchroma-palette" --source 2>/dev/null) == omarchy ]] || return 0
+  for hook in theme-set font-set; do
+    local destination="$HOME/.config/omarchy/hooks/$hook.d/hyprchroma"
+    # Through the state helper rather than mkdir plus install: this writes an
+    # executable that Omarchy runs on every theme change, so it is the last
+    # place to resolve a destination directory by pathname and hope no
+    # ancestor was swapped.
+    if ! cmp -s "$source" "$destination" 2>/dev/null; then
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
+        --path "$destination" --mode 755 < "$source" || return 1
+    fi
+  done
+}
+
+# Defined ahead of the subcommand dispatch below, which uses both.
+fail() {
+  printf 'Hyprchroma: %s\n' "$*" >&2
+  (( notify )) && notify-send -a Hyprchroma "Color synchronization failed" "$*" || true
+  exit 1
+}
+
+target_key() {
+  case "$1" in
+    gtk) printf 'gtk' ;;
+    qt-kde) printf 'qtKde' ;;
+    dark-reader) printf 'darkReader' ;;
+    pear) printf 'pear' ;;
+    *) return 1 ;;
+  esac
+}
+
+case "${1:-}" in
+  daemon)
+    # Omarchy is where the palette comes from, so without it there is nothing
+    # to follow. Said once, plainly, before anything is written -- rather than
+    # surfacing later as an empty color, and rather than leaving Omarchy hook
+    # directories in a home that has no Omarchy. Exit 78 is EX_CONFIG, and the
+    # unit is told not to restart on it: this will not fix itself.
+    # Asking for a color, rather than only asking whether the binary exists:
+    # present-but-unusable and present-but-no-theme-set both end in the same
+    # place, and existence alone does not tell them apart from working.
+    # A palette has to come from somewhere: a palette file, or Omarchy. The
+    # resolver decides which and says so if neither is there. Checked before
+    # anything is written, so a machine with no palette is left alone.
+    if ! "$HYPRCHROMA_LIB/hyprchroma-palette" background >/dev/null 2>&1; then
+      # || true: this pipeline is expected to fail -- it is being run for its
+      # message -- and pipefail would otherwise end the script here, at status
+      # 1, before the exit below could say which failure this was.
+      { "$HYPRCHROMA_LIB/hyprchroma-palette" background 2>&1 >/dev/null | head -4 >&2; } || true
+      echo "hyprchroma: nothing has been changed." >&2
+      exit 78
+    fi
+    migrate_from_omarchroma
+    install_hooks
+    # One sync before watching, so a theme set while the daemon was down -- the
+    # machine off, the session restarted -- is applied at login rather than
+    # waiting for a window to open. It syncs only what actually changed.
+    "$HYPRCHROMA_SELF" --quiet || true
+    # watch-events returns when the event stream closes -- and immediately if
+    # Hyprland is not up yet, which is the ordinary case at login. Either way
+    # the unit restarts us (Restart=always, not on-failure: this returns 0).
+    # There is no fallback timer any more; the plugin that used to run one is
+    # a bar widget now.
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-events
+    exit $?
+    ;;
+  install-hooks)
+    install_hooks
+    exit 0
+    ;;
+  restore)
+    shift
+    mode="captured"
+    for argument in "$@"; do
+      case "$argument" in
+        --stock) mode="stock" ;;
+        --captured) mode="captured" ;;
+        *) echo "hyprchroma restore: unknown option: $argument" >&2; exit 2 ;;
+      esac
+    done
+    "$HYPRCHROMA_LIB/hyprchroma-dark-reader" --restore --mode="$mode" \
+      --state-dir "$STATE_DIR" --status "$STATUS_FILE" || exit $?
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restore --mode "$mode"
+    exit $?
+    ;;
+  framework)
+    # A framework the user does not want is not the same as one switched off.
+    # Off is a toggle they flipped and will flip back; removed means take it out
+    # of the panel entirely. Both stop syncing and both revert, so the service
+    # treats them identically -- the difference is only whether the row is
+    # there to flip. Recorded here so the panel can act on it and so the choice
+    # survives a reinstall.
+    shift
+    action=${1:-}; name=${2:-}
+    case "$action" in
+      list)
+        python3 - "$SETTINGS_FILE" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    data = {}
+for entry in data.get("removed", []):
+    print(entry)
+PY
+        exit 0
+        ;;
+      remove|restore)
+        [[ -n $name ]] || fail "hyprchroma framework $action needs a target"
+        key=$(target_key "$name") || fail "unknown target: $name"
+        # Reverting first, while it is still listed, so the framework hands back
+        # what it changed before it disappears from the panel.
+        if [[ $action == remove ]]; then
+          "$HYPRCHROMA_SELF" --target="$name" --set-enabled=false --quiet || true
+        fi
+        python3 - "$SETTINGS_FILE" "$key" "$action" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+
+path, key, action = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError):
+    data = {}
+removed = [entry for entry in data.get("removed", []) if entry != key]
+if action == "remove":
+    removed.append(key)
+data["removed"] = sorted(removed)
+subprocess.run(
+    [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"),
+                  "hyprchroma-state"),
+     "write-file", "--path", str(path), "--mode", "644"],
+    input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
+PY
+        # Restoring last, so it is back in the panel before it syncs.
+        if [[ $action == restore ]]; then
+          "$HYPRCHROMA_SELF" --target="$name" --set-enabled=true --quiet || true
+        fi
+        printf 'Hyprchroma: %s %sd\n' "$name" "$action"
+        exit 0
+        ;;
+      *)
+        echo "Usage: hyprchroma framework (list | remove <target> | restore <target>)" >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  palette)
+    shift
+    case "${1:-}" in
+      --capture)
+        # Written through the state helper so it lands the same way every other
+        # file this project writes does.
+        "$HYPRCHROMA_LIB/hyprchroma-palette" --capture |
+          "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
+            --path "${XDG_CONFIG_HOME:-$HOME/.config}/hyprchroma/palette.toml" --mode 644 &&
+          echo "hyprchroma: palette written to ${XDG_CONFIG_HOME:-$HOME/.config}/hyprchroma/palette.toml"
+        ;;
+      --template|--source|--source-id|--all) "$HYPRCHROMA_LIB/hyprchroma-palette" "$1" ;;
+      "") "$HYPRCHROMA_LIB/hyprchroma-palette" --all ;;
+      *) echo "hyprchroma palette: unknown option: $1" >&2; exit 2 ;;
+    esac
+    exit $?
+    ;;
+  stale-apps)
+    # The applications still drawing the previous palette. Exposed here so a
+    # bar widget can ask without reaching into /usr/lib for an internal helper.
+    shift
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+      report-stale-apps --since-last-sync "$@"
+    exit $?
+    ;;
+  --version|version)
+    echo "hyprchroma 2.2.0"
+    exit 0
+    ;;
+esac
+
+quiet=0
+notify=0
+force=0
+target="all"
+set_enabled=""
+
+for argument in "$@"; do
+  case "$argument" in
+    --quiet) quiet=1 ;;
+    --notify) notify=1 ;;
+    --force) force=1 ;;
+    --target=all) target="all" ;;
+    --target=gtk) target="gtk" ;;
+    --target=qt-kde) target="qt-kde" ;;
+    --target=dark-reader) target="dark-reader" ;;
+    --target=pear) target="pear" ;;
+    --set-enabled=true) set_enabled="true" ;;
+    --set-enabled=false) set_enabled="false" ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear]
+                  [--set-enabled=true|false] [--force] [--quiet] [--notify]
+       hyprchroma daemon           watch for changes and keep everything in step
+       hyprchroma install-hooks    place the Omarchy theme and font hooks
+       hyprchroma framework (list|remove <target>|restore <target>)
+       hyprchroma palette [--all|--capture|--template|--source]
+       hyprchroma stale-apps       list apps still showing the old theme
+       hyprchroma restore [--stock|--captured]
+       hyprchroma --version
+USAGE
+      exit 0
+      ;;
+    *)
+      echo "hyprchroma: unknown option: $argument" >&2
+      exit 2
+      ;;
+  esac
+done
+
+log() {
+  (( quiet )) || printf 'Hyprchroma: %s\n' "$*"
+}
+
+notify_user() {
+  (( notify )) || return 0
+  command -v notify-send >/dev/null || return 0
+  notify-send -a Hyprchroma "Hyprchroma" "$*"
+}
+
+
+recycle_idle_apps() {
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --written-now || true
+}
+
+# Windows already open cannot be restyled in place, and nothing here touches
+# them; say which ones they are so the choice to restart is the user's.
+report_stale_apps() {
+  local stale_apps stale_list
+  stale_apps=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps "$@" 2>/dev/null || true)
+  [[ -n $stale_apps ]] || return 0
+  stale_list=${stale_apps//$'\n'/, }
+  log "restart to pick up the new theme: $stale_list"
+  command -v notify-send >/dev/null && \
+    notify-send -a Hyprchroma "Restart to finish theming" \
+      "Still showing the previous theme: $stale_list" || true
+}
+
+# The palette is resolved once and kept, not asked for a key at a time: each
+# call costs a process start, and a full sync reads more than fifty keys.
+declare -A PALETTE
+PALETTE_LOADED=0
+
+load_palette() {
+  local key value
+  while IFS=$'\t' read -r key value; do
+    [[ -n $key ]] && PALETTE[$key]=$value
+  done < <("$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1)
+  if [[ -z ${PALETTE[background]:-} ]]; then
+    echo "hyprchroma: no palette available; see 'hyprchroma palette --template'" >&2
+    exit 1
+  fi
+  PALETTE_LOADED=1
+}
+
+color() {
+  # Deliberately does not load: every call site is $(color x), which runs in a
+  # subshell, so anything this set would be discarded and the palette would be
+  # re-resolved once per key. The caller loads it once, in the parent shell.
+  local value=${PALETTE[$1]:-}
+  if [[ ! $value =~ ^#[0-9A-Fa-f]{6}$ ]]; then
+    echo "hyprchroma: invalid palette color '$1': $value" >&2
+    exit 1
+  fi
+  printf '%s' "$value"
+}
+
+palette_mode() {
+  [[ ${PALETTE[mode]:-dark} == light ]] && printf 'light' || printf 'dark'
+}
+
+# Omarchy is one palette source, not a requirement: the resolver decides, and
+# says so itself when nothing can provide a palette.
+"$HYPRCHROMA_LIB/hyprchroma-palette" background >/dev/null 2>&1 ||
+  fail "no palette available; see 'hyprchroma palette --template'"
+# Checked rather than assumed: jq gates every framework through target_enabled,
+# whose "|| echo true" fallback would silently report each one enabled if jq
+# were missing, and python3 writes the settings and status files. Both ship with
+# Omarchy, so this reports a broken system rather than guarding a likely case.
+command -v jq >/dev/null || fail "jq is not available"
+command -v python3 >/dev/null || fail "python3 is not available"
+[[ -x "$HYPRCHROMA_LIB/sync-gtk-theme" ]] || fail "GTK synchronizer is missing"
+[[ -x "$HYPRCHROMA_LIB/sync-qt-kde-theme" ]] || fail "Qt/KDE synchronizer is missing"
+[[ -f "$HYPRCHROMA_SHARE/pear-theme.css.template" ]] || fail "Pear CSS template is missing"
+[[ -x "$HYPRCHROMA_LIB/hyprchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
+[[ -x "$HYPRCHROMA_LIB/hyprchroma-state" ]] || fail "state helper is missing"
+
+mkdir -p "$STATE_DIR" "$DATA_DIR"
+
+
+target_enabled() {
+  local key
+  key=$(target_key "$1") || return 1
+  # Not "// true": jq's alternative operator treats false as empty as well as
+  # null, so a framework switched off read back as enabled and every sync
+  # re-applied the theme the toggle had just reverted. Only a missing key means
+  # enabled; a recorded false means false.
+  [[ $(jq -r --arg key "$key" \
+        '.frameworks[$key] | if . == null then true else . end' \
+        "$SETTINGS_FILE" 2>/dev/null || echo true) == "true" ]]
+}
+
+if [[ -n $set_enabled ]]; then
+  [[ $target != "all" ]] || fail "--set-enabled requires a specific --target"
+  settings_key=$(target_key "$target") || fail "unknown target: $target"
+  python3 - "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Hand the write to the state helper.
+
+    This used to be its own mkstemp-and-replace, which made the temporary name
+    exclusive but still resolved the destination directory and the rename by
+    pathname. The helper does both relative to a directory descriptor it has
+    verified, so routing through it leaves exactly one implementation of this
+    in the project instead of five."""
+    subprocess.run(
+        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+         "write-file", "--path", str(path)],
+        input=data if isinstance(data, bytes) else data.encode(),
+        check=True,
+    )
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+enabled = sys.argv[3] == "true"
+settings = json.loads(path.read_text()) if path.exists() else {}
+frameworks = settings.setdefault("frameworks", {})
+for name in ("gtk", "qtKde", "darkReader", "pear"):
+    frameworks.setdefault(name, True)
+frameworks[key] = enabled
+atomic_write(path, json.dumps(settings, indent=2) + "\n")
+PY
+  [[ $set_enabled == "true" ]] && force=1
+fi
+
+# The lock is created by the state helper, relative to a directory descriptor
+# it has verified, following no symlink -- and then opened here read-only.
+# "exec 9>" truncated whatever the path resolved to and followed a symlink
+# planted at it, on every unattended sync; flock(2) needs no write access at
+# all, so opening read-only means nothing on this path can be truncated or
+# written through even if the entry were swapped between the two steps.
+"$HYPRCHROMA_LIB/hyprchroma-state" prepare-lock --path "$LOCK_FILE" ||
+  fail "cannot prepare the lock file $LOCK_FILE"
+[[ -f $LOCK_FILE ]] || fail "lock file $LOCK_FILE was not created"
+exec 9<"$LOCK_FILE"
+if ! flock -n 9; then
+  log "another synchronization is already running"
+  exit 0
+fi
+
+# Switching a framework off reverts it, rather than only stopping future syncs:
+# leaving Hyprchroma's colors in place while claiming the framework is off gave
+# no way back short of uninstalling. Reverting to the captured value -- what the
+# framework looked like when Hyprchroma first touched it -- keeps the snapshot
+# in place, so switching back on re-syncs from a known baseline.
+if [[ $set_enabled == "false" ]]; then
+  revert_exit=0
+  if [[ $target == "dark-reader" ]]; then
+    "$HYPRCHROMA_LIB/hyprchroma-dark-reader" --restore --mode=captured \
+      --state-dir "$STATE_DIR" --status "$STATUS_FILE" || revert_exit=$?
+    if (( revert_exit == 2 )); then
+      # Dark Reader's settings live in the browser's own database, so the revert
+      # has to wait for the processes to end. It cannot be left to a later sync:
+      # darkReader is disabled as of a moment ago, so every sync from here skips
+      # this framework and the revert would never happen. 9>&- keeps the waiter
+      # from inheriting this run's lock.
+      setsid "$HYPRCHROMA_LIB/hyprchroma-state" \
+        --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-browser-exit --action revert \
+        >/dev/null 2>&1 </dev/null 9>&- &
+      log "$target disabled; it reverts when the browser exits"
+      notify_user "Dark Reader disabled; it reverts when the browser exits"
+      exit 0
+    fi
+  else
+    if [[ $target == "qt-kde" ]]; then
+      # Reverting rewrites kdeglobals and the generated color scheme, which is
+      # the same write that disturbs a running KDE application -- switching the
+      # toggle off must not do to them what syncing is careful not to. Defer on
+      # exactly the condition the sync path defers on.
+      kde_clients=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+        --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" kde-color-clients 2>/dev/null || true)
+      if [[ -n $kde_clients ]]; then
+        setsid "$HYPRCHROMA_LIB/hyprchroma-state" \
+          --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-kde-exit --action revert \
+          >/dev/null 2>&1 </dev/null 9>&- &
+        log "$target disabled; it reverts once these exit: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+        notify_user "Qt and KDE disabled; reverting once open KDE apps are closed"
+        exit 0
+      fi
+    fi
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+      restore --target "$target" --mode captured || revert_exit=$?
+  fi
+  if (( revert_exit != 0 )); then
+    log "$target disabled, but reverting it failed"
+    exit "$revert_exit"
+  fi
+  # A revert rewrites the palette exactly as a sync does, so it needs the same
+  # two follow-ups. Without them the files revert and every running application
+  # keeps the colors Hyprchroma gave it, with nothing said about why.
+  recycle_idle_apps
+  log "$target disabled and reverted to its captured state"
+  notify_user "$target disabled and reverted"
+  report_stale_apps --written-now
+  exit 0
+fi
+
+# Identifies the palette for change detection: Omarchy's theme name when
+# Omarchy is the source, the file's own content when it is not.
+load_palette
+theme_name=$("$HYPRCHROMA_LIB/hyprchroma-palette" --source-id 2>/dev/null || echo unknown)
+background=$(color background)
+dark_background=$(color dark_background)
+darker_background=$(color darker_background)
+lighter_background=$(color lighter_background)
+selection=$(color selection)
+selection_foreground=$(color selection_foreground)
+foreground=$(color foreground)
+dark_foreground=$(color dark_foreground)
+light_foreground=$(color light_foreground)
+bright_foreground=$(color bright_foreground)
+accent=$(color accent)
+muted=$(color muted)
+red=$(color red)
+bright_red=$(color bright_red)
+green=$(color green)
+bright_green=$(color bright_green)
+yellow=$(color yellow)
+bright_yellow=$(color bright_yellow)
+blue=$(color blue)
+magenta=$(color magenta)
+mode=$(palette_mode)
+browser_info=$("$HYPRCHROMA_LIB/hyprchroma-dark-reader" --info 2>/dev/null || printf '{}')
+browser_desktop=$(jq -r '.desktop // ""' <<<"$browser_info")
+browser_name=$(jq -r '.name // "the browser"' <<<"$browser_info")
+browser_supported=$(jq -r '.supported // false' <<<"$browser_info")
+browser_has_dark_reader=$(jq -r '.darkReaderInstalled // false' <<<"$browser_info")
+pear_installed=0
+if command -v pear-desktop >/dev/null || [[ -d "$HOME/.config/YouTube Music" ]]; then
+  pear_installed=1
+fi
+
+fingerprint=$(
+  printf '%s\n' \
+    "$theme_name" "$mode" "$background" "$dark_background" \
+    "$darker_background" "$lighter_background" "$selection" \
+    "$selection_foreground" "$foreground" \
+    "$dark_foreground" "$light_foreground" "$bright_foreground" "$accent" \
+    "$muted" "$red" "$bright_red" "$green" "$bright_green" \
+    "$yellow" "$bright_yellow" "$blue" "$magenta" \
+    "$browser_desktop" "$pear_installed" \
+    "$(omarchy font current 2>/dev/null || true)" \
+    "$(jq -c '.frameworks // {}' "$SETTINGS_FILE" 2>/dev/null || echo '{}')" |
+    sha256sum | cut -d' ' -f1
+)
+
+previous_fingerprint=""
+dark_reader_state=""
+if [[ -f "$STATUS_FILE" ]]; then
+  previous_fingerprint=$(jq -r '.fingerprint // ""' "$STATUS_FILE" 2>/dev/null || true)
+  dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
+  qt_kde_state=$(jq -r '.qtKde // ""' "$STATUS_FILE" 2>/dev/null || true)
+fi
+qt_kde_state=${qt_kde_state:-}
+
+# A per-application color scheme overrides the one kdeglobals sets for every
+# app, so an app that writes one back drops out of theming until something
+# changes. Clear pins before the unchanged-state short-circuit, so this is
+# enforced on every run rather than only when the palette moves.
+if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
+fi
+
+# An application with a window open is skipped here, so the run that closes it
+# is the one that has to recycle it -- and that run is usually a no-op for the
+# palette. Do this before the unchanged-state short-circuit, or an application
+# that was open during the theme change never gets recycled at all. A forced run
+# never short-circuits, so it recycles after writing instead: see below.
+if (( ! force )); then
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+fi
+
+if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
+   [[ $dark_reader_state != "pending-browser-exit" ]] && \
+   [[ $qt_kde_state != "deferred" ]] && [[ $target == "all" ]]; then
+  log "colors are already synchronized"
+  exit 0
+fi
+
+if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
+  log "synchronizing GTK"
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target gtk
+  "$HYPRCHROMA_LIB/sync-gtk-theme"
+fi
+if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
+  # kdeglobals and the generated color scheme are read by every running KDE
+  # application, and rewriting them underneath one is what disturbs it. If any
+  # process still has KColorScheme mapped, leave both files exactly as they are;
+  # the restart report names those applications, and the next sync after they
+  # exit writes the palette for everything started from then on.
+  kde_clients=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" kde-color-clients 2>/dev/null || true)
+  if [[ -n $kde_clients ]]; then
+    qt_kde_deferred=1
+    log "Qt and KDE left untouched; still running: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+    # Wait on those processes rather than polling for them: the helper sleeps on
+    # a pidfd and is woken by the kernel the moment the last one exits, then
+    # applies the palette. It holds a lock, so one waiter exists at a time.
+    # 9>&- matters: fd 9 holds this run's flock, and a child that inherits it
+    # keeps the lock held, so the sync the waiter runs later would find the lock
+    # taken and quietly do nothing.
+    setsid "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-kde-exit \
+      >/dev/null 2>&1 </dev/null 9>&- &
+  else
+    log "synchronizing Qt and KDE"
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
+    "$HYPRCHROMA_LIB/sync-qt-kde-theme"
+  fi
+fi
+
+qt_kde_deferred=${qt_kde_deferred:-0}
+pear_state="not-installed"
+if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
+  log "synchronizing Pear Desktop"
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target pear
+  pear_dir="$HOME/.config/YouTube Music"
+  pear_css="$pear_dir/hyprchroma.css"
+  mkdir -p "$pear_dir"
+  # Composed in memory and handed to the state helper, which creates its
+  # temporary and renames it relative to a directory descriptor it has
+  # verified, so no ancestor of $pear_dir can redirect the write.
+  pear_content=$(sed \
+    -e "s/^  --om-bg: .*;/  --om-bg: $background;/" \
+    -e "s/^  --om-bg-dark: .*;/  --om-bg-dark: $dark_background;/" \
+    -e "s/^  --om-bg-darker: .*;/  --om-bg-darker: $darker_background;/" \
+    -e "s/^  --om-surface: .*;/  --om-surface: $lighter_background;/" \
+    -e "s/^  --om-selection: .*;/  --om-selection: $selection;/" \
+    -e "s/^  --om-muted: .*;/  --om-muted: $muted;/" \
+    -e "s/^  --om-fg: .*;/  --om-fg: $foreground;/" \
+    -e "s/^  --om-fg-dim: .*;/  --om-fg-dim: $dark_foreground;/" \
+    -e "s/^  --om-fg-soft: .*;/  --om-fg-soft: $light_foreground;/" \
+    -e "s/^  --om-fg-bright: .*;/  --om-fg-bright: $bright_foreground;/" \
+    -e "s/^  --om-accent: .*;/  --om-accent: $accent;/" \
+    -e "s/^  --om-red: .*;/  --om-red: $red;/" \
+    -e "s/^  --om-green: .*;/  --om-green: $green;/" \
+    "$HYPRCHROMA_SHARE/pear-theme.css.template")
+  printf '%s\n' "$pear_content" |
+    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$pear_css" --mode 644
+
+  python3 - "$pear_dir/config.json" "$pear_css" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Hand the write to the state helper.
+
+    This used to be its own mkstemp-and-replace, which made the temporary name
+    exclusive but still resolved the destination directory and the rename by
+    pathname. The helper does both relative to a directory descriptor it has
+    verified, so routing through it leaves exactly one implementation of this
+    in the project instead of five."""
+    subprocess.run(
+        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+         "write-file", "--path", str(path)],
+        input=data if isinstance(data, bytes) else data.encode(),
+        check=True,
+    )
+
+path = Path(sys.argv[1])
+theme = sys.argv[2]
+config = json.loads(path.read_text()) if path.exists() else {}
+themes = config.setdefault("options", {}).setdefault("themes", [])
+themes[:] = [
+    item for item in themes
+    if Path(item).name != "hyprchroma.css"
+]
+themes.append(theme)
+atomic_write(path, json.dumps(config, indent=2) + "\n")
+PY
+  pear_state="synchronized"
+fi
+
+dark_reader_exit=0
+# Hyprchroma installs nothing into the browser. If Dark Reader is not there,
+# say so once -- there is nothing to theme until the user installs it.
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
+   && [[ $browser_supported == "true" && $browser_has_dark_reader != "true" ]]; then
+  log "Dark Reader is not installed in $browser_name; install it and Hyprchroma will theme it"
+  notify_user "Install Dark Reader in $browser_name and Hyprchroma will theme it"
+fi
+
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
+  dark_reader_theme="$DATA_DIR/dark-reader-theme.json"
+  python3 - "$dark_reader_theme" \
+  "$theme_name" "$background" "$foreground" "$selection" \
+  "$dark_background" "$accent" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Hand the write to the state helper.
+
+    This used to be its own mkstemp-and-replace, which made the temporary name
+    exclusive but still resolved the destination directory and the rename by
+    pathname. The helper does both relative to a directory descriptor it has
+    verified, so routing through it leaves exactly one implementation of this
+    in the project instead of five."""
+    subprocess.run(
+        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+         "write-file", "--path", str(path)],
+        input=data if isinstance(data, bytes) else data.encode(),
+        check=True,
+    )
+
+path = Path(sys.argv[1])
+name, background, foreground, selection, dark_background, accent = sys.argv[2:]
+stylesheet = f""":root {{
+  accent-color: {accent} !important;
+  scrollbar-color: {selection} {dark_background} !important;
+}}
+
+::selection {{
+  background-color: {selection} !important;
+  color: {foreground} !important;
+}}
+
+:focus-visible {{
+  outline-color: {accent} !important;
+}}
+
+::-webkit-scrollbar {{
+  background-color: {dark_background} !important;
+}}
+
+::-webkit-scrollbar-thumb {{
+  background-color: {selection} !important;
+  border: 3px solid {dark_background} !important;
+  border-radius: 8px !important;
+}}"""
+theme = {
+    "brightness": 100,
+    "contrast": 100,
+    "darkColorScheme": name,
+    "darkSchemeBackgroundColor": background,
+    "darkSchemeTextColor": foreground,
+    "engine": "dynamicTheme",
+    "fontFamily": "Open Sans",
+    "grayscale": 0,
+    "immediateModify": False,
+    "lightColorScheme": "Default",
+    "lightSchemeBackgroundColor": "#dcdad7",
+    "lightSchemeTextColor": "#181a1b",
+    "mode": 1,
+    "scrollbarColor": selection,
+    "selectionColor": selection,
+    "sepia": 0,
+    "styleSystemControls": True,
+    "stylesheet": stylesheet,
+    "textStroke": 0,
+    "useFont": False,
+}
+atomic_write(path, json.dumps(theme, indent=2) + "\n")
+PY
+
+  "$HYPRCHROMA_LIB/hyprchroma-dark-reader" \
+    --theme "$dark_reader_theme" \
+    --state-dir "$STATE_DIR" \
+    --status "$STATUS_FILE" || dark_reader_exit=$?
+  (( dark_reader_exit == 0 || dark_reader_exit == 2 )) || \
+    fail "Dark Reader synchronization failed"
+  if (( dark_reader_exit == 2 )); then
+    # Dark Reader's settings live in the browser's own database, so this waits
+    # for the processes to end, not for the window to close. By the time they do
+    # the window is long gone, so no window event arrives to prompt a retry and
+    # this needs its own wait. 9>&- keeps it from inheriting this run's lock.
+    setsid "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-browser-exit \
+      >/dev/null 2>&1 </dev/null 9>&- &
+  fi
+fi
+
+python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def atomic_write(path, data):
+    """Hand the write to the state helper.
+
+    This used to be its own mkstemp-and-replace, which made the temporary name
+    exclusive but still resolved the destination directory and the rename by
+    pathname. The helper does both relative to a directory descriptor it has
+    verified, so routing through it leaves exactly one implementation of this
+    in the project instead of five."""
+    subprocess.run(
+        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+         "write-file", "--path", str(path)],
+        input=data if isinstance(data, bytes) else data.encode(),
+        check=True,
+    )
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text()) if path.exists() else {}
+state.update({
+    "theme": sys.argv[2],
+    "fingerprint": sys.argv[3],
+    "lastSync": datetime.now(timezone.utc).isoformat(),
+})
+pear_state, target, dark_reader_exit, qt_kde_deferred = sys.argv[4:]
+if target in {"all", "gtk"}:
+    state["gtk"] = "synchronized"
+if target in {"all", "qt-kde"}:
+    # "deferred" keeps the next run from short-circuiting, so the palette lands
+    # as soon as whatever was holding kdeglobals open has exited.
+    state["qtKde"] = "deferred" if qt_kde_deferred == "1" else "synchronized"
+if target in {"all", "pear"}:
+    state["pearDesktop"] = pear_state
+if target in {"all", "dark-reader"} and dark_reader_exit == "0":
+    state["darkReader"] = "synchronized"
+atomic_write(path, json.dumps(state, indent=2) + "\n")
+PY
+
+if (( dark_reader_exit == 2 )); then
+  if [[ $target == "dark-reader" ]]; then
+    message="Dark Reader will update after the browser exits"
+  else
+    message="Enabled frameworks synchronized; Dark Reader will update after the browser exits"
+  fi
+else
+  case "$target" in
+    gtk) message="GTK and GNOME synchronized" ;;
+    qt-kde) message=$( (( qt_kde_deferred )) \
+             && echo "Qt/KDE deferred while KDE apps are open" \
+             || echo "Qt and KDE synchronized" ) ;;
+    dark-reader) message="Dark Reader synchronized" ;;
+    pear) message=$([[ $pear_state == "synchronized" ]] && echo "Pear Desktop synchronized" || echo "Pear Desktop is not installed") ;;
+    *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
+       # every time, which was invisible only while no toggle could really
+       # disable anything.
+       synced=()
+       target_enabled gtk && synced+=("GTK")
+       if target_enabled qt-kde; then
+         (( qt_kde_deferred )) || synced+=("Qt/KDE")
+       fi
+       target_enabled dark-reader && synced+=("Dark Reader")
+       target_enabled pear && (( pear_installed )) && synced+=("Pear Desktop")
+       if (( ${#synced[@]} == 0 )); then
+         message="nothing to synchronize; every framework is switched off"
+       else
+         message=$(printf '%s, ' "${synced[@]}")
+         message="${message%, } synchronized"
+       fi
+       if target_enabled qt-kde && (( qt_kde_deferred )); then
+         message+="; Qt/KDE deferred while KDE apps are open"
+       fi ;;
+  esac
+fi
+log "$message"
+if (( notify )); then
+  command -v notify-send >/dev/null && \
+    notify-send -a Hyprchroma "Colors synchronized" "$message"
+fi
+
+# Everything is written to disk by this point, so anything started from now on
+# picks up the new theme -- which is what makes this the right moment to recycle
+# idle services, rather than before the write as an event-driven run must.
+#
+# Judging staleness against the theme switch is wrong here. Toggling a framework
+# on, or pressing refresh, writes a new palette without changing the theme, so
+# every application started since the last switch looked current and nothing was
+# recycled: the files changed and nothing picked them up until the next theme
+# switch. A forced run has just written the palette, so now is the baseline.
+if (( force )); then
+  recycle_idle_apps
+  report_stale_apps --written-now
+else
+  report_stale_apps
+fi

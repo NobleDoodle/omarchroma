@@ -5,6 +5,7 @@ import configparser
 import json
 import os
 import re
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -13,39 +14,235 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write(path: Path, data: str, mode: int | None = None) -> None:
-    """Replace path with data, through a temporary nothing else can have opened.
+# --------------------------------------------------------------- safe io --
+# This block is shared verbatim between bin/hyprchroma-state and
+# bin/hyprchroma-dark-reader; test-safeio asserts the two copies stay
+# byte-identical, so a fix can never land in only one of them.
+#
+# An exclusive temporary filename is not enough on its own: the directory it
+# is created in, and the destination it is renamed onto, were still named by
+# ordinary pathname strings, so a symlink swapped into any ancestor could
+# redirect the create or the rename somewhere else entirely. Here the parent
+# directory is resolved once, verified, and kept open as a descriptor; every
+# create, stat, rename and unlink is then performed relative to that
+# descriptor. The directory a descriptor refers to cannot be changed by
+# renaming or relinking anything on disk afterwards, which closes the window
+# between checking a path and using it.
+#
+# Legitimate symlinks are still honored -- dotfile managers routinely link
+# ~/.config entries -- by resolving the path first and then walking the
+# resolved chain with O_NOFOLLOW. Nothing in that chain may be a symlink at
+# the moment it is opened, and every component must be owned by root or by
+# this user and be unwritable by anyone else, so no other account can ever
+# redirect a write, and a component swapped in mid-walk fails the open rather
+# than silently changing the destination.
 
-    mkstemp creates with O_CREAT|O_EXCL under a random name in the destination
-    directory, so a symlink planted at a guessable temporary path cannot be
-    followed, and the content is flushed before the rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if mode is None:
-        try:
-            mode = stat.S_IMODE(path.stat().st_mode)
-        except OSError:
-            mode = 0o644
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+SAFE_DIR_MODE = 0o700
+_TEMPORARY_ATTEMPTS = 16
+
+
+def _verify_directory(descriptor: int, where: str) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"not a directory: {where}")
+    if info.st_uid not in (0, os.geteuid(), _OVERFLOW_UID):
+        raise OSError(f"directory belongs to uid {info.st_uid}: {where}")
+    # Group- or world-writable is only safe with the sticky bit, which stops
+    # anyone but an entry's owner renaming or removing it -- the /tmp rule.
+    # Another account can still create a new name in such a directory, but the
+    # ownership check above rejects walking into anything it made.
+    if (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            and not info.st_mode & stat.S_ISVTX):
+        raise OSError(f"directory is writable by others: {where}")
+
+
+def open_dir(path, create: bool = False) -> int:
+    """Return a verified descriptor for path. The caller closes it."""
+    resolved = Path(os.path.realpath(str(path)))
+    if not resolved.is_absolute():
+        raise ValueError(f"refusing a relative directory: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
     try:
-        with os.fdopen(descriptor, "w") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        _verify_directory(descriptor, "/")
+        walked = Path("/")
+        for part in resolved.parts[1:]:
+            walked = walked / part
+            try:
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, SAFE_DIR_MODE, dir_fd=descriptor)
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = nested
+            _verify_directory(descriptor, str(walked))
+        return descriptor
     except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        os.close(descriptor)
         raise
 
 
-# Commands are resolved from here, not from the inherited PATH: this runs
-# unattended from the shell service. Every command used -- hyprctl, gdbus,
-# gsettings, xdg-settings and Omarchy's own -- lives in a root-owned directory.
-TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
-os.environ["PATH"] = TRUSTED_PATH
+def atomic_write(path, data, mode: int | None = None) -> None:
+    """Replace path with data, through a temporary in a verified directory."""
+    path = Path(path)
+    if isinstance(data, str):
+        data = data.encode()
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        if mode is None:
+            try:
+                mode = stat.S_IMODE(
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+            except (FileNotFoundError, OSError):
+                mode = 0o644
+        temporary = None
+        for _ in range(_TEMPORARY_ATTEMPTS):
+            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
+            try:
+                opened = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary is None:
+            raise OSError(f"could not create a temporary beside {path}")
+        try:
+            with os.fdopen(opened, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), mode)
+            os.replace(temporary, path.name,
+                       src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            os.fsync(descriptor)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def safe_read(path, limit: int) -> str | None:
+    """Read at most limit characters through a verified parent descriptor.
+
+    At most limit + 1 characters are read, so the size is judged from what was
+    actually read rather than from a stat that a swap could invalidate."""
+    path = Path(path)
+    try:
+        descriptor = open_dir(path.parent)
+    except OSError:
+        return None
+    try:
+        opened = os.open(path.name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
+            content = handle.read(limit + 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None if len(content) > limit else content
+
+
+def prepare_lock(path) -> None:
+    """Create path as a private regular lock file, following no symlink.
+
+    The sync script then opens it read-only and takes an flock on it, so even
+    a successful swap can never truncate or write through this path."""
+    path = Path(path)
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        try:
+            existing = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.geteuid():
+                os.unlink(path.name, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        opened = os.open(
+            path.name,
+            os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=descriptor,
+        )
+        try:
+            # A lock left behind by an older version was created by a shell
+            # redirection under the caller's umask, so narrow it here rather
+            # than leaving it as whatever that happened to produce.
+            os.fchmod(opened, 0o600)
+        finally:
+            os.close(opened)
+    finally:
+        os.close(descriptor)
+
+
+# Commands are resolved from a fixed, verified set of directories, never from
+# the inherited PATH: this runs unattended from the shell service, so a
+# directory someone else can write to appearing earlier in PATH would hand them
+# every command this helper runs. /usr/local/bin and /usr/local/sbin are gone
+# from the set -- nothing this plugin invokes lives there, and they are the
+# entries most often left group-writable on a real machine. /bin, /sbin and
+# /usr/sbin are gone too: on a usrmerge system they are symlinks to /usr/bin
+# and contribute nothing. What remains is checked rather than assumed.
+def _overflow_uid() -> int:
+    """The uid the kernel shows for an owner not mapped into this namespace.
+
+    Under systemd's sandboxing every read-only bind mount -- /, /usr, /home --
+    reports this instead of root, because root is not mapped. Such a directory
+    cannot be written by anyone here at all, so it is trusted like root's; the
+    mode check below still applies to it either way."""
+    try:
+        return int(pathlib_read("/proc/sys/kernel/overflowuid"))
+    except (OSError, ValueError):
+        return 65534
+
+
+def pathlib_read(name: str) -> str:
+    with open(name, "r", encoding="ascii") as handle:
+        return handle.read().strip()
+
+
+_OVERFLOW_UID = _overflow_uid()
+
+
+PATH_CANDIDATES = ("/usr/bin", "/usr/share/omarchy/bin")
+
+
+def trusted_path() -> str:
+    keep = []
+    for directory in PATH_CANDIDATES:
+        try:
+            info = os.stat(directory)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        # Root, or an owner not mapped into this namespace -- under systemd's
+        # sandboxing /usr reports the overflow uid rather than root, and a
+        # directory owned by an unmapped uid cannot be written by anyone here.
+        if info.st_uid not in (0, _OVERFLOW_UID):
+            continue
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        keep.append(directory)
+    # With nothing surviving there is nothing to resolve against, and an empty
+    # PATH fails every lookup silently. Fall back to the same fixed identities
+    # the shell entry points use rather than to whatever was inherited.
+    return ":".join(keep) if keep else ":".join(PATH_CANDIDATES)
+
+
+os.environ["PATH"] = trusted_path()
 
 # The id Dark Reader has when it comes from the Chrome Web Store. It is a hash
 # of the publisher's key, so every store install shares it -- but a build the
@@ -55,7 +252,7 @@ os.environ["PATH"] = TRUSTED_PATH
 CHROMIUM_STORE_EXTENSION_ID = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
 FIREFOX_EXTENSION_ID = "addon@darkreader.org"
 
-# Every key Omarchroma writes or edits. Snapshotting records these, and a stock
+# Every key Hyprchroma writes or edits. Snapshotting records these, and a stock
 # reset deletes them so Dark Reader regenerates its own defaults on next start.
 MANAGED_KEYS = [
     b"theme",
@@ -237,7 +434,7 @@ def read_capped(path: Path, limit: int = MAX_FOREIGN_FILE) -> str | None:
     """Read a file another program owns, or None if it cannot be trusted to fit.
 
     A browser's Preferences or Local State is written by the browser and has no
-    bound Omarchroma controls, and this runs unattended on every window event.
+    bound Hyprchroma controls, and this runs unattended on every window event.
     Reading at most limit+1 characters caps the memory a large file can cost
     without a stat-then-open race: the size is judged from what was actually
     read. Undecodable content also returns None, so the caller skips rather than
@@ -263,7 +460,7 @@ def read_capped_json(path: Path):
 
 
 # Dark Reader declares alarms, fontSettings, scripting and storage. Requiring
-# storage is not a guess about branding: Omarchroma writes the theme into the
+# storage is not a guess about branding: Hyprchroma writes the theme into the
 # extension's own storage, so one that never asked for storage cannot be the
 # extension being themed.
 DARK_READER_REQUIRED_PERMISSION = "storage"
@@ -313,7 +510,7 @@ def chromium_dark_reader_candidates(profile: Path) -> list[str]:
 def chromium_extension_id(profile: Path) -> str:
     """Which id Dark Reader actually has in this profile.
 
-    Omarchroma writes the theme into the extension's own storage, which is keyed
+    Hyprchroma writes the theme into the extension's own storage, which is keyed
     by id, so guessing wrong writes it nowhere -- or into something else. The
     store id wins when it is installed. Otherwise exactly one candidate must
     present itself as Dark Reader: if several do, this refuses to choose between
@@ -325,7 +522,7 @@ def chromium_extension_id(profile: Path) -> str:
     if len(candidates) == 1:
         return candidates[0]
     if len(candidates) > 1:
-        print(f"Omarchroma: {len(candidates)} extensions present themselves as Dark Reader "
+        print(f"Hyprchroma: {len(candidates)} extensions present themselves as Dark Reader "
               f"({', '.join(candidates)}); not theming any of them", file=sys.stderr)
 
     return CHROMIUM_STORE_EXTENSION_ID
@@ -346,7 +543,7 @@ def chromium_dark_reader_installed(profile: Path) -> bool:
 
     Deliberately does not count "Sync Extension Settings/<id>": apply_theme
     creates that directory itself, so counting it made this return true for any
-    browser Omarchroma had ever themed, whether or not the extension existed.
+    browser Hyprchroma had ever themed, whether or not the extension existed.
 
     A bare key in Preferences does not count either. A force-install policy the
     browser accepted but could not fetch leaves an empty entry there -- a
@@ -493,14 +690,14 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
 def restore_theme(state_dir: Path, status_file: Path | None) -> int:
     snapshot_file = state_dir / "original/dark-reader.json"
     if not snapshot_file.exists():
-        print("Omarchroma: no Dark Reader snapshot found")
+        print("Hyprchroma: no Dark Reader snapshot found")
         return 0
 
     snapshot = json.loads(snapshot_file.read_text())
     info = BROWSERS.get(snapshot.get("browserDesktop", ""))
     if info and browser_running(info["executables"]):
         write_status(status_file, darkReader="restore-pending-browser-exit")
-        print(f"Omarchroma: close {info['name']} before restoring Dark Reader")
+        print(f"Hyprchroma: close {info['name']} before restoring Dark Reader")
         return 2
 
     family = snapshot.get("browserFamily", "chromium")
@@ -510,7 +707,7 @@ def restore_theme(state_dir: Path, status_file: Path | None) -> int:
         try:
             import plyvel
         except ImportError:
-            print("Omarchroma: python-plyvel is required", file=sys.stderr)
+            print("Hyprchroma: python-plyvel is required", file=sys.stderr)
             return 1
 
         database = Path(snapshot["database"])
@@ -524,7 +721,7 @@ def restore_theme(state_dir: Path, status_file: Path | None) -> int:
                     db.delete(raw_key)
 
     write_status(status_file, darkReader="restored")
-    print(f"Omarchroma: Dark Reader restored for {snapshot.get('browser', 'browser')}")
+    print(f"Hyprchroma: Dark Reader restored for {snapshot.get('browser', 'browser')}")
     return 0
 
 
@@ -532,19 +729,19 @@ def reset_theme(status_file: Path | None) -> int:
     """Return Dark Reader to its factory defaults.
 
     Deliberately independent of the snapshot. On a machine that has had
-    Omarchroma before, the recorded "original" is itself Omarchroma output --
+    Hyprchroma before, the recorded "original" is itself Hyprchroma output --
     its theme and every builtIn entry in customThemes already name the generated
     scheme -- so replaying it reinstates a previous generation rather than
     stock. Deleting the managed keys instead lets Dark Reader rebuild its own
-    defaults, and costs nothing user-made: Omarchroma only ever overwrote the
+    defaults, and costs nothing user-made: Hyprchroma only ever overwrote the
     built-in schemes in place."""
     info = browser_info()
     if not info["supported"]:
-        print(f"Omarchroma: {info['name']} is not a supported browser")
+        print(f"Hyprchroma: {info['name']} is not a supported browser")
         return 0
     if browser_running(info["executables"]):
         write_status(status_file, darkReader="reset-pending-browser-exit")
-        print(f"Omarchroma: close {info['name']} before resetting Dark Reader")
+        print(f"Hyprchroma: close {info['name']} before resetting Dark Reader")
         return 2
 
     profile = active_profile(info)
@@ -561,12 +758,12 @@ def reset_theme(status_file: Path | None) -> int:
         try:
             import plyvel
         except ImportError:
-            print("Omarchroma: python-plyvel is required", file=sys.stderr)
+            print("Hyprchroma: python-plyvel is required", file=sys.stderr)
             return 1
 
         database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
         if not database.is_dir():
-            print("Omarchroma: no Dark Reader settings to reset")
+            print("Hyprchroma: no Dark Reader settings to reset")
             write_status(status_file, darkReader="reset")
             return 0
         with plyvel.DB(str(database), create_if_missing=False) as db:
@@ -574,7 +771,7 @@ def reset_theme(status_file: Path | None) -> int:
                 db.delete(key)
 
     write_status(status_file, darkReader="reset")
-    print(f"Omarchroma: Dark Reader reset to defaults for {info['name']}")
+    print(f"Hyprchroma: Dark Reader reset to defaults for {info['name']}")
     return 0
 
 
@@ -687,7 +884,7 @@ def apply_firefox_theme(info: dict, theme: dict, state_dir: Path | None, status_
         browserProfile=str(profile),
         darkReader="synchronized",
     )
-    print(f"Omarchroma: Dark Reader synchronized for {info['name']}")
+    print(f"Hyprchroma: Dark Reader synchronized for {info['name']}")
     return 0
 
 
@@ -700,7 +897,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
             browserDesktop=info["desktop"],
             darkReader="unsupported",
         )
-        print(f"Omarchroma: {info['name']} is not a supported browser")
+        print(f"Hyprchroma: {info['name']} is not a supported browser")
         return 0
 
     if browser_running(info["executables"]):
@@ -710,7 +907,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
             browserDesktop=info["desktop"],
             darkReader="pending-browser-exit",
         )
-        print(f"Omarchroma: Dark Reader update queued until {info['name']} exits")
+        print(f"Hyprchroma: Dark Reader update queued until {info['name']} exits")
         return 2
 
     theme = json.loads(theme_file.read_text())
@@ -720,7 +917,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
     try:
         import plyvel
     except ImportError:
-        print("Omarchroma: python-plyvel is required", file=sys.stderr)
+        print("Hyprchroma: python-plyvel is required", file=sys.stderr)
         return 1
 
     profile = active_profile(info)
@@ -769,7 +966,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         browserProfile=str(profile),
         darkReader="synchronized",
     )
-    print(f"Omarchroma: Dark Reader synchronized for {info['name']}")
+    print(f"Hyprchroma: Dark Reader synchronized for {info['name']}")
     return 0
 
 

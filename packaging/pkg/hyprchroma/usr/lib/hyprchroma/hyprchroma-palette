@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""Resolve the active palette, whatever is providing it.
+
+Omarchy is one source among others now, rather than the only one. A palette
+file takes precedence when it exists, so a plain Hyprland or Quickshell system
+drives this without Omarchy installed at all. With no such file, Omarchy's own
+resolver answers -- which keeps its alias cascade, derived shades and mode
+detection exactly as Omarchy computes them, instead of approximating them
+here and drifting.
+"""
+import hashlib
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+PATH_CANDIDATES = ("/usr/bin", "/usr/share/omarchy/bin")
+
+
+def _overflow_uid() -> int:
+    try:
+        with open("/proc/sys/kernel/overflowuid", encoding="ascii") as handle:
+            return int(handle.read().strip())
+    except (OSError, ValueError):
+        return 65534
+
+
+_OVERFLOW_UID = _overflow_uid()
+
+
+def trusted_path() -> str:
+    keep = []
+    for directory in PATH_CANDIDATES:
+        try:
+            info = os.stat(directory)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        if info.st_uid not in (0, _OVERFLOW_UID):
+            continue
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        keep.append(directory)
+    return ":".join(keep) if keep else ":".join(PATH_CANDIDATES)
+
+
+os.environ["PATH"] = trusted_path()
+
+# What the generators actually read. A palette file must define every one of
+# them: there is no cascade here, because a half-filled file that silently
+# resolves to something plausible is worse than one that says which key is
+# missing.
+REQUIRED = (
+    "background", "dark_background", "darker_background", "lighter_background",
+    "foreground", "dark_foreground", "light_foreground", "bright_foreground",
+    "selection", "selection_foreground", "accent", "muted",
+    "red", "bright_red", "green", "bright_green",
+    "yellow", "bright_yellow", "blue", "magenta",
+)
+HEX = re.compile(r"\A#[0-9A-Fa-f]{6}\Z")
+MAX_PALETTE = 256 * 1024
+
+
+def palette_file() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or (str(Path.home()) + "/.config")
+    return Path(base) / "hyprchroma" / "palette.toml"
+
+
+def have_omarchy() -> bool:
+    from shutil import which
+    return which("omarchy") is not None
+
+
+def read_palette(path: Path) -> dict:
+    """Parse key = "value" lines. The colors.toml shape, deliberately: it is
+    what Omarchy themes already use, so one can be copied here unchanged."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read(MAX_PALETTE + 1)
+    except (OSError, UnicodeDecodeError) as error:
+        raise SystemExit(f"hyprchroma-palette: cannot read {path}: {error}")
+    if len(text) > MAX_PALETTE:
+        raise SystemExit(f"hyprchroma-palette: {path} is implausibly large")
+    values = {}
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, _, value = raw.partition("=")
+        value = value.strip()
+        # A quoted value is taken whole: every color here starts with "#", so
+        # stripping a trailing comment first would eat the value itself.
+        if value[:1] in ("\"", "'"):
+            quote = value[0]
+            end = value.find(quote, 1)
+            value = value[1:end] if end > 0 else value[1:]
+        else:
+            value = value.split("#", 1)[0].strip()
+        values[key.strip().strip("\"'")] = value
+    return values
+
+
+def derive_mode(values: dict) -> str:
+    """Omarchy infers mode from background luminance when unset; the same rule
+    is applied here so a hand-written file need not state the obvious."""
+    background = values.get("background", "")
+    if not HEX.match(background):
+        return "dark"
+    red, green, blue = (int(background[i:i + 2], 16) for i in (1, 3, 5))
+    return "light" if red + green + blue > 382 else "dark"
+
+
+def from_file(path: Path) -> dict:
+    values = read_palette(path)
+    missing = [key for key in REQUIRED if key not in values]
+    if missing:
+        raise SystemExit(
+            f"hyprchroma-palette: {path} is missing: {', '.join(missing)}\n"
+            f"hyprchroma-palette: run 'hyprchroma palette --template' for a complete one")
+    bad = [k for k in REQUIRED if not HEX.match(values[k])]
+    if bad:
+        raise SystemExit(
+            f"hyprchroma-palette: {path} has values that are not #rrggbb: {', '.join(bad)}")
+    resolved = {key: values[key] for key in REQUIRED}
+    mode = values.get("mode") or values.get("theme_type") or derive_mode(values)
+    resolved["mode"] = "light" if str(mode).lower() == "light" else "dark"
+    if values.get("font"):
+        resolved["font"] = values["font"]
+    return resolved
+
+
+def from_omarchy() -> dict:
+    """One invocation, not one per key.
+
+    omarchy theme color --all resolves the whole palette in a single pass. Asking
+    key by key ran its parser, its alias cascade and its awk-based color mixing
+    once per key, which made a full sync about nine times slower."""
+    result = subprocess.run(["omarchy", "theme", "color", "--all"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit("hyprchroma-palette: omarchy could not resolve a palette")
+    values = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition("\t")
+        if key:
+            values[key.strip()] = value.strip()
+    missing = [key for key in REQUIRED if not HEX.match(values.get(key, ""))]
+    if missing:
+        raise SystemExit(
+            f"hyprchroma-palette: omarchy has no usable {', '.join(missing)}")
+    resolved = {key: values[key] for key in REQUIRED}
+    resolved["mode"] = "light" if values.get("mode", "").lower() == "light" else "dark"
+    return resolved
+
+
+def source() -> tuple:
+    path = palette_file()
+    if path.is_file():
+        return ("file", path)
+    if have_omarchy():
+        return ("omarchy", None)
+    raise SystemExit(
+        "hyprchroma-palette: no palette. Either install Omarchy, or create\n"
+        f"  {path}\n"
+        "hyprchroma-palette: 'hyprchroma palette --template' prints a complete one.")
+
+
+def resolve() -> dict:
+    kind, path = source()
+    return from_file(path) if kind == "file" else from_omarchy()
+
+
+def template() -> str:
+    lines = ["# hyprchroma palette. Every key below is required; each is #rrggbb.",
+             "# The shape is an Omarchy colors.toml, but not a substitute for one:",
+             "# Omarchy derives several of these rather than storing them, so a theme",
+             "# file copied here will be missing keys. On an Omarchy system,",
+             "# 'hyprchroma palette --capture' writes the fully resolved palette here.",
+             "# 'mode' is optional and inferred from the background's luminance.",
+             "",
+             '# mode = "dark"',
+             '# font = "CaskaydiaMono Nerd Font"',
+             ""]
+    for key in REQUIRED:
+        lines.append(f'{key} = "#000000"')
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    argument = sys.argv[1] if len(sys.argv) > 1 else ""
+    if argument == "--template":
+        sys.stdout.write(template())
+        return 0
+    if argument == "--capture":
+        # The resolved palette, written out as a file this can read back. On
+        # Omarchy that means Omarchy's own cascade did the resolving, so the
+        # result is what Omarchy would have produced rather than an
+        # approximation of it made here.
+        resolved = from_omarchy() if have_omarchy() else resolve()
+        out = ["# Captured by 'hyprchroma palette --capture'.",
+               f"# Source: {'omarchy' if have_omarchy() else source()[1]}", ""]
+        mode = resolved.pop("mode", "dark")
+        out.append(f'mode = "{mode}"')
+        out += [f'{key} = "{resolved[key]}"' for key in REQUIRED]
+        sys.stdout.write("\n".join(out) + "\n")
+        return 0
+    if argument == "--source":
+        kind, path = source()
+        print("omarchy" if kind == "omarchy" else str(path))
+        return 0
+    if argument == "--source-id":
+        # Identifies the palette for change detection: the theme name on
+        # Omarchy, the file's own content everywhere else.
+        kind, path = source()
+        if kind == "omarchy":
+            result = subprocess.run(["omarchy", "theme", "current"],
+                                    capture_output=True, text=True)
+            print(result.stdout.strip() or "omarchy")
+        else:
+            print(hashlib.sha256(path.read_bytes()).hexdigest()[:16])
+        return 0
+    if argument == "--all":
+        for key, value in sorted(resolve().items()):
+            print(f"{key}\t{value}")
+        return 0
+    if not argument or argument.startswith("-"):
+        print("Usage: hyprchroma-palette (--all | --source | --source-id | --template | <key>)",
+              file=sys.stderr)
+        return 2
+    value = resolve().get(argument)
+    if value is None:
+        print(f"hyprchroma-palette: no such key: {argument}", file=sys.stderr)
+        return 1
+    print(value)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

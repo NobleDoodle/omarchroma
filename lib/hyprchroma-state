@@ -4,22 +4,75 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import select
 import shlex
 import shutil
 import socket
 import stat
+import sys
 import subprocess
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
-# Commands are resolved from here, not from the inherited PATH: this runs
-# unattended from the shell service. Every command used -- hyprctl, gdbus,
-# gsettings, xdg-settings and Omarchy's own -- lives in a root-owned directory.
-TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
-os.environ["PATH"] = TRUSTED_PATH
+# Commands are resolved from a fixed, verified set of directories, never from
+# the inherited PATH: this runs unattended from the shell service, so a
+# directory someone else can write to appearing earlier in PATH would hand them
+# every command this helper runs. /usr/local/bin and /usr/local/sbin are gone
+# from the set -- nothing this plugin invokes lives there, and they are the
+# entries most often left group-writable on a real machine. /bin, /sbin and
+# /usr/sbin are gone too: on a usrmerge system they are symlinks to /usr/bin
+# and contribute nothing. What remains is checked rather than assumed.
+def _overflow_uid() -> int:
+    """The uid the kernel shows for an owner not mapped into this namespace.
+
+    Under systemd's sandboxing every read-only bind mount -- /, /usr, /home --
+    reports this instead of root, because root is not mapped. Such a directory
+    cannot be written by anyone here at all, so it is trusted like root's; the
+    mode check below still applies to it either way."""
+    try:
+        return int(pathlib_read("/proc/sys/kernel/overflowuid"))
+    except (OSError, ValueError):
+        return 65534
+
+
+def pathlib_read(name: str) -> str:
+    with open(name, "r", encoding="ascii") as handle:
+        return handle.read().strip()
+
+
+_OVERFLOW_UID = _overflow_uid()
+
+
+PATH_CANDIDATES = ("/usr/bin", "/usr/share/omarchy/bin")
+
+
+def trusted_path() -> str:
+    keep = []
+    for directory in PATH_CANDIDATES:
+        try:
+            info = os.stat(directory)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        # Root, or an owner not mapped into this namespace -- under systemd's
+        # sandboxing /usr reports the overflow uid rather than root, and a
+        # directory owned by an unmapped uid cannot be written by anyone here.
+        if info.st_uid not in (0, _OVERFLOW_UID):
+            continue
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        keep.append(directory)
+    # With nothing surviving there is nothing to resolve against, and an empty
+    # PATH fails every lookup silently. Fall back to the same fixed identities
+    # the shell entry points use rather than to whatever was inherited.
+    return ":".join(keep) if keep else ":".join(PATH_CANDIDATES)
+
+
+os.environ["PATH"] = trusted_path()
 
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
@@ -29,13 +82,13 @@ TARGETS = ("gtk", "qt-kde", "pear")
 # Which snapshot entries belong to which framework, so a single framework can be
 # reverted on its own when its toggle is switched off.
 TARGET_FILE_KEYS = {
-    "gtk": ("gtk3_css", "gtk4_css"),
-    "qt-kde": ("kdeglobals", "omarchroma_colors"),
+    "gtk": ("gtk3_css", "gtk4_css", "gtk3_hyprchroma_css", "gtk4_hyprchroma_css"),
+    "qt-kde": ("kdeglobals", "hyprchroma_colors"),
     "pear": ("pear_config", "pear_css"),
 }
 
 # Reverting to "stock" cannot mean replaying the snapshot: on a machine that has
-# had Omarchroma before, the snapshot's "originals" are themselves Omarchroma
+# had Hyprchroma before, the snapshot's "originals" are themselves Hyprchroma
 # output from an earlier install. Stock is derived from Omarchy instead, and
 # these two groups are the whole of the distinction.
 #
@@ -43,50 +96,198 @@ TARGET_FILE_KEYS = {
 # Omarchy would write for the current theme -- not the schema default.
 OMARCHY_OWNED_GSETTINGS = ("gtk-theme", "color-scheme", "icon-theme")
 # Omarchy never writes these: omarchy-font-set edits fontconfig, kitty and
-# alacritty but no gsettings key, and nothing in Omarchy sets an accent colour
-# (grep -rl accent-color over /usr/share/omarchy finds nothing). Only Omarchroma
+# alacritty but no gsettings key, and nothing in Omarchy sets an accent color
+# (grep -rl accent-color over /usr/share/omarchy finds nothing). Only Hyprchroma
 # sets them, so stock is the schema default.
-OMARCHROMA_ONLY_GSETTINGS = ("accent-color", "monospace-font-name")
+HYPRCHROMA_ONLY_GSETTINGS = ("accent-color", "monospace-font-name")
 
 # Files Omarchy itself never creates, so stock means absent rather than any
-# recorded content. gtk.css, kdeglobals and a color-scheme are all Omarchroma's
+# recorded content. gtk.css, kdeglobals and a color-scheme are all Hyprchroma's
 # alone; Omarchy ships no GTK-CSS and no KDE theming at all.
 STOCK_ABSENT_FILES = {
     "gtk": (".config/gtk-3.0/gtk.css", ".config/gtk-4.0/gtk.css"),
-    "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Omarchroma.colors"),
-    "pear": (".config/YouTube Music/omarchroma.css",),
+    "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Hyprchroma.colors"),
+    "pear": (".config/YouTube Music/hyprchroma.css",),
 }
 
 
-def atomic_write(path, data, mode=None):
-    """Replace path with data, through a temporary nothing else can have opened.
+# --------------------------------------------------------------- safe io --
+# This block is shared verbatim between bin/hyprchroma-state and
+# bin/hyprchroma-dark-reader; test-safeio asserts the two copies stay
+# byte-identical, so a fix can never land in only one of them.
+#
+# An exclusive temporary filename is not enough on its own: the directory it
+# is created in, and the destination it is renamed onto, were still named by
+# ordinary pathname strings, so a symlink swapped into any ancestor could
+# redirect the create or the rename somewhere else entirely. Here the parent
+# directory is resolved once, verified, and kept open as a descriptor; every
+# create, stat, rename and unlink is then performed relative to that
+# descriptor. The directory a descriptor refers to cannot be changed by
+# renaming or relinking anything on disk afterwards, which closes the window
+# between checking a path and using it.
+#
+# Legitimate symlinks are still honored -- dotfile managers routinely link
+# ~/.config entries -- by resolving the path first and then walking the
+# resolved chain with O_NOFOLLOW. Nothing in that chain may be a symlink at
+# the moment it is opened, and every component must be owned by root or by
+# this user and be unwritable by anyone else, so no other account can ever
+# redirect a write, and a component swapped in mid-walk fails the open rather
+# than silently changing the destination.
 
-    mkstemp creates with O_CREAT|O_EXCL and a random name in the destination
-    directory, so a symlink planted at a guessable temporary path -- which
-    "<name>.tmp" very much is -- cannot be followed. The content is flushed to
-    disk before the rename, so an interrupted write leaves the old file intact
-    rather than a truncated one, and the destination's own permissions are
-    carried across instead of being reset to whatever the umask allows."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if mode is None:
-        try:
-            mode = stat.S_IMODE(path.stat().st_mode)
-        except OSError:
-            mode = 0o644
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+SAFE_DIR_MODE = 0o700
+_TEMPORARY_ATTEMPTS = 16
+
+
+def _verify_directory(descriptor: int, where: str) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"not a directory: {where}")
+    if info.st_uid not in (0, os.geteuid(), _OVERFLOW_UID):
+        raise OSError(f"directory belongs to uid {info.st_uid}: {where}")
+    # Group- or world-writable is only safe with the sticky bit, which stops
+    # anyone but an entry's owner renaming or removing it -- the /tmp rule.
+    # Another account can still create a new name in such a directory, but the
+    # ownership check above rejects walking into anything it made.
+    if (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            and not info.st_mode & stat.S_ISVTX):
+        raise OSError(f"directory is writable by others: {where}")
+
+
+def open_dir(path, create: bool = False) -> int:
+    """Return a verified descriptor for path. The caller closes it."""
+    resolved = Path(os.path.realpath(str(path)))
+    if not resolved.is_absolute():
+        raise ValueError(f"refusing a relative directory: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
     try:
-        with os.fdopen(descriptor, "wb" if isinstance(data, bytes) else "w") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        _verify_directory(descriptor, "/")
+        walked = Path("/")
+        for part in resolved.parts[1:]:
+            walked = walked / part
+            try:
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, SAFE_DIR_MODE, dir_fd=descriptor)
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = nested
+            _verify_directory(descriptor, str(walked))
+        return descriptor
     except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def atomic_write(path, data, mode: int | None = None) -> None:
+    """Replace path with data, through a temporary in a verified directory."""
+    path = Path(path)
+    if isinstance(data, str):
+        data = data.encode()
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        if mode is None:
+            try:
+                mode = stat.S_IMODE(
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+            except (FileNotFoundError, OSError):
+                mode = 0o644
+        temporary = None
+        for _ in range(_TEMPORARY_ATTEMPTS):
+            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
+            try:
+                opened = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary is None:
+            raise OSError(f"could not create a temporary beside {path}")
         try:
-            os.unlink(temporary)
+            with os.fdopen(opened, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), mode)
+            os.replace(temporary, path.name,
+                       src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            os.fsync(descriptor)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def safe_read(path, limit: int) -> str | None:
+    """Read at most limit characters through a verified parent descriptor.
+
+    At most limit + 1 characters are read, so the size is judged from what was
+    actually read rather than from a stat that a swap could invalidate."""
+    path = Path(path)
+    try:
+        descriptor = open_dir(path.parent)
+    except OSError:
+        return None
+    try:
+        opened = os.open(path.name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
+            content = handle.read(limit + 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None if len(content) > limit else content
+
+
+def prepare_lock(path) -> None:
+    """Create path as a private regular lock file, following no symlink.
+
+    The sync script then opens it read-only and takes an flock on it, so even
+    a successful swap can never truncate or write through this path."""
+    path = Path(path)
+    # This removes whatever is in the way -- a symlink planted at the lock path,
+    # or a fifo that would block the open forever. That is worth having, but it
+    # is an unlink, so it is confined to names that are actually locks rather
+    # than offered for any path a caller names.
+    if path.suffix != ".lock":
+        raise ValueError(f"refusing to prepare a lock at {path}: not a .lock name")
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        try:
+            existing = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.geteuid():
+                os.unlink(path.name, dir_fd=descriptor)
         except FileNotFoundError:
             pass
-        raise
+        opened = os.open(
+            path.name,
+            os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=descriptor,
+        )
+        try:
+            # A lock left behind by an older version was created by a shell
+            # redirection under the caller's umask, so narrow it here rather
+            # than leaving it as whatever that happened to produce.
+            os.fchmod(opened, 0o600)
+        finally:
+            os.close(opened)
+    finally:
+        os.close(descriptor)
 
 
 def read_json(path):
@@ -122,7 +323,7 @@ def window_display_name(title, klass):
 
     A Chromium web app is not named that way. Its class is built from the URL,
     so "chrome-maps.google.com__-Default" reduced to its last dotted segment
-    gives "Com__-Default", which names nothing anyone would recognise. Those
+    gives "Com__-Default", which names nothing anyone would recognize. Those
     windows carry the page name in the title instead, which is what the user
     opened and what they would look for."""
     if klass and (klass.startswith("chrome-") or "__" in klass):
@@ -141,7 +342,56 @@ def command_output(command):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-GENERATED_MARKER = "Generated by Omarchroma"
+GENERATED_MARKER = "Generated by Hyprchroma"
+
+
+def ensure_import(path: Path, line: str) -> str:
+    """Make sure path pulls in our stylesheet, without taking the file over.
+
+    Owning gtk.css outright meant any customization the user had there stopped
+    working the moment this was installed, and was overwritten again on every
+    theme change. The colors live in a file of our own now and gtk.css only
+    references it, so what the user put there survives.
+
+    The import is put first, not appended: in GTK's CSS a later @define-color
+    replaces an earlier one, so appending would silently override whatever the
+    user wrote, which is the wrong way round. First means our colors are the
+    defaults and anything below overrides them."""
+    text = read_capped(path)
+    if text is None:
+        try:
+            path.stat()
+        except FileNotFoundError:
+            atomic_write(path, line + "\n", 0o644)
+            return "created"
+        return "unreadable"
+    if line in text:
+        return "present"
+    # A file this wrote in full, before the import existed. Its whole content is
+    # ours, so it is replaced rather than prepended to and kept forever.
+    if GENERATED_MARKER in text:
+        atomic_write(path, line + "\n", 0o644)
+        return "migrated"
+    atomic_write(path, line + "\n\n" + text.lstrip("\n"), 0o644)
+    return "added"
+
+
+def remove_import(path: Path, line: str) -> str:
+    """Take our reference back out and leave whatever else was there."""
+    text = read_capped(path)
+    if text is None:
+        return "absent"
+    kept = [row for row in text.splitlines() if row.strip() != line]
+    remaining = "\n".join(kept).strip()
+    if not remaining:
+        # Nothing of the user's was ever in it.
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return "removed"
+    atomic_write(path, remaining + "\n", 0o644)
+    return "stripped"
 
 
 def generated_by_marker(path):
@@ -154,7 +404,7 @@ def generated_by_marker(path):
 
 def generated_kdeglobals(path):
     try:
-        return "ColorScheme=Omarchroma" in path.read_text(errors="replace")
+        return "ColorScheme=Hyprchroma" in path.read_text(errors="replace")
     except OSError:
         return False
 
@@ -163,32 +413,69 @@ def always_generated(path):
     return True
 
 
-# How to tell Omarchroma's own output from a genuine original, per snapshot key.
+# How to tell Hyprchroma's own output from a genuine original, per snapshot key.
 # Capture is create-once, so a plugin update cannot overwrite a good baseline --
 # but if the state directory is lost while the generated files are still on disk,
-# the next capture would record Omarchroma's own colours as the "original" and
+# the next capture would record Hyprchroma's own colors as the "original" and
 # every later restore would reinstate them. These probes stop that.
+HYPRCHROMA_IMPORT = '@import url("hyprchroma.css");'
+
+
+def has_hyprchroma_import(path):
+    """Either shape of our output in a gtk.css: the import line this writes
+    now, or a whole file written by a version that owned gtk.css outright."""
+    text = read_capped(path)
+    if text is None:
+        return False
+    return HYPRCHROMA_IMPORT in text or GENERATED_MARKER in text
+
+
+def strip_hyprchroma_import(path):
+    """The user's gtk.css without our line, or None if that was all of it.
+
+    A backup must never carry Hyprchroma's own output: restoring it would put
+    back an import of a stylesheet the restore just deleted, and the next
+    capture would take that as the user's original and keep it forever."""
+    text = read_capped(path)
+    if text is None:
+        return None
+    # An older version wrote the whole file, so there is no user content in it
+    # to keep and nothing to hand back.
+    if GENERATED_MARKER in text:
+        return None
+    kept = [row for row in text.splitlines() if row.strip() != HYPRCHROMA_IMPORT]
+    remaining = "\n".join(kept).strip()
+    return remaining + "\n" if remaining else None
+
+
 GENERATED_PROBES = {
-    "gtk3_css": generated_by_marker,
-    "gtk4_css": generated_by_marker,
+    "gtk3_hyprchroma_css": generated_by_marker,
+    "gtk4_hyprchroma_css": generated_by_marker,
+    # gtk.css is the user's; what is ours in it is the one import line.
+    "gtk3_css": has_hyprchroma_import,
+    "gtk4_css": has_hyprchroma_import,
     "kdeglobals": generated_kdeglobals,
-    "omarchroma_colors": always_generated,
+    "hyprchroma_colors": always_generated,
     "pear_css": always_generated,
 }
 
-# Files that are Omarchroma's in their entirety once a probe recognizes them, so
+# Files that are Hyprchroma's in their entirety once a probe recognizes them, so
 # a capture records them absent and stores nothing -- which is also their correct
 # stock value, Omarchy writing none of them. A gtk.css carrying the generated
 # header is ours whole; one without it is the user's and is captured normally.
-WHOLLY_GENERATED = frozenset({"omarchroma_colors", "pear_css", "gtk3_css", "gtk4_css"})
+# gtk.css is no longer ours: we only add an import line to it, so the user's
+# own content is genuinely theirs and is backed up as such. What is wholly
+# generated is the stylesheet that import points at.
+WHOLLY_GENERATED = frozenset({"hyprchroma_colors", "pear_css",
+                              "gtk3_hyprchroma_css", "gtk4_hyprchroma_css"})
 
-# kdeglobals is the one file Omarchroma shares with its owner: KDE and the user
-# keep real settings there. These are the parts Omarchroma writes -- whole
+# kdeglobals is the one file Hyprchroma shares with its owner: KDE and the user
+# keep real settings there. These are the parts Hyprchroma writes -- whole
 # sections it replaces from the generated scheme, and individual keys it sets in
 # sections it does not own -- mirroring lib/sync-qt-kde-theme.
-OMARCHROMA_KDE_SECTION_PREFIXES = ("[Colors:", "[ColorEffects:")
-OMARCHROMA_KDE_SECTIONS = frozenset({"[WM]"})
-OMARCHROMA_KDE_KEYS = {
+HYPRCHROMA_KDE_SECTION_PREFIXES = ("[Colors:", "[ColorEffects:")
+HYPRCHROMA_KDE_SECTIONS = frozenset({"[WM]"})
+HYPRCHROMA_KDE_KEYS = {
     "[General]": {"ColorScheme", "ColorSchemeHash"},
     "[KDE]": {"contrast"},
     "[UiSettings]": {"ColorScheme"},
@@ -197,11 +484,11 @@ OMARCHROMA_KDE_KEYS = {
 
 
 def strip_generated_kdeglobals(path):
-    """kdeglobals with everything Omarchroma wrote removed, or None if nothing
+    """kdeglobals with everything Hyprchroma wrote removed, or None if nothing
     of the user's is left.
 
-    A backup must never hold Omarchroma's own output: restoring it would put
-    back the colours the restore was meant to remove, and capturing it again
+    A backup must never hold Hyprchroma's own output: restoring it would put
+    back the colors the restore was meant to remove, and capturing it again
     later would carry the same content forward indefinitely."""
     try:
         lines = path.read_text(errors="replace").splitlines()
@@ -214,15 +501,15 @@ def strip_generated_kdeglobals(path):
         if stripped.startswith("[") and stripped.endswith("]"):
             # "[Colors:Header][Inactive]" is a subgroup of a section we own.
             section = stripped
-            owned = (section in OMARCHROMA_KDE_SECTIONS
-                     or section.startswith(OMARCHROMA_KDE_SECTION_PREFIXES))
+            owned = (section in HYPRCHROMA_KDE_SECTIONS
+                     or section.startswith(HYPRCHROMA_KDE_SECTION_PREFIXES))
             if not owned:
                 kept.append(line)
             continue
         if owned:
             continue
-        if section in OMARCHROMA_KDE_KEYS and "=" in stripped:
-            if stripped.split("=", 1)[0].strip() in OMARCHROMA_KDE_KEYS[section]:
+        if section in HYPRCHROMA_KDE_KEYS and "=" in stripped:
+            if stripped.split("=", 1)[0].strip() in HYPRCHROMA_KDE_KEYS[section]:
                 continue
         kept.append(line)
 
@@ -253,7 +540,9 @@ def strip_generated_kdeglobals(path):
     return "\n".join(result) + "\n" if result else None
 
 
-GENERATED_CLEANERS = {"kdeglobals": strip_generated_kdeglobals}
+GENERATED_CLEANERS = {"kdeglobals": strip_generated_kdeglobals,
+                      "gtk3_css": strip_hyprchroma_import,
+                      "gtk4_css": strip_hyprchroma_import}
 
 
 def snapshot_file(snapshot_dir, manifest, key, path):
@@ -263,7 +552,7 @@ def snapshot_file(snapshot_dir, manifest, key, path):
     entry = {"path": str(path), "existed": path.exists()}
     generated = entry["existed"] and GENERATED_PROBES.get(key, lambda _: False)(path)
     if generated:
-        # Evidence of an earlier Omarchroma install whose state was lost. The
+        # Evidence of an earlier Hyprchroma install whose state was lost. The
         # gsettings values captured alongside this are suspect for the same
         # reason, so flag the manifest as a whole rather than just this entry.
         entry["generated"] = True
@@ -275,7 +564,7 @@ def snapshot_file(snapshot_dir, manifest, key, path):
         else:
             cleaner = GENERATED_CLEANERS.get(key)
             cleaned = cleaner(path) if cleaner else None
-            # Nothing of the user's left once Omarchroma's part is removed, so
+            # Nothing of the user's left once Hyprchroma's part is removed, so
             # there is no original to keep.
             if cleaned is None:
                 entry["existed"] = False
@@ -292,10 +581,10 @@ def snapshot_file(snapshot_dir, manifest, key, path):
 
 
 def strip_generated_pear_themes(snapshot_dir, manifest):
-    """Drop Omarchroma's stylesheet from the captured Pear config.
+    """Drop Hyprchroma's stylesheet from the captured Pear config.
 
     config.json is a genuine user file, so it is always captured; only the entry
-    Omarchroma appends to options.themes is ours. Removing it from the backup
+    Hyprchroma appends to options.themes is ours. Removing it from the backup
     keeps a re-capture from recording our own stylesheet as part of the original.
     """
     entry = manifest.get("files", {}).get("pear_config", {})
@@ -310,7 +599,7 @@ def strip_generated_pear_themes(snapshot_dir, manifest):
     if not isinstance(options, dict) or not isinstance(options.get("themes"), list):
         return
     kept = [theme for theme in options["themes"]
-            if "omarchroma" not in os.path.basename(str(theme)).lower()]
+            if "hyprchroma" not in os.path.basename(str(theme)).lower()]
     if kept == options["themes"]:
         return
     options["themes"] = kept
@@ -341,13 +630,17 @@ def snapshot(state_dir, data_dir, target):
     if target == "gtk":
         snapshot_file(snapshot_dir, manifest, "gtk3_css", home / ".config/gtk-3.0/gtk.css")
         snapshot_file(snapshot_dir, manifest, "gtk4_css", home / ".config/gtk-4.0/gtk.css")
+        snapshot_file(snapshot_dir, manifest, "gtk3_hyprchroma_css",
+                      home / ".config/gtk-3.0/hyprchroma.css")
+        snapshot_file(snapshot_dir, manifest, "gtk4_hyprchroma_css",
+                      home / ".config/gtk-4.0/hyprchroma.css")
         snapshot_gsettings(manifest)
     elif target == "qt-kde":
         snapshot_file(snapshot_dir, manifest, "kdeglobals", home / ".config/kdeglobals")
-        snapshot_file(snapshot_dir, manifest, "omarchroma_colors", home / ".local/share/color-schemes/Omarchroma.colors")
+        snapshot_file(snapshot_dir, manifest, "hyprchroma_colors", home / ".local/share/color-schemes/Hyprchroma.colors")
     elif target == "pear":
         snapshot_file(snapshot_dir, manifest, "pear_config", home / ".config/YouTube Music/config.json")
-        snapshot_file(snapshot_dir, manifest, "pear_css", home / ".config/YouTube Music/omarchroma.css")
+        snapshot_file(snapshot_dir, manifest, "pear_css", home / ".config/YouTube Music/hyprchroma.css")
         strip_generated_pear_themes(snapshot_dir, manifest)
     else:
         raise SystemExit(f"unknown target: {target}")
@@ -403,7 +696,7 @@ def read_capped(path, limit=MAX_FOREIGN_FILE):
     """Read a file this program does not own, or None if it will not fit.
 
     An rc file in ~/.config is written by whichever application owns it and has
-    no bound Omarchroma controls, while this runs unattended on every window
+    no bound Hyprchroma controls, while this runs unattended on every window
     event. At most limit+1 characters are read, so the size is judged from what
     was actually read rather than from a stat that could change underneath.
     Undecodable content returns None too, so the caller skips it rather than
@@ -427,7 +720,7 @@ def readable_rc_files():
 
 
 def clear_app_color_schemes(state_dir):
-    """A KDE app can pin its own colour scheme in its rc file, which wins over
+    """A KDE app can pin its own color scheme in its rc file, which wins over
     kdeglobals and leaves that app ignoring the synchronized palette. Record the
     original value once, then drop the key so every app follows kdeglobals. The
     key is only ever removed, never rewritten to track the theme; the
@@ -447,13 +740,13 @@ def clear_app_color_schemes(state_dir):
         # sync runs with the app closed.
         owner = path.name[:-2] if path.name.endswith("rc") else path.name
         if owner in running:
-            print(f"Omarchroma: {owner} is running; leaving its pinned "
-                  f"{value} colour scheme alone until it is restarted")
+            print(f"Hyprchroma: {owner} is running; leaving its pinned "
+                  f"{value} color scheme alone until it is restarted")
             continue
         recorded.setdefault(str(path), {"existed": True, "value": value})
         del lines[index]
         write_lines(path, lines)
-        print(f"Omarchroma: cleared the {value} colour scheme pinned in {path.name}")
+        print(f"Hyprchroma: cleared the {value} color scheme pinned in {path.name}")
 
     write_json(manifest_path, manifest)
 
@@ -503,10 +796,10 @@ def running_executables():
 
 
 def last_sync_at(state_dir):
-    """When Omarchroma last wrote the palette, as epoch seconds.
+    """When Hyprchroma last wrote the palette, as epoch seconds.
 
     The honest baseline for a standing display: an application is showing the
-    previous theme if it started before Omarchroma last wrote one, which is not
+    previous theme if it started before Hyprchroma last wrote one, which is not
     the same question as when the Omarchy theme last changed."""
     stamp = read_json(state_dir / "status.json").get("lastSync")
     if not isinstance(stamp, str):
@@ -633,7 +926,7 @@ def stale_open_apps(since=None):
     return sorted(names)
 
 
-# Any process with KColorScheme mapped reads the colours in kdeglobals and
+# Any process with KColorScheme mapped reads the colors in kdeglobals and
 # reloads when they change. That is the predicate, rather than a list of KDE
 # applications, so it covers ones this plugin has never heard of.
 KDE_COLOR_LIBRARY = "libKF6ColorScheme"
@@ -679,7 +972,7 @@ def kde_color_clients():
 
 
 def kde_color_client_pids():
-    """PIDs behind the windows that are holding the colour files open."""
+    """PIDs behind the windows that are holding the color files open."""
     windows = open_windows()
     if windows is None:
         return []
@@ -719,7 +1012,7 @@ def apply_and_check_clear(state_dir, data_dir, action):
         restore(state_dir, data_dir, ("qt-kde",), "captured")
     else:
         subprocess.run(
-            [str(Path.home() / ".local/bin/omarchroma-sync"), "--target=qt-kde", "--quiet"],
+            ["/usr/bin/hyprchroma", "--target=qt-kde", "--quiet"],
             check=False,
         )
     return not kde_color_client_pids()
@@ -794,16 +1087,47 @@ def name_has_owner(name):
     return raw is not None and "true" in raw
 
 
+def trusted_executable(path) -> bool:
+    """Whether path is a binary only root can have put there or changed.
+
+    The file and every directory above it must be owned by root and unwritable
+    by group and other, so a name taken out of a data file can never send this
+    to something this account -- or any other non-root one -- could plant."""
+    if not path:
+        return False
+    resolved = Path(os.path.realpath(str(path)))
+    try:
+        info = os.stat(resolved)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0:
+        return False
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return False
+    for parent in resolved.parents:
+        try:
+            above = os.stat(parent)
+        except OSError:
+            return False
+        if above.st_uid != 0 or above.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+    return True
+
+
 def service_file_exec(name):
     """The binary a D-Bus service file launches, so an application's own quit
     flag can be used without keeping a list of binaries."""
+    # XDG_DATA_DIRS is inherited, so the list of places to look is attacker
+    # influenced in exactly the way PATH was: every root is read through
+    # safe_read, which resolves and verifies the whole chain before opening,
+    # and a root that fails verification is skipped rather than trusted.
     roots = [Path.home() / ".local/share"]
     roots += [Path(part) for part in (os.environ.get("XDG_DATA_DIRS")
-                                      or "/usr/local/share:/usr/share").split(":") if part]
+                                      or "/usr/share").split(":") if part]
     for root in roots:
-        try:
-            text = (root / "dbus-1" / "services" / f"{name}.service").read_text()
-        except OSError:
+        text = safe_read(root / "dbus-1" / "services" / f"{name}.service",
+                         MAX_FOREIGN_FILE)
+        if text is None:
             continue
         for line in text.splitlines():
             if line.startswith("Exec="):
@@ -811,7 +1135,17 @@ def service_file_exec(name):
                     parts = shlex.split(line[len("Exec="):])
                 except ValueError:
                     return None
-                return parts[0] if parts else None
+                if not parts:
+                    return None
+                # A service file is data, never a command. The binary it
+                # names is run only when root owns it and nobody else can
+                # rewrite it or anything above it -- which allows the
+                # /usr/lib helpers real services use, and refuses anything
+                # planted somewhere this account can write.
+                candidate = parts[0]
+                if not os.path.isabs(candidate):
+                    candidate = shutil.which(candidate, path=trusted_path()) or ""
+                return candidate if trusted_executable(candidate) else None
     return None
 
 
@@ -892,20 +1226,20 @@ def refresh_idle_apps(since=None):
         if not has_quit_action(name, path):
             continue
         quit_application(name, path)
-        print(f"Omarchroma: closed idle {name} so its next window is themed")
+        print(f"Hyprchroma: closed idle {name} so its next window is themed")
 
 
 def browser_client_pids():
     """PIDs of the default browser.
 
     Dark Reader's settings live inside the browser's own database, so unlike the
-    KDE colour files this has to wait for the processes to end rather than for a
+    KDE color files this has to wait for the processes to end rather than for a
     window to close -- and a browser leaves a good many running for a while after
     its last window goes. Since the window is already gone by then, no further
     window event arrives to prompt a retry, which is why this needs its own
     wait."""
     result = subprocess.run(
-        [str(Path.home() / ".local/bin/omarchroma-dark-reader"), "--info"],
+        [str(Path.home() / ".local/bin/hyprchroma-dark-reader"), "--info"],
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
     )
     try:
@@ -932,7 +1266,10 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
     bound to the service."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     runtime.mkdir(parents=True, exist_ok=True)
-    lock = open(runtime / "omarchroma-browser-wait.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(runtime / "hyprchroma-browser-wait.lock")
+    lock = open(runtime / "hyprchroma-browser-wait.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -942,11 +1279,11 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
         # Switching the toggle off already recorded darkReader as disabled, so a
         # sync would now skip this framework entirely. Call the helper directly
         # instead, or the revert the toggle promised would never happen.
-        finish = [str(Path.home() / ".local/bin/omarchroma-dark-reader"),
+        finish = [str(Path.home() / ".local/bin/hyprchroma-dark-reader"),
                   "--restore", "--mode=captured",
                   "--state-dir", str(state_dir), "--status", str(state_dir / "status.json")]
     else:
-        finish = [str(Path.home() / ".local/bin/omarchroma-sync"),
+        finish = ["/usr/bin/hyprchroma",
                   "--target=dark-reader", "--quiet"]
     for _ in range(WATCH_ROUNDS):
         pids = browser_client_pids()
@@ -987,12 +1324,16 @@ def watch_events(state_dir, data_dir):
     those and letting the sync decide whether anything actually moved replaces
     polling on a fixed interval.
 
-    One runs at a time. When the stream closes this returns so the service can
-    restart it; a change in that gap is caught by the next window event or the
-    service's fallback timer."""
+    One runs at a time. When the stream closes -- or before it exists, at
+    login -- this returns and the unit restarts it. A change in that gap is
+    caught by the sync the daemon runs before watching, and then by the next
+    window event."""
     lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     lock_dir.mkdir(parents=True, exist_ok=True)
-    lock = open(lock_dir / "omarchroma-watch-events.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(lock_dir / "hyprchroma-watch-events.lock")
+    lock = open(lock_dir / "hyprchroma-watch-events.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -1000,9 +1341,12 @@ def watch_events(state_dir, data_dir):
 
     stream_path = hyprland_event_socket()
     if stream_path is None:
-        return  # no event stream to watch; the fallback timer covers it
+        # No stream yet -- Hyprland not up at login. Returning lets the unit
+        # restart us in a moment; there is no fallback timer behind this any
+        # more, so silently carrying on would mean never watching at all.
+        return
 
-    sync = [str(Path.home() / ".local/bin/omarchroma-sync"), "--quiet"]
+    sync = ["/usr/bin/hyprchroma", "--quiet"]
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         stream.connect(str(stream_path))
         pending = b""
@@ -1029,7 +1373,7 @@ def watch_events(state_dir, data_dir):
 
 
 def watch_kde_exit(state_dir, data_dir, action="sync"):
-    """Wait for the KDE applications holding the colour files to exit, then
+    """Wait for the KDE applications holding the color files to exit, then
     write the palette once -- or revert it, when a toggle was switched off.
 
     The wait is on pidfds handed to poll(), so the kernel wakes this the moment
@@ -1039,7 +1383,10 @@ def watch_kde_exit(state_dir, data_dir, action="sync"):
     registers."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     runtime.mkdir(parents=True, exist_ok=True)
-    lock = open(runtime / "omarchroma-kde-wait.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(runtime / "hyprchroma-kde-wait.lock")
+    lock = open(runtime / "hyprchroma-kde-wait.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -1093,7 +1440,7 @@ def reauthor_omarchy_gsettings():
 
     omarchy-theme-set-gnome sets exactly gtk-theme, color-scheme and icon-theme
     from the current theme and calls no hook, so this re-authors them without
-    running a whole theme switch -- which would fire the Omarchroma theme-set
+    running a whole theme switch -- which would fire the Hyprchroma theme-set
     hook and immediately re-apply what was just reverted."""
     if shutil.which("omarchy-theme-set-gnome") is None:
         return False
@@ -1106,7 +1453,7 @@ def rewrite_pear_themes(chosen):
     """Replace options.themes in Pear's config.json and nothing else.
 
     That file also carries window geometry, the current track URL and plugin
-    state, none of which Omarchroma ever writes. Copying the whole backup over
+    state, none of which Hyprchroma ever writes. Copying the whole backup over
     it -- which is what restoring it as a plain file did -- would roll all of
     that back to whenever the snapshot was taken."""
     path = Path.home() / ".config/YouTube Music/config.json"
@@ -1155,6 +1502,13 @@ def restore_target_captured(snapshot_dir, manifest, target):
             rewrite_pear_themes(lambda current: captured)
     elif target == "gtk":
         restore_gsettings(manifest.get("gsettings", {}))
+        # Restoring the backup already drops our import, because the backup is
+        # the user's own gtk.css from before any of this. Where there was no
+        # backup -- the file did not exist, or held only our line -- this takes
+        # the line out rather than leaving an import of a file just deleted.
+        for directory in (".config/gtk-3.0", ".config/gtk-4.0"):
+            remove_import(Path.home() / directory / "gtk.css",
+                          '@import url("hyprchroma.css");')
     elif target == "qt-kde":
         restore_app_color_schemes(manifest)
 
@@ -1166,10 +1520,14 @@ def restore_target_stock(snapshot_dir, manifest, target):
     if target == "pear":
         rewrite_pear_themes(lambda current: [
             entry for entry in current
-            if "omarchroma" not in os.path.basename(str(entry)).lower()
+            if "hyprchroma" not in os.path.basename(str(entry)).lower()
         ])
     elif target == "gtk":
-        for key in OMARCHROMA_ONLY_GSETTINGS:
+        # Stock means Omarchy's own defaults, which include no import of ours.
+        for directory in (".config/gtk-3.0", ".config/gtk-4.0"):
+            remove_import(Path.home() / directory / "gtk.css",
+                          '@import url("hyprchroma.css");')
+        for key in HYPRCHROMA_ONLY_GSETTINGS:
             gsettings_reset(key)
         if not reauthor_omarchy_gsettings():
             # Without Omarchy on PATH there is nothing authoritative to ask, so
@@ -1178,9 +1536,9 @@ def restore_target_stock(snapshot_dir, manifest, target):
                                for key, value in manifest.get("gsettings", {}).items()
                                if key in OMARCHY_OWNED_GSETTINGS})
     elif target == "qt-kde":
-        # Omarchy pins no per-app colour scheme, so it has no stock value to
-        # offer. The recorded one is the app's own: Omarchroma only ever deleted
-        # these keys and never wrote them, so it cannot be Omarchroma output.
+        # Omarchy pins no per-app color scheme, so it has no stock value to
+        # offer. The recorded one is the app's own: Hyprchroma only ever deleted
+        # these keys and never wrote them, so it cannot be Hyprchroma output.
         restore_app_color_schemes(manifest)
         try:
             (home / ".local/share/color-schemes").rmdir()
@@ -1196,11 +1554,11 @@ def restore(state_dir, data_dir, targets, mode):
             restore_target_stock(snapshot_dir, manifest, target)
         else:
             restore_target_captured(snapshot_dir, manifest, target)
-        print(f"Omarchroma: {target} reverted to its {mode} state")
+        print(f"Hyprchroma: {target} reverted to its {mode} state")
 
     if set(targets) != set(TARGETS):
         return
-    # Omarchroma's own runtime state, which belongs to no framework. Only
+    # Hyprchroma's own runtime state, which belongs to no framework. Only
     # cleared on a full revert; a single toggle must not drop settings.json,
     # which is where that toggle was just recorded.
     for path in (data_dir / "dark-reader-theme.json",
@@ -1211,8 +1569,11 @@ def restore(state_dir, data_dir, targets, mode):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--data-dir", type=Path, required=True)
+    # write-file and prepare-lock act on one named path and touch neither
+    # tree, so they are not made to supply directories they will not use.
+    # Everything else still is, checked below.
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--data-dir", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     snap = sub.add_parser("snapshot")
     snap.add_argument("--target", required=True)
@@ -1232,9 +1593,42 @@ def main():
     idle = sub.add_parser("refresh-idle-apps")
     idle.add_argument("--written-now", action="store_true",
                       help="the palette was just written, so judge staleness against now")
+    # Shell callers route their writes through here rather than using mktemp
+    # and a redirection of their own: a redirection names its destination by
+    # path every time it runs, while this goes through the same verified
+    # directory descriptor as every other write in the plugin.
+    imports = sub.add_parser("ensure-import")
+    imports.add_argument("--path", required=True)
+    imports.add_argument("--line", required=True)
+
+    unimport = sub.add_parser("remove-import")
+    unimport.add_argument("--path", required=True)
+    unimport.add_argument("--line", required=True)
+
+    write = sub.add_parser("write-file")
+    write.add_argument("--path", required=True)
+    write.add_argument("--mode", default=None)
+
+    lock = sub.add_parser("prepare-lock")
+    lock.add_argument("--path", required=True)
+
     browser_wait = sub.add_parser("watch-browser-exit")
     browser_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     args = parser.parse_args()
+
+    # write-file and prepare-lock act on one named path; everything else
+    # works on the state and data trees and must be given both.
+    if args.command not in ("write-file", "prepare-lock",
+                            "ensure-import", "remove-import") and (
+            args.state_dir is None or args.data_dir is None):
+        parser.error("--state-dir and --data-dir are required for " + args.command)
+
+    if args.command == "ensure-import":
+        print(ensure_import(Path(args.path), args.line))
+        return
+    if args.command == "remove-import":
+        print(remove_import(Path(args.path), args.line))
+        return
 
     if args.command == "snapshot":
         snapshot(args.state_dir, args.data_dir, args.target)
@@ -1259,6 +1653,14 @@ def main():
     elif args.command == "refresh-idle-apps":
         refresh_idle_apps(
             int(time.time()) - LAUNCH_GRACE_SECONDS if args.written_now else None)
+    elif args.command == "write-file":
+        # Masked to the permission bits: nothing this writes is ever meant to
+        # be setuid, setgid or sticky, and accepting those made a theme helper
+        # into a way of setting them.
+        atomic_write(Path(args.path), sys.stdin.buffer.read(),
+                     (int(args.mode, 8) & 0o777) if args.mode else None)
+    elif args.command == "prepare-lock":
+        prepare_lock(Path(args.path))
     elif args.command == "watch-browser-exit":
         watch_browser_exit(args.state_dir, args.data_dir, args.action)
     else:

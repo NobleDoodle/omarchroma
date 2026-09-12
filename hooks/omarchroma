@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-
-# Resolved from a trusted PATH rather than the inherited one: this runs
-# unattended from the sync. See the note in bin/omarchroma-sync.
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
-export PATH
-exec "$HOME/.local/bin/omarchroma-sync" --force --quiet
