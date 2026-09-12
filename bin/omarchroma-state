@@ -1139,7 +1139,10 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
     bound to the service."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     runtime.mkdir(parents=True, exist_ok=True)
-    lock = open(runtime / "omarchroma-browser-wait.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(runtime / "omarchroma-browser-wait.lock")
+    lock = open(runtime / "omarchroma-browser-wait.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -1199,7 +1202,10 @@ def watch_events(state_dir, data_dir):
     service's fallback timer."""
     lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     lock_dir.mkdir(parents=True, exist_ok=True)
-    lock = open(lock_dir / "omarchroma-watch-events.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(lock_dir / "omarchroma-watch-events.lock")
+    lock = open(lock_dir / "omarchroma-watch-events.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -1246,7 +1252,10 @@ def watch_kde_exit(state_dir, data_dir, action="sync"):
     registers."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     runtime.mkdir(parents=True, exist_ok=True)
-    lock = open(runtime / "omarchroma-kde-wait.lock", "w")
+    # Created following no symlink, then opened read-only: flock needs no
+    # write access, so this path can never be truncated or written through.
+    prepare_lock(runtime / "omarchroma-kde-wait.lock")
+    lock = open(runtime / "omarchroma-kde-wait.lock", "r")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
