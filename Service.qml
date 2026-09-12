@@ -14,7 +14,11 @@ Item {
   // hyprctl would be executed with nobody watching. Everything they call lives
   // in a root-owned system directory; the last entry is Omarchy's own. The
   // rest of the environment is preserved, so HOME and the session bus survive.
-  readonly property string trustedPath: "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
+  // Fixed absolute identities. /usr/local/* is excluded because nothing
+  // this plugin invokes lives there and it is the entry most often left
+  // group-writable; the helpers launched below re-derive and verify their
+  // own PATH regardless, so this is a floor rather than the whole defence.
+  readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
   readonly property string dataDir: (Quickshell.env("XDG_DATA_HOME") !== ""
     ? Quickshell.env("XDG_DATA_HOME") : home + "/.local/share") + "/omarchroma"

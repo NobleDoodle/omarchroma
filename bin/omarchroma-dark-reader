@@ -5,6 +5,7 @@ import configparser
 import json
 import os
 import re
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -13,39 +14,206 @@ import tempfile
 from pathlib import Path
 
 
-def atomic_write(path: Path, data: str, mode: int | None = None) -> None:
-    """Replace path with data, through a temporary nothing else can have opened.
+# --------------------------------------------------------------- safe io --
+# This block is shared verbatim between bin/omarchroma-state and
+# bin/omarchroma-dark-reader; test-safeio asserts the two copies stay
+# byte-identical, so a fix can never land in only one of them.
+#
+# An exclusive temporary filename is not enough on its own: the directory it
+# is created in, and the destination it is renamed onto, were still named by
+# ordinary pathname strings, so a symlink swapped into any ancestor could
+# redirect the create or the rename somewhere else entirely. Here the parent
+# directory is resolved once, verified, and kept open as a descriptor; every
+# create, stat, rename and unlink is then performed relative to that
+# descriptor. The directory a descriptor refers to cannot be changed by
+# renaming or relinking anything on disk afterwards, which closes the window
+# between checking a path and using it.
+#
+# Legitimate symlinks are still honoured -- dotfile managers routinely link
+# ~/.config entries -- by resolving the path first and then walking the
+# resolved chain with O_NOFOLLOW. Nothing in that chain may be a symlink at
+# the moment it is opened, and every component must be owned by root or by
+# this user and be unwritable by anyone else, so no other account can ever
+# redirect a write, and a component swapped in mid-walk fails the open rather
+# than silently changing the destination.
 
-    mkstemp creates with O_CREAT|O_EXCL under a random name in the destination
-    directory, so a symlink planted at a guessable temporary path cannot be
-    followed, and the content is flushed before the rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if mode is None:
-        try:
-            mode = stat.S_IMODE(path.stat().st_mode)
-        except OSError:
-            mode = 0o644
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+SAFE_DIR_MODE = 0o700
+_TEMPORARY_ATTEMPTS = 16
+
+
+def _verify_directory(descriptor: int, where: str) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"not a directory: {where}")
+    if info.st_uid not in (0, os.geteuid()):
+        raise OSError(f"directory belongs to uid {info.st_uid}: {where}")
+    # Group- or world-writable is only safe with the sticky bit, which stops
+    # anyone but an entry's owner renaming or removing it -- the /tmp rule.
+    # Another account can still create a new name in such a directory, but the
+    # ownership check above rejects walking into anything it made.
+    if (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            and not info.st_mode & stat.S_ISVTX):
+        raise OSError(f"directory is writable by others: {where}")
+
+
+def open_dir(path, create: bool = False) -> int:
+    """Return a verified descriptor for path. The caller closes it."""
+    resolved = Path(os.path.realpath(str(path)))
+    if not resolved.is_absolute():
+        raise ValueError(f"refusing a relative directory: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
     try:
-        with os.fdopen(descriptor, "w") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        _verify_directory(descriptor, "/")
+        walked = Path("/")
+        for part in resolved.parts[1:]:
+            walked = walked / part
+            try:
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, SAFE_DIR_MODE, dir_fd=descriptor)
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = nested
+            _verify_directory(descriptor, str(walked))
+        return descriptor
     except BaseException:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        os.close(descriptor)
         raise
 
 
-# Commands are resolved from here, not from the inherited PATH: this runs
-# unattended from the shell service. Every command used -- hyprctl, gdbus,
-# gsettings, xdg-settings and Omarchy's own -- lives in a root-owned directory.
-TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin"
-os.environ["PATH"] = TRUSTED_PATH
+def atomic_write(path, data, mode: int | None = None) -> None:
+    """Replace path with data, through a temporary in a verified directory."""
+    path = Path(path)
+    if isinstance(data, str):
+        data = data.encode()
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        if mode is None:
+            try:
+                mode = stat.S_IMODE(
+                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+            except (FileNotFoundError, OSError):
+                mode = 0o644
+        temporary = None
+        for _ in range(_TEMPORARY_ATTEMPTS):
+            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
+            try:
+                opened = os.open(
+                    candidate,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    0o600,
+                    dir_fd=descriptor,
+                )
+            except FileExistsError:
+                continue
+            temporary = candidate
+            break
+        if temporary is None:
+            raise OSError(f"could not create a temporary beside {path}")
+        try:
+            with os.fdopen(opened, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+                os.fchmod(handle.fileno(), mode)
+            os.replace(temporary, path.name,
+                       src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            os.fsync(descriptor)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def safe_read(path, limit: int) -> str | None:
+    """Read at most limit characters through a verified parent descriptor.
+
+    At most limit + 1 characters are read, so the size is judged from what was
+    actually read rather than from a stat that a swap could invalidate."""
+    path = Path(path)
+    try:
+        descriptor = open_dir(path.parent)
+    except OSError:
+        return None
+    try:
+        opened = os.open(path.name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
+            content = handle.read(limit + 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None if len(content) > limit else content
+
+
+def prepare_lock(path) -> None:
+    """Create path as a private regular lock file, following no symlink.
+
+    The sync script then opens it read-only and takes an flock on it, so even
+    a successful swap can never truncate or write through this path."""
+    path = Path(path)
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        try:
+            existing = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.geteuid():
+                os.unlink(path.name, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        opened = os.open(
+            path.name,
+            os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=descriptor,
+        )
+        try:
+            # A lock left behind by an older version was created by a shell
+            # redirection under the caller's umask, so narrow it here rather
+            # than leaving it as whatever that happened to produce.
+            os.fchmod(opened, 0o600)
+        finally:
+            os.close(opened)
+    finally:
+        os.close(descriptor)
+
+
+# Commands are resolved from a fixed, verified set of directories, never from
+# the inherited PATH: this runs unattended from the shell service, so a
+# directory someone else can write to appearing earlier in PATH would hand them
+# every command this helper runs. /usr/local/bin and /usr/local/sbin are gone
+# from the set -- nothing this plugin invokes lives there, and they are the
+# entries most often left group-writable on a real machine. /bin, /sbin and
+# /usr/sbin are gone too: on a usrmerge system they are symlinks to /usr/bin
+# and contribute nothing. What remains is checked rather than assumed.
+PATH_CANDIDATES = ("/usr/bin", "/usr/share/omarchy/bin")
+
+
+def trusted_path() -> str:
+    keep = []
+    for directory in PATH_CANDIDATES:
+        try:
+            info = os.stat(directory)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        keep.append(directory)
+    return ":".join(keep)
+
+
+os.environ["PATH"] = trusted_path()
 
 # The id Dark Reader has when it comes from the Chrome Web Store. It is a hash
 # of the publisher's key, so every store install shares it -- but a build the

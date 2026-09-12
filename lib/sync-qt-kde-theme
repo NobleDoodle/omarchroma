@@ -1,10 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Resolved from a trusted PATH rather than the inherited one; see the note in
-# bin/omarchroma-sync.
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+# Commands are resolved from a fixed, verified set of directories rather than
+# from whatever PATH was inherited. Most of these scripts run unattended --
+# from the shell service and from theme hooks -- so a directory someone else
+# can write to appearing earlier in PATH would hand them every command run
+# here; the installer and uninstaller pin it for the same reason even though
+# a person starts those.
+# /usr/local/bin and /usr/local/sbin are not in the set -- nothing this plugin
+# invokes lives there, and they are the entries most often left group-writable
+# on a real machine -- and /bin, /sbin and /usr/sbin are usrmerge symlinks to
+# /usr/bin that add nothing. What is left is checked to be root-owned and
+# unwritable by anyone else rather than assumed to be. /usr/bin/stat is named
+# absolutely because it is the trust root the check is anchored to: if it
+# cannot be trusted, nothing here can be.
+omarchroma_trusted_path() {
+  local directory owner mode trusted=""
+  for directory in /usr/bin /usr/share/omarchy/bin; do
+    [[ -d $directory ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
+    [[ $owner == 0 ]] || continue
+    (( (8#$mode & 8#022) == 0 )) || continue
+    trusted="${trusted:+$trusted:}$directory"
+  done
+  # With stat itself unavailable there is nothing to validate against, so fall
+  # back to the same fixed identities rather than to the inherited PATH.
+  printf '%s' "${trusted:-/usr/bin:/usr/share/omarchy/bin}"
+}
+PATH=$(omarchroma_trusted_path)
 export PATH
+
+# The state helper is taken from this script's own installed tree, never from a
+# PATH lookup: it is what performs every write, so it must be the copy shipped
+# alongside this file rather than whatever else might answer to the name.
+PLUGIN_DIR=${OMARCHROMA_PLUGIN_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}
 
 
 color() {
@@ -86,14 +115,10 @@ scheme_dir="${XDG_DATA_HOME:-$HOME/.local/share}/color-schemes"
 scheme_file="$scheme_dir/Omarchroma.colors"
 kdeglobals="${XDG_CONFIG_HOME:-$HOME/.config}/kdeglobals"
 mkdir -p "$scheme_dir" "$(dirname "$kdeglobals")"
-# A random name created exclusively in the destination directory, rather than
-# "$scheme_file.tmp": a predictable temporary is a symlink waiting to be
-# followed, and keeping it alongside the destination keeps the rename atomic.
-scheme_tmp=$(mktemp "$scheme_dir/.Omarchroma.colors.XXXXXX") || {
-  echo "sync-qt-kde-theme: cannot create a temporary file in $scheme_dir" >&2
-  exit 1
-}
-trap 'rm -f "$scheme_tmp"' EXIT
+# The scheme is composed in memory and handed to the state helper, which
+# creates its temporary and renames it relative to a directory descriptor it
+# has verified. Nothing here names the destination directory a second time,
+# so no ancestor can be swapped between composing the file and placing it.
 
 write_roles() {
   local normal_bg=$1 alternate_bg=$2 normal_fg=$3 inactive_fg=$4
@@ -113,7 +138,7 @@ ForegroundVisited=$magenta_rgb
 EOF
 }
 
-{
+scheme_content=$({
   cat <<EOF
 [ColorEffects:Disabled]
 Color=$dark_foreground_rgb
@@ -199,15 +224,14 @@ inactiveBackground=$darker_background_rgb
 inactiveBlend=$dark_foreground_rgb
 inactiveForeground=$dark_foreground_rgb
 EOF
-} >"$scheme_tmp"
-chmod 644 "$scheme_tmp"
+})
 
 scheme_changed=1
-if cmp -s "$scheme_tmp" "$scheme_file"; then
-  rm -f "$scheme_tmp"
+if [[ $scheme_content == "$(cat "$scheme_file" 2>/dev/null)" ]]; then
   scheme_changed=0
 else
-  mv -f "$scheme_tmp" "$scheme_file"
+  printf '%s\n' "$scheme_content" |
+    "$PLUGIN_DIR/bin/omarchroma-state" write-file --path "$scheme_file" --mode 644
 fi
 
 globals_changed=$(

@@ -1,12 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Commands are resolved from a trusted PATH rather than whatever was inherited:
-# a planted "jq", "pacman", or "omarchy" earlier in PATH would run with this
-# script's authority. Omarchy's own privileged helper pins PATH for the same
-# reason, accepting the same cost -- a dev-linked Omarchy checkout is shadowed
-# by the packaged one.
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+# Commands are resolved from a fixed, verified set of directories rather than
+# from whatever PATH was inherited. Most of these scripts run unattended --
+# from the shell service and from theme hooks -- so a directory someone else
+# can write to appearing earlier in PATH would hand them every command run
+# here; the installer and uninstaller pin it for the same reason even though
+# a person starts those.
+# /usr/local/bin and /usr/local/sbin are not in the set -- nothing this plugin
+# invokes lives there, and they are the entries most often left group-writable
+# on a real machine -- and /bin, /sbin and /usr/sbin are usrmerge symlinks to
+# /usr/bin that add nothing. What is left is checked to be root-owned and
+# unwritable by anyone else rather than assumed to be. /usr/bin/stat is named
+# absolutely because it is the trust root the check is anchored to: if it
+# cannot be trusted, nothing here can be.
+omarchroma_trusted_path() {
+  local directory owner mode trusted=""
+  for directory in /usr/bin /usr/share/omarchy/bin; do
+    [[ -d $directory ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
+    [[ $owner == 0 ]] || continue
+    (( (8#$mode & 8#022) == 0 )) || continue
+    trusted="${trusted:+$trusted:}$directory"
+  done
+  # With stat itself unavailable there is nothing to validate against, so fall
+  # back to the same fixed identities rather than to the inherited PATH.
+  printf '%s' "${trusted:-/usr/bin:/usr/share/omarchy/bin}"
+}
+PATH=$(omarchroma_trusted_path)
 export PATH
 
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
@@ -149,6 +170,30 @@ if (( ${#missing[@]} )); then
   warn "Install them with:  sudo pacman -S --needed ${missing[*]}"
   warn "Omarchroma will install and run without them; those parts will not work."
 fi
+
+# Every destination this installer writes into is checked before anything is
+# copied: a real directory, owned by this user, and unwritable by anyone else.
+# "install" and "mkdir -p" both resolve their destination by pathname and will
+# happily follow a symlink into a tree this account does not control, so the
+# check is made once, here, rather than assumed at each of the copies below.
+verify_destination() {
+  local directory=$1 owner mode
+  [[ -e $directory || -L $directory ]] || return 0
+  [[ -L $directory ]] && {
+    directory=$(readlink -f -- "$directory") || fail "cannot resolve $1"
+  }
+  [[ -d $directory ]] || fail "$1 exists but is not a directory"
+  read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory") ||
+    fail "cannot inspect $1"
+  [[ $owner == "$(id -u)" ]] || fail "$1 is not owned by you"
+  (( (8#$mode & 8#022) == 0 )) || fail "$1 is writable by other users"
+}
+
+for destination in "$TARGET_DIR" "$HOME/.local/bin" \
+  "$HOME/.config/omarchy/hooks/theme-set.d" \
+  "$HOME/.config/omarchy/hooks/font-set.d"; do
+  verify_destination "$destination"
+done
 
 info "Installing Omarchroma"
 if [[ "$SOURCE_DIR" != "$TARGET_DIR" ]]; then

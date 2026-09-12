@@ -1,19 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Every command below is resolved from here, not from the PATH this inherited.
-# The shell service runs this unattended and the theme hook runs it on every
-# theme change, so a directory earlier in the ambient PATH holding something
-# called jq, sed or omarchy would be executed with nobody watching. Each command
-# used was checked to live in a root-owned directory; the last entry is where
-# Omarchy keeps its own. A dev-linked Omarchy checkout is deliberately shadowed,
-# the same trade Omarchy's own privileged helper makes.
-PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/bin:/sbin:/usr/share/omarchy/bin
+# Commands are resolved from a fixed, verified set of directories rather than
+# from whatever PATH was inherited. Most of these scripts run unattended --
+# from the shell service and from theme hooks -- so a directory someone else
+# can write to appearing earlier in PATH would hand them every command run
+# here; the installer and uninstaller pin it for the same reason even though
+# a person starts those.
+# /usr/local/bin and /usr/local/sbin are not in the set -- nothing this plugin
+# invokes lives there, and they are the entries most often left group-writable
+# on a real machine -- and /bin, /sbin and /usr/sbin are usrmerge symlinks to
+# /usr/bin that add nothing. What is left is checked to be root-owned and
+# unwritable by anyone else rather than assumed to be. /usr/bin/stat is named
+# absolutely because it is the trust root the check is anchored to: if it
+# cannot be trusted, nothing here can be.
+omarchroma_trusted_path() {
+  local directory owner mode trusted=""
+  for directory in /usr/bin /usr/share/omarchy/bin; do
+    [[ -d $directory ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
+    [[ $owner == 0 ]] || continue
+    (( (8#$mode & 8#022) == 0 )) || continue
+    trusted="${trusted:+$trusted:}$directory"
+  done
+  # With stat itself unavailable there is nothing to validate against, so fall
+  # back to the same fixed identities rather than to the inherited PATH.
+  printf '%s' "${trusted:-/usr/bin:/usr/share/omarchy/bin}"
+}
+PATH=$(omarchroma_trusted_path)
 export PATH
 
 
 PLUGIN_ID="io.github.nobledoodle.omarchroma"
 PLUGIN_DIR="${OMARCHROMA_PLUGIN_DIR:-$HOME/.config/omarchy/plugins/$PLUGIN_ID}"
+export OMARCHROMA_PLUGIN_DIR="$PLUGIN_DIR"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/omarchroma"
 STATUS_FILE="$STATE_DIR/status.json"
@@ -107,7 +127,7 @@ command -v python3 >/dev/null || fail "python3 is not available"
 [[ -x "$PLUGIN_DIR/bin/omarchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
 [[ -x "$PLUGIN_DIR/bin/omarchroma-state" ]] || fail "state helper is missing"
 
-mkdir -p "$STATE_DIR" "$DATA_DIR" "$(dirname "$LOCK_FILE")"
+mkdir -p "$STATE_DIR" "$DATA_DIR"
 
 target_key() {
   case "$1" in
@@ -182,7 +202,16 @@ PY
   [[ $set_enabled == "true" ]] && force=1
 fi
 
-exec 9>"$LOCK_FILE"
+# The lock is created by the state helper, relative to a directory descriptor
+# it has verified, following no symlink -- and then opened here read-only.
+# "exec 9>" truncated whatever the path resolved to and followed a symlink
+# planted at it, on every unattended sync; flock(2) needs no write access at
+# all, so opening read-only means nothing on this path can be truncated or
+# written through even if the entry were swapped between the two steps.
+"$PLUGIN_DIR/bin/omarchroma-state" prepare-lock --path "$LOCK_FILE" ||
+  fail "cannot prepare the lock file $LOCK_FILE"
+[[ -f $LOCK_FILE ]] || fail "lock file $LOCK_FILE was not created"
+exec 9<"$LOCK_FILE"
 if ! flock -n 9; then
   log "another synchronization is already running"
   exit 0
@@ -370,11 +399,10 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
   pear_dir="$HOME/.config/YouTube Music"
   pear_css="$pear_dir/omarchroma.css"
   mkdir -p "$pear_dir"
-  # mktemp, not "$pear_css.tmp": a predictable name is a symlink waiting to be
-  # followed. This one is random, created exclusively, and in the directory the
-  # file is replaced into, so the rename stays atomic.
-  pear_tmp=$(mktemp "$pear_dir/.omarchroma.css.XXXXXX") || fail "cannot create a temporary file in $pear_dir"
-  sed \
+  # Composed in memory and handed to the state helper, which creates its
+  # temporary and renames it relative to a directory descriptor it has
+  # verified, so no ancestor of $pear_dir can redirect the write.
+  pear_content=$(sed \
     -e "s/^  --om-bg: .*;/  --om-bg: $background;/" \
     -e "s/^  --om-bg-dark: .*;/  --om-bg-dark: $dark_background;/" \
     -e "s/^  --om-bg-darker: .*;/  --om-bg-darker: $darker_background;/" \
@@ -388,9 +416,9 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
     -e "s/^  --om-accent: .*;/  --om-accent: $accent;/" \
     -e "s/^  --om-red: .*;/  --om-red: $red;/" \
     -e "s/^  --om-green: .*;/  --om-green: $green;/" \
-    "$PLUGIN_DIR/assets/pear-theme.css.template" >"$pear_tmp"
-  chmod 644 "$pear_tmp"
-  mv -f "$pear_tmp" "$pear_css"
+    "$PLUGIN_DIR/assets/pear-theme.css.template")
+  printf '%s\n' "$pear_content" |
+    "$PLUGIN_DIR/bin/omarchroma-state" write-file --path "$pear_css" --mode 644
 
   python3 - "$pear_dir/config.json" "$pear_css" <<'PY'
 import json
