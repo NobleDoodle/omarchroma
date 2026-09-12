@@ -44,6 +44,29 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
+# sudo's own credential cache (five minutes by default) is what every later
+# privileged step in this script -- including makepkg's own pacman -U at the
+# very end, and the AUR install's own sudo call -- relies on to avoid asking
+# for the password again within its lifetime. Left to expire naturally, a
+# later prompt happens cold, after whatever came before it went quiet: a live
+# session on this exact hardware family showed that specific idle-then-
+# sudden-redraw transition landing on a documented amdgpu GFXOFF bug, where
+# the GPU fails to wake in time and sudo's own PAM conversation -- which
+# tolerates no delay -- reports authentication as failed outright rather than
+# merely slow. Kept refreshed here from the first successful authentication
+# onward, so every later step, including ones this script does not call
+# sudo for directly, reuses the cache silently instead of prompting cold.
+keepalive_pid=""
+start_sudo_keepalive() {
+  [[ -n $keepalive_pid ]] && return 0
+  local script_pid=$$
+  ( while kill -0 "$script_pid" 2>/dev/null; do sleep 60; sudo -n true 2>/dev/null; done ) >/dev/null 2>&1 &
+  keepalive_pid=$!
+}
+run_sudo() {
+  sudo "$@" && start_sudo_keepalive
+}
+
 # Checked before a single question is asked, not alongside the optional
 # frameworks' dependencies below: jq is what the Dark Reader check right
 # after that question reads its answer with, and python is what every helper
@@ -63,7 +86,7 @@ if (( ${#base_missing[@]} )); then
   say "  sudo pacman -S --needed ${base_missing[*]}"
   say ""
   if ask "Install them now"; then
-    sudo pacman -S --needed "${base_missing[@]}" || {
+    run_sudo pacman -S --needed "${base_missing[@]}" || {
       say "That did not finish, and nothing past this point works without them. Stopping."
       exit 1
     }
@@ -147,7 +170,7 @@ if (( ${#missing[@]} )); then
   say "  sudo pacman -S --needed ${missing[*]}"
   say ""
   if ask "Install them now"; then
-    sudo pacman -S --needed "${missing[@]}" || note "pacman did not finish; you can run the command above later."
+    run_sudo pacman -S --needed "${missing[@]}" || note "pacman did not finish; you can run the command above later."
   else
     note "Skipped. Hyprchroma installs and runs without them; those parts stay inactive."
   fi
@@ -242,8 +265,13 @@ cd "$here/packaging" || exit 1
 build_cache="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
 mkdir -p -- "$build_cache" || { say "Could not create $build_cache."; exit 1; }
 BUILDDIR=$(mktemp -d -p "$build_cache") || { say "Could not create a build directory."; exit 1; }
-trap 'rm -rf -- "$BUILDDIR"' EXIT
+trap 'rm -rf -- "$BUILDDIR"; [[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null' EXIT
 export BUILDDIR
+# Warmed here regardless of whether an earlier step already authenticated,
+# so a system with every dependency already satisfied -- which never called
+# run_sudo above -- does not hit its very first prompt deep inside makepkg's
+# own internal install step at the end of the build.
+run_sudo -v || { say "Could not authenticate; nothing was built."; exit 1; }
 makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
 
 # --- apply the choices, now that the tool exists --------------------------

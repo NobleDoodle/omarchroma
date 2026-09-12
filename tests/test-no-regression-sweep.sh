@@ -55,11 +55,22 @@ chk "every python helper pins PATH" \
 # direct sudo pacman for two named packages the user was shown and agreed to,
 # and one indirect path -- omarchy pkg aur add, which asks pacman the same
 # way any other AUR install does -- for Pear Desktop, a third-party
-# application, never for hyprchroma itself (see test-dependency.sh).
+# application, never for hyprchroma itself (see test-dependency.sh). Every
+# call site in setup goes through run_sudo, not bare sudo -- the only two
+# bare sudo lines left are run_sudo's own "sudo "$@"" and the keep-alive
+# loop's credential-refresh check, neither of which names a command of its
+# own to run, so they are filtered out by exact text rather than trusted to
+# stay harmless just because they exist today.
 chk "the service itself runs nothing privileged" \
   "$(code bin/hyprchroma lib/* | grep -cE '^[[:space:]]*(sudo|pkexec) ')" "0"
-chk "setup's only direct privileged call is pacman" \
-  "$(code bin/hyprchroma-setup | grep -ohE '^[[:space:]]*(sudo|pkexec) [a-z]+' | awk '{print $2}' | sort -u | paste -sd,)" "pacman"
+chk "setup's own sudo calls all go through run_sudo, not bare sudo/pkexec" \
+  "$(code bin/hyprchroma-setup | grep -E '^[[:space:]]*(sudo|pkexec) ' \
+      | grep -vE 'sudo "\$@"|sudo -n true' | wc -l)" "0"
+chk "and every run_sudo call site either warms the credential or names pacman" \
+  "$(code bin/hyprchroma-setup | grep -E '^[[:space:]]*run_sudo ' \
+      | grep -vE '^[[:space:]]*run_sudo pacman |^[[:space:]]*run_sudo -v' | wc -l)" "0"
+chk "and where it does name a command, that command is pacman" \
+  "$(code bin/hyprchroma-setup | grep -ohE '^[[:space:]]*run_sudo [a-z]+' | awk '{print $2}' | sort -u | paste -sd,)" "pacman"
 chk "and its package list is literal, not built from input" \
   "$(grep -cE 'missing\+=\((adw-gtk-theme|python-plyvel)\)' bin/hyprchroma-setup)" "2"
 chk "the one indirect privileged call names a literal package too" \

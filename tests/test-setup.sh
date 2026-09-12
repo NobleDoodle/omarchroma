@@ -44,6 +44,32 @@ chk "declining exits non-zero rather than continuing" \
 chk "the real script finds nothing missing on this machine" \
   "$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
 
+# --- sudo's own credential cache is kept warm, not left to expire cold ----
+# A live session on this exact hardware showed a cold prompt -- one that
+# happens after the terminal has been quiet for a while -- landing on a
+# documented amdgpu bug where the GPU fails to wake fast enough and sudo's
+# own PAM conversation reports authentication as failed outright. Tested
+# against a mocked sudo, since exercising a real one is out of scope here.
+keepalive_out=$(sudo() { echo "sudo called: $*"; return 0; }
+                keepalive_pid=""
+                source <(awk '/^start_sudo_keepalive\(\) \{/{grab=1} grab{print; if (/^\}$/) {n++; if (n==2) exit}}' $S)
+                run_sudo pacman -S --needed foo
+                first_pid=$keepalive_pid
+                kill -0 "$first_pid" 2>/dev/null && echo "background loop alive: yes"
+                run_sudo -v
+                [[ $keepalive_pid == "$first_pid" ]] && echo "still the same loop: yes"
+                kill "$keepalive_pid" 2>/dev/null)
+chk "the keep-alive loop actually starts" \
+  "$(grep -c 'background loop alive: yes' <<<"$keepalive_out")" "1"
+chk "a second sudo call does not start a second loop" \
+  "$(grep -c 'still the same loop: yes' <<<"$keepalive_out")" "1"
+chk "both existing sudo calls go through it" \
+  "$(grep -c '^ *run_sudo pacman -S --needed' $S)" "2"
+chk "and the build warms the credential explicitly, in case neither did" \
+  "$(grep -c '^run_sudo -v' $S)" "1"
+chk "the keep-alive is torn down on exit alongside the build directory" \
+  "$(grep -c 'kill .\$keepalive_pid. 2>/dev/null' $S)" "1"
+
 # --- nothing is built without the consent we had before --------------------
 out=$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
@@ -76,7 +102,7 @@ chk "before makepkg ever runs, not after" \
 chk "it is exported so makepkg actually sees it" \
   "$(grep -c '^export BUILDDIR$' $S)" "1"
 chk "the temporary directory is removed no matter how the script exits" \
-  "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.. EXIT' $S)" "1"
+  "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.' $S)" "1"
 
 # --- both optional frameworks are explained, not just named ---------------
 chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "1"
