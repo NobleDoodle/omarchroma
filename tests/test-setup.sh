@@ -64,10 +64,15 @@ chk "makepkg only runs after the check" \
 # them, sit inside the same directory Omarchy's shell watches for plugin
 # changes. package() writing dozens of files there fired that watcher dozens
 # of times a second, mid-build, live on this project's own test machine.
-chk "the build directory is moved out of the checkout" \
-  "$(grep -c 'BUILDDIR=\$(mktemp -d)' $S)" "1"
+chk "the build directory is under the user's own cache, not the checkout" \
+  "$(grep -c 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' $S)" "1"
+# Not /tmp: every other directory this project touches lives under \$HOME,
+# and a directory shared by every user on the machine is a squatting target
+# regardless of what mktemp's own randomized suffix does to the leaf name.
+chk "and that cache directory is under \$HOME, never /tmp" \
+  "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' $S)" "1"
 chk "before makepkg ever runs, not after" \
-  "$(awk '/BUILDDIR=\$\(mktemp -d\)/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+  "$(awk '/BUILDDIR=\$\(mktemp -d -p/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
 chk "it is exported so makepkg actually sees it" \
   "$(grep -c '^export BUILDDIR$' $S)" "1"
 chk "the temporary directory is removed no matter how the script exits" \

@@ -23,12 +23,19 @@ sweep(){ code "${ALL[@]}" | grep -ohE "$1" | wc -l; }
 # unpredictable and its creation already atomic, which is what every other
 # write here achieves a different way. It exists only to keep makepkg's own
 # build scratch space out of the plugin tree Omarchy's shell watches for
-# changes. Filtered out by exact text before the sweep, then asserted to be
-# the only such line, so a second, undocumented one is still caught.
+# changes, and it is created under the user's own cache directory, not /tmp
+# -- a first version of this used bare mktemp -d, which defaults to /tmp and
+# was caught as inconsistent with every other directory this project touches
+# living under $HOME, even though the random name is not the predictable
+# target the original rule was written about. Filtered out by exact text
+# before the sweep, then asserted to be the only such line, so a second,
+# undocumented one is still caught.
 chk "nothing creates its own temporary, aside from that one exception" \
-  "$(code "${ALL[@]}" | grep -v 'BUILDDIR=\$(mktemp -d)' | grep -ohE 'tempfile\.mkstemp|mktemp ' | wc -l)" "0"
+  "$(code "${ALL[@]}" | grep -v 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' | grep -ohE 'tempfile\.mkstemp|mktemp ' | wc -l)" "0"
 chk "and that exception is exactly the one expected line" \
-  "$(grep -c 'BUILDDIR=\$(mktemp -d)' bin/hyprchroma-setup)" "1"
+  "$(grep -c 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' bin/hyprchroma-setup)" "1"
+chk "and it is not /tmp" \
+  "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' bin/hyprchroma-setup)" "1"
 chk "no rename resolves its target by pathname" "$(sweep 'os\.replace\([^,]+, [^,]+\)')" "0"
 chk "no truncating open of a fixed path"       "$(sweep 'open\([^)]*, *"w"\)|exec [0-9]+>[^&]')" "0"
 

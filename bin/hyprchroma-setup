@@ -231,7 +231,17 @@ cd "$here/packaging" || exit 1
 # dozens of files there fired that watcher dozens of times a second, mid-build
 # -- reloading the panel's whole QML component tree while a build was still
 # running underneath it, live on this project's own test machine.
-BUILDDIR=$(mktemp -d) || { say "Could not create a build directory."; exit 1; }
+#
+# Under the user's own cache directory, not /tmp: every other directory this
+# project ever touches lives under $HOME, and a fixed name in a directory
+# shared by every user on the machine is a squatting target regardless of
+# what mktemp's own randomized suffix does to make the specific path hard to
+# guess -- the rule here has always been about the directory, not just the
+# name. mktemp -p still gives the leaf a name nothing else could have created
+# first.
+build_cache="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
+mkdir -p -- "$build_cache" || { say "Could not create $build_cache."; exit 1; }
+BUILDDIR=$(mktemp -d -p "$build_cache") || { say "Could not create a build directory."; exit 1; }
 trap 'rm -rf -- "$BUILDDIR"' EXIT
 export BUILDDIR
 makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
