@@ -22,20 +22,46 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 That is the whole install. The theming itself is done by
 [hyprchroma](https://github.com/NobleDoodle/hyprchroma), a separate package. If
 it is missing — or older than this panel needs — open the panel and press **i**.
-The same action covers both: it builds the package in Omarchy's presented
-terminal, where `makepkg` can ask for a password and show you what pacman is
-about to do, then enables the background service. The panel closes first so the
-terminal has the keyboard.
 
-There is no AUR entry to install from, so it builds from source the way an AUR
-helper would. pacman still owns the result.
+That opens a setup terminal, because everything it needs to do wants one. It
+asks which optional frameworks you want and explains what each is, checks for
+what those need and offers to install it, then shows what is about to happen
+and waits for you to type `I understand` before it builds anything. Nothing is
+installed if you answer anything else.
+
+The build is `makepkg`, so pacman owns the result and it can be listed,
+upgraded and removed like any other package. There is no AUR entry to install
+from.
 
 The panel checks `hyprchroma --version` against the minimum in `manifest.json`
 each time it opens, so an out-of-date package is noticed rather than failing
-quietly. Toggles stay inactive until the dependency is actually usable.
+quietly. Toggles stay inactive until the dependency is usable.
 
-Nothing here runs a privileged command itself, and nothing is written outside
+Nothing in the plugin runs a privileged command, and nothing is written outside
 your own configuration.
+
+### Choosing what you want themed
+
+GTK and Qt/KDE are always included. Dark Reader and Pear Desktop are optional
+and setup asks about both:
+
+- **Pear Desktop** is a desktop app for YouTube Music. The sync generates a
+  stylesheet so its window follows your theme.
+- **Dark Reader** is a browser extension that darkens web pages. The sync
+  pushes your palette into it so pages match the desktop. It is never
+  installed for you; add it from your browser's store and it is themed from the
+  next sync.
+
+Declining one takes its row out of the panel entirely rather than leaving it
+switched off, and reverts what it had changed. To put one back, press **/** in
+the panel and then its number — everything you removed is listed there. From
+the command line:
+
+```bash
+hyprchroma framework list
+hyprchroma framework remove pear
+hyprchroma framework restore pear
+```
 
 ## Use
 

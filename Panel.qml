@@ -45,7 +45,7 @@ Panel {
 
   // What the manifest says this panel needs. Kept there rather than here so the
   // requirement is visible to anyone reading the manifest.
-  readonly property string requiredVersion: "1.4.1"
+  readonly property string requiredVersion: "1.5.0"
   property string installedVersion: ""
   readonly property bool outdated: dependencyPresent && installedVersion !== ""
     && root.olderThan(installedVersion, requiredVersion)
@@ -94,16 +94,11 @@ Panel {
   // authenticates, and a password prompt with nowhere to type is a hang. The
   // panel closes first so the terminal has the keyboard. Sentinels in the
   // runtime directory let the result be picked up after the panel is gone.
-  // Installing and updating are the same command: fetch the source and build
-  // it with makepkg, which is what an AUR helper does for a source package
-  // anyway. There is no AUR entry to point at, so this points at the
-  // repository directly and pacman still ends up owning the result -- it can
-  // be listed, upgraded and removed like anything else, which is the part that
-  // mattered about a package.
-  //
-  // It runs in Omarchy's presented terminal, never inside omarchy-shell:
-  // makepkg -si asks for a password and shows what pacman is about to do, and
-  // both need somewhere to be seen and answered.
+  // Installing and updating both run the same setup script, shipped with this
+  // plugin, in Omarchy's presented terminal. It has to be a terminal: it asks
+  // which optional frameworks you want, offers to install what those need, and
+  // makepkg asks for a password -- none of which has anywhere to happen inside
+  // omarchy-shell. The panel closes first so the terminal takes the keyboard.
   //
   // No sentinel files. An earlier version wrote .done/.failed markers into
   // $XDG_RUNTIME_DIR, falling back to /tmp -- a predictable name in a
@@ -111,19 +106,29 @@ Panel {
   // another account can plant. Nothing ever read them: onExited says when the
   // terminal finished and the version check that follows says whether it
   // worked.
-  readonly property string installScript:
-    "set -eu; " +
-    "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; " +
-    "git clone --depth 1 https://github.com/NobleDoodle/hyprchroma \"$tmp/hyprchroma\"; " +
-    "cd \"$tmp/hyprchroma/packaging\"; " +
-    "makepkg -si --needed; " +
-    "systemctl --user enable --now hyprchromad.service"
+  readonly property string setupScript:
+    Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName
+      + "/bin/hyprchroma-setup"
 
   Process {
     id: installProcess
-    command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.installScript ]
+    command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.setupScript ]
     environment: ({ PATH: root.trustedPath })
     onExited: { root.installing = false; versionProcess.running = true }
+  }
+
+  Process {
+    id: restoreProcess
+    environment: ({ PATH: root.trustedPath })
+    onExited: settingsFile.reload()
+  }
+
+  // Putting one back is a single command, and it syncs on the way in, so the
+  // framework is styled again by the time its row reappears.
+  function restoreFramework(target) {
+    if (restoreProcess.running) return
+    restoreProcess.command = [ "/usr/bin/hyprchroma", "framework", "restore", target ]
+    restoreProcess.running = true
   }
 
   Process {
@@ -170,7 +175,24 @@ Panel {
   // cursor movement and x for delete, so "k" cannot reach this panel to mean
   // KDE; and "q" reads as quit in almost every keyboard UI, which is a poor
   // thing to wire to a toggle that reverts the framework it switches off.
-  readonly property var frameworks: [
+  property var removedTargets: []
+
+  // Every framework this knows about, and the ones left after the user's
+  // removals. Rows are numbered by position in the visible list, so removing
+  // one renumbers the rest rather than leaving a gap.
+  function targetKey(target) {
+    return target === "qt-kde" ? "qtKde" : target === "dark-reader" ? "darkReader" : target
+  }
+  readonly property var visibleFrameworks:
+    allFrameworks.filter(function(entry) {
+      return root.removedTargets.indexOf(root.targetKey(entry.target)) === -1
+    })
+  readonly property var hiddenFrameworks:
+    allFrameworks.filter(function(entry) {
+      return root.removedTargets.indexOf(root.targetKey(entry.target)) !== -1
+    })
+
+  readonly property var allFrameworks: [
     { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
     { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
     { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
@@ -240,9 +262,15 @@ Panel {
       if (root.guideOpen) root.refreshStaleApps()
       return
     }
-    // While the guide is up its contents are being read, not acted on; a digit
-    // would otherwise toggle a framework whose row is not on screen.
-    if (root.guideOpen) return
+    // While the guide is up, a digit means one of the removed frameworks listed
+    // there -- not one of the toggles, whose rows are not on screen.
+    if (root.guideOpen) {
+      var back = parseInt(key, 10) - 1
+      if (back >= 0 && back < root.hiddenFrameworks.length) {
+        root.restoreFramework(root.hiddenFrameworks[back].target)
+      }
+      return
+    }
     // "i" only does anything while the panel is offering it, so it cannot be
     // pressed by accident into an install nobody asked for.
     if (key === "i" && root.dependencyChecked && !root.ready) {
@@ -257,8 +285,8 @@ Panel {
       return
     }
     var index = parseInt(key, 10) - 1
-    if (index >= 0 && index < root.frameworks.length) {
-      var target = root.frameworks[index].target
+    if (index >= 0 && index < root.visibleFrameworks.length) {
+      var target = root.visibleFrameworks[index].target
       root.setTargetEnabled(target, !root.targetEnabled(target))
     }
   }
@@ -317,6 +345,9 @@ Panel {
       try {
         var parsed = JSON.parse(text())
         var frameworks = parsed.frameworks || {}
+        // Frameworks the user said they did not want. Off is a toggle; removed
+        // takes the row out of the panel entirely.
+        root.removedTargets = Array.isArray(parsed.removed) ? parsed.removed : []
         root.enabledTargets = {
           gtk: frameworks.gtk !== false,
           qtKde: frameworks.qtKde !== false,
@@ -359,7 +390,11 @@ Panel {
         spacing: Style.space(8)
 
         Text {
-          text: root.guideOpen ? "Applications to close" : "Omarchroma"
+          text: root.guideOpen
+            ? (root.hiddenFrameworks.length > 0
+                ? "Applications to close, and what you removed"
+                : "Applications to close")
+            : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.body
@@ -381,6 +416,71 @@ Panel {
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
+          }
+
+          // Removing a framework takes its row out of the panel, so this is the only
+          // place it still exists to be put back. Kept behind the same key as the
+          // close list rather than given a view of its own: both are things you deal
+          // with occasionally, and neither belongs in the panel body.
+          Text {
+            visible: root.hiddenFrameworks.length > 0
+            width: guide.width
+            text: "Removed — press the number to put one back"
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            topPadding: Style.space(6)
+          }
+
+          Repeater {
+            model: root.hiddenFrameworks
+            delegate: Item {
+              id: gone
+              required property var modelData
+              required property int index
+              width: guide.width
+              height: Math.max(Style.spacing.controlHeight, goneLabel.implicitHeight)
+
+              Text {
+                id: goneIcon
+                text: gone.modelData.icon
+                color: Color.muted
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: goneLabel
+                text: gone.modelData.label
+                color: root.bar ? root.bar.foreground : Color.popups.text
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: goneIcon.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: goneKey.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: goneKey
+                text: String(gone.index + 1)
+                color: Color.muted
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.restoreFramework(gone.modelData.target)
+              }
+            }
           }
 
           Repeater {
@@ -472,7 +572,7 @@ Panel {
         }
 
         Repeater {
-          model: root.frameworks
+          model: root.visibleFrameworks
 
           delegate: Item {
             id: row

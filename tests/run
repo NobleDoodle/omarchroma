@@ -7,5 +7,18 @@ for suite in tests/test-*.sh; do
   failed=$((failed + bad))
   (( bad )) && { printf '%-24s %2d failed\n' "$(basename "$suite")" "$bad"; grep FAIL <<<"$output" | sed 's/^/    /'; }
 done
+# QML is not checked by "omarchy plugin validate", which reads the manifest
+# only. qmlformat parses or it does not, which is the check that was missing
+# while these files were being edited.
+if [[ -x /usr/lib/qt6/bin/qmlformat ]]; then
+  for qml in ./*.qml; do
+    if /usr/lib/qt6/bin/qmlformat "$qml" >/dev/null 2>&1; then
+      total=$((total + 1))
+    else
+      failed=$((failed + 1)); printf '%-24s QML parse error\n' "$(basename "$qml")"
+    fi
+  done
+fi
+
 printf '%d assertions, %d failures\n' "$total" "$failed"
 (( failed == 0 ))

@@ -52,16 +52,18 @@ chk "the banner has an install, an update and a start" \
   "$(grep -ohE 'Press i to (install|update|start) it' Panel.qml | sort -u | wc -l)" "3"
 
 # --- installing and updating are the same mechanism ------------------------
-chk "one script serves both" "$(grep -c 'readonly property string installScript' Panel.qml)" "1"
-chk "it builds with makepkg" "$(countcode 'makepkg -si' Panel.qml)" "1"
-chk "there is no AUR dependency left" "$(grep -c 'pkg aur add\|yay -S' Panel.qml)" "0"
+chk "one script serves both" "$(grep -c 'readonly property string setupScript' Panel.qml)" "1"
+# The build lives in the setup script now, not in a string in the panel.
+chk "it builds with makepkg" "$(countcode 'makepkg -si' bin/hyprchroma-setup)" "1"
+chk "there is no AUR dependency left" \
+  "$(grep -c 'pkg aur add\|yay -S' Panel.qml bin/hyprchroma-setup | grep -v ':0$' | wc -l)" "0"
 chk "it runs in a terminal the user can see" \
   "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
 # Two: this one, and the Escape handler that has always been there.
 chk "the panel closes before the terminal opens" \
   "$(countcode 'root.close\(\)' Panel.qml)" "2"
 chk "the service is enabled after building" \
-  "$(grep -c 'systemctl --user enable --now hyprchromad.service' Panel.qml)" "1"
+  "$(grep -c 'systemctl --user enable --now hyprchromad.service' bin/hyprchroma-setup)" "1"
 
 # --- nothing predictable is written anywhere ------------------------------
 chk "no sentinel files" "$(grep -c 'install.done\|install.failed' Panel.qml)" "0"
@@ -70,3 +72,18 @@ chk "nothing is written to /tmp" "$(grep -c 'XDG_RUNTIME_DIR:-/tmp' Panel.qml)" 
 # --- the plugin itself stays unprivileged ---------------------------------
 chk "the plugin runs no privileged command itself" \
   "$(grep -cE '^\s*(sudo|pkexec) ' Panel.qml BarWidget.qml | grep -v ':0$' | wc -l)" "0"
+
+# --- the contract across the repo boundary --------------------------------
+# Two repositories move independently, so what this plugin calls in hyprchroma
+# is an interface, not an implementation detail. Listed here so changing it is
+# a visible diff in review rather than a silent version skew: the plugin once
+# declared 1.4.1 while calling a subcommand that only existed from 1.5.0, and
+# the panel reported itself ready.
+# Panel.qml calls it through a QML argument list; the setup script calls it as
+# a shell command. Both are normalized to "<subcommand> <action>" so the set is
+# comparable whatever the caller looks like.
+calls=$( { grep -ohE '"framework", "[a-z]+"' Panel.qml | tr -d '",' | sed 's/  */ /g'
+           grep -ohE 'hyprchroma (framework|palette) [a-z-]+' bin/hyprchroma-setup | sed 's/^hyprchroma //'
+         } | sort -u | paste -sd, )
+chk "the hyprchroma subcommands this plugin depends on" "$calls" "framework remove,framework restore"
+chk "the version it declares covers them" "$panel" "1.5.0"
