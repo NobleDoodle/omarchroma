@@ -41,17 +41,45 @@ Panel {
   property bool dependencyPresent: false
   property bool daemonRunning: false
   property bool installing: false
-  readonly property bool ready: dependencyPresent && daemonRunning
+  readonly property bool ready: dependencyPresent && daemonRunning && !outdated
+
+  // What the manifest says this panel needs. Kept there rather than here so the
+  // requirement is visible to anyone reading the manifest.
+  readonly property string requiredVersion: "1.4.1"
+  property string installedVersion: ""
+  readonly property bool outdated: dependencyPresent && installedVersion !== ""
+    && root.olderThan(installedVersion, requiredVersion)
+
+  // Numeric compare, field by field. "1.10.0" is newer than "1.9.0", which a
+  // string compare gets backwards.
+  function olderThan(have, want) {
+    var a = String(have).split("."), b = String(want).split(".")
+    for (var i = 0; i < Math.max(a.length, b.length); i++) {
+      var x = parseInt(a[i] || "0", 10), y = parseInt(b[i] || "0", 10)
+      if (isNaN(x)) x = 0
+      if (isNaN(y)) y = 0
+      if (x !== y) return x < y
+    }
+    return false
+  }
 
   Process {
     id: versionProcess
     command: [ "/usr/bin/hyprchroma", "--version" ]
     environment: ({ PATH: root.trustedPath })
+    stdout: StdioCollector {
+      waitForEnd: true
+      // "hyprchroma 1.4.1" -> "1.4.1"
+      onStreamFinished: {
+        var match = /([0-9]+(?:\.[0-9]+)*)/.exec(String(text))
+        root.installedVersion = match ? match[1] : ""
+      }
+    }
     onExited: function(code) {
       root.dependencyPresent = (code === 0)
       root.dependencyChecked = true
       if (root.dependencyPresent) daemonProcess.running = true
-      else root.daemonRunning = false
+      else { root.daemonRunning = false; root.installedVersion = "" }
     }
   }
 
@@ -66,17 +94,30 @@ Panel {
   // authenticates, and a password prompt with nowhere to type is a hang. The
   // panel closes first so the terminal has the keyboard. Sentinels in the
   // runtime directory let the result be picked up after the panel is gone.
-  // Deliberately no sentinel files. An earlier version wrote .done/.failed
-  // markers into $XDG_RUNTIME_DIR, falling back to /tmp -- a predictable name
-  // in a world-writable directory, truncated with ":>", which is a symlink
-  // target another account can plant. Nothing ever read them: onExited below
-  // already says when the terminal finished, and the version check that
-  // follows says whether it worked.
+  // Installing and updating are the same command: fetch the source and build
+  // it with makepkg, which is what an AUR helper does for a source package
+  // anyway. There is no AUR entry to point at, so this points at the
+  // repository directly and pacman still ends up owning the result -- it can
+  // be listed, upgraded and removed like anything else, which is the part that
+  // mattered about a package.
+  //
+  // It runs in Omarchy's presented terminal, never inside omarchy-shell:
+  // makepkg -si asks for a password and shows what pacman is about to do, and
+  // both need somewhere to be seen and answered.
+  //
+  // No sentinel files. An earlier version wrote .done/.failed markers into
+  // $XDG_RUNTIME_DIR, falling back to /tmp -- a predictable name in a
+  // world-writable directory, truncated with ":>", which is a symlink target
+  // another account can plant. Nothing ever read them: onExited says when the
+  // terminal finished and the version check that follows says whether it
+  // worked.
   readonly property string installScript:
-    "set -u; " +
-    "if pacman -Q hyprchroma >/dev/null 2>&1; then yay -S --needed --cleanafter hyprchroma; " +
-    "else omarchy pkg aur add hyprchroma; fi " +
-    "&& systemctl --user enable --now hyprchromad.service"
+    "set -eu; " +
+    "tmp=$(mktemp -d); trap 'rm -rf \"$tmp\"' EXIT; " +
+    "git clone --depth 1 https://github.com/NobleDoodle/hyprchroma \"$tmp/hyprchroma\"; " +
+    "cd \"$tmp/hyprchroma/packaging\"; " +
+    "makepkg -si --needed; " +
+    "systemctl --user enable --now hyprchromad.service"
 
   Process {
     id: installProcess
@@ -95,11 +136,12 @@ Panel {
   function installDependency() {
     if (root.installing) return
     root.installing = true
-    if (root.dependencyPresent && !root.daemonRunning) {
+    if (root.dependencyPresent && !root.outdated && !root.daemonRunning) {
       // Only the service needs starting; that takes no password and no terminal.
       startDaemonProcess.running = true
       return
     }
+    // Missing or too old: the same build either way.
     root.close()
     installProcess.running = true
   }
@@ -399,7 +441,10 @@ Panel {
               ? "Working..."
               : (!root.dependencyPresent
                   ? "hyprchroma is not installed. It is the package that does the theming; this panel only drives it."
-                  : "hyprchroma is installed but its background service is not running, so nothing is being kept in step.")
+                  : root.outdated
+                    ? "hyprchroma " + root.installedVersion + " is installed; this panel needs "
+                      + root.requiredVersion + " or newer."
+                    : "hyprchroma is installed but its background service is not running, so nothing is being kept in step.")
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
@@ -409,7 +454,9 @@ Panel {
             width: parent.width
             text: root.installing
               ? ""
-              : (!root.dependencyPresent ? "Press i to install it" : "Press i to start it")
+              : (!root.dependencyPresent
+                  ? "Press i to install it"
+                  : root.outdated ? "Press i to update it" : "Press i to start it")
             color: root.bar ? root.bar.foreground : Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.body

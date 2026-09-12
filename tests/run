@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
+total=0; failed=0
+for suite in tests/test-*.sh; do
+  output=$(bash "$suite" 2>&1)
+  total=$((total + $(grep -c PASS <<<"$output"))); bad=$(grep -c FAIL <<<"$output")
+  failed=$((failed + bad))
+  (( bad )) && { printf '%-24s %2d failed\n' "$(basename "$suite")" "$bad"; grep FAIL <<<"$output" | sed 's/^/    /'; }
+done
+printf '%d assertions, %d failures\n' "$total" "$failed"
+(( failed == 0 ))

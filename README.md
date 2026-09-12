@@ -19,10 +19,20 @@ the list of applications still showing the previous theme.
 omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 ```
 
-That is the whole install. If hyprchroma is missing, open the panel and press
-**i** — it installs the package in Omarchy's presented terminal, where the
-password prompt can actually be answered, and enables the background service.
-The panel closes first so the terminal has the keyboard.
+That is the whole install. The theming itself is done by
+[hyprchroma](https://github.com/NobleDoodle/hyprchroma), a separate package. If
+it is missing — or older than this panel needs — open the panel and press **i**.
+The same action covers both: it builds the package in Omarchy's presented
+terminal, where `makepkg` can ask for a password and show you what pacman is
+about to do, then enables the background service. The panel closes first so the
+terminal has the keyboard.
+
+There is no AUR entry to install from, so it builds from source the way an AUR
+helper would. pacman still owns the result.
+
+The panel checks `hyprchroma --version` against the minimum in `manifest.json`
+each time it opens, so an out-of-date package is noticed rather than failing
+quietly. Toggles stay inactive until the dependency is actually usable.
 
 Nothing here runs a privileged command itself, and nothing is written outside
 your own configuration.
@@ -88,15 +98,15 @@ package as well:
 ```bash
 hyprchroma restore --stock        # or --captured
 systemctl --user disable --now hyprchromad.service
-omarchy pkg drop hyprchroma
+sudo pacman -R hyprchroma
 ```
 
 ## Upgrading from 1.x
 
 Versions before 2.0.0 shipped the sync engine inside this plugin and installed
 it with a shell script. That engine is now
-[hyprchroma](https://github.com/NobleDoodle/hyprchroma), an AUR package with a
-user service. Press **i** in the panel to install it; it migrates the state
+[hyprchroma](https://github.com/NobleDoodle/hyprchroma), a package with a user
+service. Press **i** in the panel to install it; it migrates the state
 directory the old version captured, so the record of what your desktop looked
 like before any of this ran is kept.
 
