@@ -54,6 +54,18 @@ chk "it is raised when it was wanted" "$(grep -c 'also-not-a-package' <<<"$want"
 # truth.
 chk "Dark Reader's info is never read as a bare command" \
   "$(grep -c 'hyprchroma-dark-reader --info' $S)" "0"
+chk "the check happens right where the question is answered, not after the build" \
+  "$(awk '/"\$here\/lib\/hyprchroma-dark-reader" --info/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+# Isolated HOME: darkReaderInstalled is judged from files under $HOME, so a
+# fresh one deterministically reads as "not installed" regardless of which
+# browser happens to be this machine's actual default.
+dr_home=$(mktemp -d); trap 'rm -rf "$dr_home"' EXIT
+dr_out=$(export HOME="$dr_home"
+         printf 'n\ny\nno\n' | timeout 30 "./$S" 2>&1)
+chk "the store links appear live, at the point Dark Reader is chosen" \
+  "$(grep -c 'Chrome Web Store' <<<"$dr_out")" "1"
+chk "before the build even starts" \
+  "$(grep -cE '==> Making package|Finished making' <<<"$dr_out")" "0"
 chk "it is read from where it is actually installed, twice" \
   "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "2"
 

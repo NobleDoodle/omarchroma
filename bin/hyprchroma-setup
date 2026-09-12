@@ -24,6 +24,12 @@ omarchroma_trusted_path() {
 PATH=$(omarchroma_trusted_path)
 export PATH
 
+# Computed here, ahead of everything else, rather than only when the build
+# needs it: hyprchroma-dark-reader is a plain script in this same checkout and
+# needs no build to run, so the Dark Reader question below can check whether
+# it is already configured immediately, not leave that until after makepkg.
+here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+
 bold=$'\033[1m'; dim=$'\033[2m'; reset=$'\033[0m'; warn=$'\033[1;33m'
 
 say()  { printf '%s\n' "$*"; }
@@ -62,8 +68,8 @@ INTRO
 head2 "Pear Desktop"
 cat <<'PEAR'
 Pear Desktop is a desktop app for YouTube Music. Hyprchroma can generate a
-stylesheet for it so its window matches your theme instead of staying dark
-green forever.
+stylesheet for it so its window matches your theme instead of staying black
+regardless of what the rest of the desktop looks like.
 
 Only useful if you actually use it. Nothing else depends on this.
 PEAR
@@ -80,7 +86,27 @@ Hyprchroma does not install the extension -- that is yours to add from your
 browser's store. This only decides whether it syncs to it when it is there.
 DR
 want_dark=no
-if ask "Include Dark Reader"; then want_dark=yes; fi
+if ask "Include Dark Reader"; then
+  want_dark=yes
+  # Right where the question was answered, not after the build finishes
+  # minutes from now: the point is to hand over the store link while it is
+  # still on screen, not to have it scroll past at the very end. By its own
+  # path, not a bare command -- hyprchroma-dark-reader is installed to
+  # /usr/lib/hyprchroma, deliberately off this script's own trusted PATH
+  # above since it is a private helper, and a bare call here always failed
+  # silently and read as "not installed" no matter what was actually true.
+  browser=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
+  installed=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
+  if [[ $installed != true ]]; then
+    say ""
+    note "Dark Reader is not installed in ${browser:-your browser}."
+    note "Add it from your browser's store and Hyprchroma will theme it from the next sync:"
+    note "  Chrome Web Store  https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh"
+    note "  Firefox Add-ons   https://addons.mozilla.org/firefox/addon/darkreader/"
+  else
+    note "Already configured in ${browser:-your browser}."
+  fi
+fi
 
 # --- what those choices need ----------------------------------------------
 head2 "Dependencies"
@@ -161,12 +187,12 @@ if [[ $acknowledgement != "I understand" ]]; then
 fi
 
 head2 "Building"
-# Built from the checkout this script sits in, not from a fresh download. The
-# plugin and the service are the same repository, so what Omarchy already
-# cloned is the source -- which means what gets installed is what you have in
-# front of you, and on a published listing, what was reviewed. Cloning again
-# here would let those be different things.
-here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+# $here is set at the top of this script, not here: it is the same checkout
+# this script sits in, not a fresh download. The plugin and the service are
+# the same repository, so what Omarchy already cloned is the source -- which
+# means what gets installed is what you have in front of you, and on a
+# published listing, what was reviewed. Cloning again here would let those be
+# different things.
 if [[ ! -f $here/packaging/PKGBUILD ]]; then
   say "Could not find the package recipe next to this script ($here/packaging)."
   exit 1
@@ -178,23 +204,6 @@ makepkg -si --needed || { say "The build did not finish; nothing else was change
 head2 "Applying your choices"
 [[ $want_pear == yes ]] || hyprchroma framework remove pear
 [[ $want_dark == yes ]] || hyprchroma framework remove dark-reader
-
-if [[ $want_dark == yes ]]; then
-  # By its own name, not a bare command: hyprchroma-dark-reader is installed
-  # to /usr/lib/hyprchroma, which is deliberately not on the trusted PATH
-  # above -- it is a private helper, not something meant to be run by hand.
-  # A bare call here always failed silently and read as "not installed" no
-  # matter what was actually true.
-  browser=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
-  installed=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
-  if [[ $installed != true ]]; then
-    say ""
-    note "Dark Reader is not installed in ${browser:-your browser}."
-    note "Add it from your browser's store and Hyprchroma will theme it from the next sync:"
-    note "  Chrome Web Store  https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh"
-    note "  Firefox Add-ons   https://addons.mozilla.org/firefox/addon/darkreader/"
-  fi
-fi
 
 systemctl --user enable --now hyprchromad.service ||
   note "Could not start hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
