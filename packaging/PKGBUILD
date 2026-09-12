@@ -1,0 +1,37 @@
+# Maintainer: NobleDoodle <nobledoodle@users.noreply.github.com>
+#
+# Builds from the checkout this file sits in, not from a downloaded tarball.
+# That is deliberate: the Omarchy plugin in this same repository runs makepkg
+# here, so the package installed is built from the tree the user already has --
+# and, for a published listing, from the exact commit that was reviewed. A
+# tarball would let those differ.
+pkgname=hyprchroma
+pkgver=2.2.0
+pkgrel=1
+pkgdesc="Carry the active Omarchy theme palette into GTK, Qt/KDE, Dark Reader and Pear Desktop"
+arch=('any')
+url="https://github.com/NobleDoodle/omarchroma"
+license=('MIT')
+depends=('bash' 'python' 'jq' 'coreutils')
+optdepends=(
+  'omarchy: first-class palette source with automatic theme-set hooks; without it, supply ~/.config/hyprchroma/palette.toml'
+  'hyprland: required in practice - the daemon watches its event stream'
+  'adw-gtk-theme: GTK 3 applications follow the theme'
+  'python-plyvel: Dark Reader theming in Chromium-family browsers'
+  'libnotify: desktop notifications when a sync defers'
+)
+source=()
+sha256sums=()
+
+check() {
+  cd "$startdir/.."
+  make check
+}
+
+package() {
+  # Only the service is installed. The QML alongside it is the optional bar
+  # widget, which Omarchy loads from the checkout and which pacman has no
+  # business owning.
+  cd "$startdir/.."
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+}
