@@ -28,7 +28,7 @@ Panel {
   // Fixed absolute identities. /usr/local/* is excluded because nothing
   // this plugin invokes lives there and it is the entry most often left
   // group-writable; the helpers launched below re-derive and verify their
-  // own PATH regardless, so this is a floor rather than the whole defence.
+  // own PATH regardless, so this is a floor rather than the whole defense.
   readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
   readonly property string settingsPath: stateDir + "/settings.json"

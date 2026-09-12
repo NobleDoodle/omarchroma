@@ -39,7 +39,7 @@ your own configuration.
 | `Esc` | leave that view, or close the panel |
 
 Turning a framework off reverts it to how it looked before hyprchroma first
-touched it, rather than leaving its colours in place with syncing merely
+touched it, rather than leaving its colors in place with syncing merely
 stopped. Turning it back on re-syncs from the same baseline.
 
 Each row shows the digit that toggles it. Digits rather than letters because
