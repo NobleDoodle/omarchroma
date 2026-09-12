@@ -16,8 +16,19 @@ ALL=(bin/hyprchroma bin/hyprchroma-setup lib/hyprchroma-state lib/hyprchroma-dar
      lib/hyprchroma-palette lib/sync-gtk-theme lib/sync-qt-kde-theme share/hooks/hyprchroma)
 sweep(){ code "${ALL[@]}" | grep -ohE "$1" | wc -l; }
 
-# Predictable temporaries, and writers that rolled their own.
-chk "nothing creates its own temporary"        "$(sweep 'tempfile\.mkstemp|mktemp ')" "0"
+# Predictable temporaries, and writers that rolled their own. One documented
+# exception: BUILDDIR in hyprchroma-setup is handed straight to makepkg and
+# never read or written by this project's own code, so it carries none of the
+# risk a homegrown temp writer would -- mktemp's own naming is already
+# unpredictable and its creation already atomic, which is what every other
+# write here achieves a different way. It exists only to keep makepkg's own
+# build scratch space out of the plugin tree Omarchy's shell watches for
+# changes. Filtered out by exact text before the sweep, then asserted to be
+# the only such line, so a second, undocumented one is still caught.
+chk "nothing creates its own temporary, aside from that one exception" \
+  "$(code "${ALL[@]}" | grep -v 'BUILDDIR=\$(mktemp -d)' | grep -ohE 'tempfile\.mkstemp|mktemp ' | wc -l)" "0"
+chk "and that exception is exactly the one expected line" \
+  "$(grep -c 'BUILDDIR=\$(mktemp -d)' bin/hyprchroma-setup)" "1"
 chk "no rename resolves its target by pathname" "$(sweep 'os\.replace\([^,]+, [^,]+\)')" "0"
 chk "no truncating open of a fixed path"       "$(sweep 'open\([^)]*, *"w"\)|exec [0-9]+>[^&]')" "0"
 

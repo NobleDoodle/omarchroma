@@ -59,6 +59,20 @@ chk "and nothing was built" "$(grep -cE '==> Making package|Finished making' <<<
 chk "makepkg only runs after the check" \
   "$(awk '/acknowledgement != "I understand"/{seen=1} /makepkg -si/{print (seen?"after":"before")}' $S)" "after"
 
+# --- the build's own scratch space stays out of the watched plugin tree ---
+# packaging/pkg and packaging/src, left where makepkg defaults to putting
+# them, sit inside the same directory Omarchy's shell watches for plugin
+# changes. package() writing dozens of files there fired that watcher dozens
+# of times a second, mid-build, live on this project's own test machine.
+chk "the build directory is moved out of the checkout" \
+  "$(grep -c 'BUILDDIR=\$(mktemp -d)' $S)" "1"
+chk "before makepkg ever runs, not after" \
+  "$(awk '/BUILDDIR=\$\(mktemp -d\)/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+chk "it is exported so makepkg actually sees it" \
+  "$(grep -c '^export BUILDDIR$' $S)" "1"
+chk "the temporary directory is removed no matter how the script exits" \
+  "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.. EXIT' $S)" "1"
+
 # --- both optional frameworks are explained, not just named ---------------
 chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "1"
 chk "Dark Reader is explained" "$(grep -c 'browser extension that darkens web pages' <<<"$out")" "1"

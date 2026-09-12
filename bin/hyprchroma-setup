@@ -224,6 +224,16 @@ if [[ ! -f $here/packaging/PKGBUILD ]]; then
   exit 1
 fi
 cd "$here/packaging" || exit 1
+# BUILDDIR moves only makepkg's own scratch space (src/ and pkg/), never the
+# source, which package() still reads from $startdir/.. exactly as before.
+# Left inside the checkout, that scratch space sits in the same directory
+# tree the Omarchy shell watches for plugin changes, and package() writing
+# dozens of files there fired that watcher dozens of times a second, mid-build
+# -- reloading the panel's whole QML component tree while a build was still
+# running underneath it, live on this project's own test machine.
+BUILDDIR=$(mktemp -d) || { say "Could not create a build directory."; exit 1; }
+trap 'rm -rf -- "$BUILDDIR"' EXIT
+export BUILDDIR
 makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
 
 # --- apply the choices, now that the tool exists --------------------------
