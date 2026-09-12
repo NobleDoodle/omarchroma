@@ -196,9 +196,6 @@ Panel {
   // Every framework this knows about, and the ones left after the user's
   // removals. Rows are numbered by position in the visible list, so removing
   // one renumbers the rest rather than leaving a gap.
-  function targetKey(target) {
-    return target === "qt-kde" ? "qtKde" : target === "dark-reader" ? "darkReader" : target
-  }
   readonly property var visibleFrameworks:
     allFrameworks.filter(function(entry) {
       return root.removedTargets.indexOf(root.targetKey(entry.target)) === -1

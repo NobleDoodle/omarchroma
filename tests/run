@@ -33,5 +33,30 @@ if [[ -x /usr/lib/qt6/bin/qmlformat ]]; then
   done
 fi
 
+# Parsing is not enough. A member declared twice is valid syntax, so qmlformat
+# accepts it, but the QML engine refuses to build the component -- which shows
+# up as a panel that does not open rather than as anything on stderr. That
+# shipped once, in a release where a second copy of one function reached
+# Panel.qml. Only the categories that stop a component loading are promoted to
+# errors here: the rest of what qmllint reports is unresolved qs.Commons and
+# qs.Ui imports, which are Omarchy's and are not resolvable from a checkout.
+if [[ -x /usr/lib/qt6/bin/qmllint ]]; then
+  for qml in ./*.qml; do
+    if /usr/lib/qt6/bin/qmllint \
+         --duplicated-name error \
+         --duplicate-property-binding error \
+         --duplicate-inline-component error \
+         --duplicate-enum-entries error \
+         "$qml" 2>&1 | grep -q '^Error:'; then
+      failed=$((failed + 1)); printf '%-26s duplicate QML member\n' "$(basename "$qml")"
+      /usr/lib/qt6/bin/qmllint --duplicated-name error --duplicate-property-binding error \
+        --duplicate-inline-component error --duplicate-enum-entries error "$qml" 2>&1 \
+        | grep '^Error:' | sed 's/^/    /'
+    else
+      total=$((total + 1))
+    fi
+  done
+fi
+
 printf '%d assertions, %d failures\n' "$total" "$failed"
 (( failed == 0 ))

@@ -6,7 +6,7 @@
 # and, for a published listing, from the exact commit that was reviewed. A
 # tarball would let those differ.
 pkgname=hyprchroma
-pkgver=2.2.6
+pkgver=2.2.7
 pkgrel=1
 pkgdesc="Carry the active Omarchy theme palette into GTK, Qt/KDE, Dark Reader and Pear Desktop"
 arch=('any')
