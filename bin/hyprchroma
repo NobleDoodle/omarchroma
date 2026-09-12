@@ -34,14 +34,11 @@ export PATH
 
 
 # Where the helpers live is derived from this script's own resolved location,
-# never from the environment. HYPRCHROMA_LIB used to be an override, which meant
-# a single line in ~/.config/environment.d -- read by systemd --user at login --
-# chose which executables the daemon ran and which file was installed as an
-# Omarchy theme hook. That is arbitrary code execution and persistence handed
-# over by a variable, exactly what pinning PATH exists to prevent. There is no
-# override now: installed under /usr it finds /usr/lib/hyprchroma, and run from
-# a checkout it finds the checkout's own lib, because both are simply "next to
-# me".
+# and never from the environment. A variable naming that directory would choose
+# which executables the daemon runs and which file is installed as an Omarchy
+# theme hook, and ~/.config/environment.d is read by systemd --user at login --
+# so it must not be settable. Installed under /usr this finds
+# /usr/lib/hyprchroma; run from a checkout it finds the checkout's own lib.
 HYPRCHROMA_SELF=$(realpath -- "${BASH_SOURCE[0]}")
 hyprchroma_prefix=$(dirname -- "$(dirname -- "$HYPRCHROMA_SELF")")
 if [[ -d $hyprchroma_prefix/lib/hyprchroma ]]; then
@@ -69,7 +66,7 @@ SETTINGS_FILE="$STATE_DIR/settings.json"
 # shared host.
 LOCK_FILE="${XDG_RUNTIME_DIR:-$STATE_DIR}/hyprchroma-sync.lock"
 
-# Migrate a state directory left by Omarchroma, the single-repo predecessor.
+# Migrate a state directory left by a release that used the omarchroma name.
 # The captured baseline is the only record of what the desktop looked like
 # before any of this ran, so it is moved rather than left behind and orphaned.
 migrate_from_omarchroma() {
@@ -155,10 +152,9 @@ case "${1:-}" in
     # waiting for a window to open. It syncs only what actually changed.
     "$HYPRCHROMA_SELF" --quiet || true
     # watch-events returns when the event stream closes -- and immediately if
-    # Hyprland is not up yet, which is the ordinary case at login. Either way
-    # the unit restarts us (Restart=always, not on-failure: this returns 0).
-    # There is no fallback timer any more; the plugin that used to run one is
-    # a bar widget now.
+    # Hyprland is not up yet, which is the ordinary case at login. Nothing else
+    # is watching, so the unit must restart us: Restart=always, not on-failure,
+    # because this returns 0.
     "$HYPRCHROMA_LIB/hyprchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-events
     exit $?
@@ -273,7 +269,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.2.3"
+    echo "hyprchroma 2.2.4"
     exit 0
     ;;
 esac

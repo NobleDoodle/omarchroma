@@ -1,7 +1,10 @@
-.claude/worktrees/
-/pkg/
+# makepkg build output, wherever the PKGBUILD is run from
+pkg/
+src/
 *.pkg.tar.*
-*.pyc
+*.log
+
 __pycache__/
 *.py[cod]
-/src/
+
+.claude/worktrees/

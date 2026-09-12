@@ -67,9 +67,6 @@ color() {
   printf '%s' "$value"
 }
 
-palette_mode() {
-  [[ ${PALETTE[mode]:-dark} == light ]] && printf 'light' || printf 'dark'
-}
 
 rgb() {
   local hex=${1#\#}

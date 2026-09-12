@@ -463,9 +463,8 @@ GENERATED_PROBES = {
 # a capture records them absent and stores nothing -- which is also their correct
 # stock value, Omarchy writing none of them. A gtk.css carrying the generated
 # header is ours whole; one without it is the user's and is captured normally.
-# gtk.css is no longer ours: we only add an import line to it, so the user's
-# own content is genuinely theirs and is backed up as such. What is wholly
-# generated is the stylesheet that import points at.
+# gtk.css is the user's: only an import line is added to it, so it is backed
+# up as their file. What is wholly generated is the stylesheet it points at.
 WHOLLY_GENERATED = frozenset({"hyprchroma_colors", "pear_css",
                               "gtk3_hyprchroma_css", "gtk4_hyprchroma_css"})
 
@@ -1404,10 +1403,9 @@ def watch_kde_exit(state_dir, data_dir, action="sync"):
                 return
 
     # No event stream: fall back to waiting for the processes themselves to end.
-    # Re-arm rather than hand off. Closing an application and reopening it before
-    # the palette is written used to disarm this permanently: the sync deferred
-    # again and spawned a replacement, but the replacement could not take this
-    # lock while it was still held, so it exited and nothing was left watching.
+    # Re-arm rather than hand off. A replacement spawned by a later sync cannot
+    # take this lock while it is still held, so handing off would leave that
+    # replacement exiting and nothing watching at all.
     for _ in range(WATCH_ROUNDS):
         descriptors = []
         for pid in kde_color_client_pids():

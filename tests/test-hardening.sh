@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Cover for the findings from the post-split security review. Each of these
-# was a live defect introduced by the split itself, not by the code it moved.
+# Cover for defects that were live rather than hypothetical: an environment
+# variable that chose which executables the daemon ran, the same variable
+# planting an Omarchy hook, an unbounded write mode, and an unlink that took
+# any path. Each was found by attacking the built package, not by reading it,
+# so several of these run the attack rather than grepping for its fix.
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$REPO" || exit 1
 chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$3]"; }
