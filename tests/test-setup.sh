@@ -15,6 +15,11 @@ chk "it parses" "$(bash -n $S 2>&1 && echo ok)" "ok"
 out=$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
 chk "a wrong answer cancels" "$(grep -c 'Setup cancelled; nothing was changed' <<<"$out")" "1"
+# The consent text used to open straight into "built from source and
+# installed with pacman" without ever saying what the thing being built
+# actually does -- accurate, but only meaningful to someone who already knows.
+chk "the consent explains what hyprchroma is, not only how it is installed" \
+  "$(grep -c 'the background service that keeps' <<<"$out")" "1"
 # The consent text names makepkg because it explains what will happen; what
 # must not appear is makepkg's own output.
 chk "and nothing was built" "$(grep -cE '==> Making package|Finished making' <<<"$out")" "0"
@@ -86,7 +91,7 @@ pear_out=$(export HOME="$pear_home"
 chk "a missing, wanted Pear Desktop is named" \
   "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
 chk "with the AUR command to get it" \
-  "$(grep -c 'omarchy pkg aur add pear-desktop-bin' <<<"$pear_out")" "1"
+  "$(grep -c 'omarchy pkg aur add pear-desktop' <<<"$pear_out")" "1"
 chk "declining leaves it uninstalled and says so" \
   "$(grep -c 'still offer Pear Desktop once you install it yourself' <<<"$pear_out")" "1"
 # Reuses $out from the top of this file, where Pear was declined outright:

@@ -102,7 +102,7 @@ stops and changes nothing.
 | `adw-gtk-theme` | GTK 3 applications | GTK 3 apps keep system defaults |
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
-| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
+| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop) | YouTube Music theming | Setup offers to install it from the AUR |
 
 ## What it changes
 

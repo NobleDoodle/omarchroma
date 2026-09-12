@@ -147,12 +147,12 @@ if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
    [[ ! -d "$HOME/.config/YouTube Music" ]]; then
   say ""
   note "Pear Desktop is not installed."
-  say "  omarchy pkg aur add pear-desktop-bin"
+  say "  omarchy pkg aur add pear-desktop"
   say ""
   if ask "Install it now"; then
     if command -v omarchy >/dev/null; then
-      omarchy pkg aur add pear-desktop-bin ||
-        note "Could not install pear-desktop-bin; you can run the command above later."
+      omarchy pkg aur add pear-desktop ||
+        note "Could not install pear-desktop; you can run the command above later."
     else
       note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
     fi
@@ -164,8 +164,12 @@ fi
 # --- consent, then build --------------------------------------------------
 head2 "What this installs"
 cat <<CONSENT
-hyprchroma is built from source and installed with pacman, so it can be
-listed, upgraded and removed like any other package. Building it:
+hyprchroma is the background service that keeps GTK, Qt/KDE, and the
+frameworks you chose above following your Omarchy theme -- everything this
+setup has asked about runs through it, not the panel itself.
+
+It is built from source and installed with pacman, so it can be listed,
+upgraded and removed like any other package. Building it:
 
 - builds the service from this checkout with makepkg, which asks pacman to
   install the result -- nothing is downloaded, and no QML is installed
