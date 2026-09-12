@@ -38,6 +38,17 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
+# Default yes, unlike ask() above: the one thing this is used for is the
+# restart that makes everything else in this script actually take effect.
+# Holding return through this should finish the job, not leave a fresh build
+# sitting on disk while the running service and shell keep whatever they
+# already loaded -- which looks exactly like the setup did nothing.
+ask_default_yes() {
+  local prompt=$1 answer
+  read -r -p "$prompt [Y/n]: " answer
+  [[ -z $answer || ${answer,,} == y || ${answer,,} == yes ]]
+}
+
 cat <<'INTRO'
 Hyprchroma setup
 
@@ -100,6 +111,30 @@ else
   note "Everything needed is already installed."
 fi
 
+# Pear Desktop itself is not a dependency in the sense above -- it is the
+# application being themed, not something this needs to run -- and it has no
+# package in the official repos to hand to pacman the way the others above
+# do. Same check bin/hyprchroma itself uses to decide whether Pear is worth
+# syncing at all, so this offers exactly when that would otherwise find
+# nothing to theme.
+if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
+   [[ ! -d "$HOME/.config/YouTube Music" ]]; then
+  say ""
+  note "Pear Desktop is not installed."
+  say "  omarchy pkg aur add pear-desktop-bin"
+  say ""
+  if ask "Install it now"; then
+    if command -v omarchy >/dev/null; then
+      omarchy pkg aur add pear-desktop-bin ||
+        note "Could not install pear-desktop-bin; you can run the command above later."
+    else
+      note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
+    fi
+  else
+    note "Skipped. The panel will still offer Pear Desktop once you install it yourself."
+  fi
+fi
+
 # --- consent, then build --------------------------------------------------
 head2 "What this installs"
 cat <<CONSENT
@@ -145,8 +180,13 @@ head2 "Applying your choices"
 [[ $want_dark == yes ]] || hyprchroma framework remove dark-reader
 
 if [[ $want_dark == yes ]]; then
-  browser=$(hyprchroma-dark-reader --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
-  installed=$(hyprchroma-dark-reader --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
+  # By its own name, not a bare command: hyprchroma-dark-reader is installed
+  # to /usr/lib/hyprchroma, which is deliberately not on the trusted PATH
+  # above -- it is a private helper, not something meant to be run by hand.
+  # A bare call here always failed silently and read as "not installed" no
+  # matter what was actually true.
+  browser=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
+  installed=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
   if [[ $installed != true ]]; then
     say ""
     note "Dark Reader is not installed in ${browser:-your browser}."
@@ -158,6 +198,31 @@ fi
 
 systemctl --user enable --now hyprchromad.service ||
   note "Could not start hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
+
+# enable --now above starts the service only if it was not already running --
+# on an update it was, so it keeps executing whatever it had already loaded
+# into memory. pacman does not restart a running service, and the Omarchy
+# shell does not notice a changed plugin file the same way either: this is
+# exactly what made a real fix look like it had not happened at all.
+head2 "Restart to finish"
+cat <<'RESTARTINFO'
+A fresh install or an update just landed on disk, but hyprchromad.service and
+the Omarchy shell both keep running whatever they already had loaded --
+neither restarts on its own when the files underneath it change.
+RESTARTINFO
+if ask_default_yes "Restart hyprchromad.service and the Omarchy shell now"; then
+  systemctl --user restart hyprchromad.service ||
+    note "Could not restart hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
+  if command -v omarchy >/dev/null; then
+    omarchy restart shell
+  else
+    note "\"omarchy\" was not found, so the shell was not restarted."
+  fi
+else
+  note "Not restarted. Do it yourself when convenient, or the change stays invisible:"
+  note "  systemctl --user restart hyprchromad.service"
+  note "  omarchy restart shell"
+fi
 
 head2 "Done"
 say "Anything you left out can be put back from the panel: press / and then its number."

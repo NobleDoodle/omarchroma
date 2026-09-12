@@ -87,8 +87,15 @@ print('ok' if ready_at < slash_at else 'wrong-order')
 chk "one script serves both" "$(grep -c 'readonly property string setupScript' Panel.qml)" "1"
 # The build lives in the setup script now, not in a string in the panel.
 chk "it builds with makepkg" "$(countcode 'makepkg -si' bin/hyprchroma-setup)" "1"
-chk "there is no AUR dependency left" \
-  "$(grep -c 'pkg aur add\|yay -S' Panel.qml bin/hyprchroma-setup | grep -v ':0$' | wc -l)" "0"
+# hyprchroma itself still builds only from the checkout with makepkg -- no
+# AUR dependency for the thing this project ships. pkg aur add now does
+# appear, but only to hand off installing Pear Desktop, an unrelated
+# third-party application the user opted into, never for hyprchroma. Twice:
+# the command shown before asking, and the same command actually run.
+chk "hyprchroma itself has no AUR dependency" \
+  "$(countcode 'pkg aur add|yay -S' Panel.qml)" "0"
+chk "the only AUR calls that exist are for Pear Desktop, not hyprchroma" \
+  "$(countcode 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
 chk "it runs in a terminal the user can see" \
   "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
 # Two: this one, and the Escape handler that has always been there.

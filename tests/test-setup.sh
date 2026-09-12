@@ -47,6 +47,50 @@ chk "the Dark Reader dependency is not raised when it was declined" \
 # Twice: once in the list of what is missing, once in the command to get it.
 chk "it is raised when it was wanted" "$(grep -c 'also-not-a-package' <<<"$want")" "2"
 
+# --- Dark Reader's own check reads its installed location, not a guess ----
+# hyprchroma-dark-reader is installed to /usr/lib/hyprchroma, deliberately
+# left off the trusted PATH above since it is a private helper -- a bare call
+# here always failed silently and read as "not installed" regardless of the
+# truth.
+chk "Dark Reader's info is never read as a bare command" \
+  "$(grep -c 'hyprchroma-dark-reader --info' $S)" "0"
+chk "it is read from where it is actually installed, twice" \
+  "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "2"
+
+# --- Pear Desktop is offered for install when wanted and missing ---------
+# A real machine may already have pear-desktop, or a ~/.config/YouTube Music
+# from before -- this one running the suite does, in fact, have both -- so
+# both the command name and HOME are substituted, the same way the
+# dependency probe above fakes a missing adw-gtk-theme.
+pear_probe=$(mktemp); trap 'rm -f "$pear_probe"' EXIT
+sed 's/command -v pear-desktop/command -v definitely-not-pear/' $S > "$pear_probe"
+chmod +x "$pear_probe"
+pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
+# y: include Pear. n: decline Dark Reader, so its dependency never enters it.
+# n: decline the install offer below -- answering yes here would really try
+# to run "omarchy pkg aur add" against this machine. no: cancel before build.
+pear_out=$(export HOME="$pear_home"
+           printf 'y\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
+chk "a missing, wanted Pear Desktop is named" \
+  "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
+chk "with the AUR command to get it" \
+  "$(grep -c 'omarchy pkg aur add pear-desktop-bin' <<<"$pear_out")" "1"
+chk "declining leaves it uninstalled and says so" \
+  "$(grep -c 'still offer Pear Desktop once you install it yourself' <<<"$pear_out")" "1"
+# Reuses $out from the top of this file, where Pear was declined outright:
+# nothing about its install state should be checked or printed at all.
+chk "Pear's own check is skipped entirely when it was not wanted" \
+  "$(grep -c 'Pear Desktop is not installed' <<<"$out")" "0"
+
+# --- finishing restarts what would otherwise keep running stale code -----
+chk "the restart offer comes after the build, not before" \
+  "$(awk '/makepkg -si --needed/{seen=1} /Restart hyprchromad.service and the Omarchy shell now/{print (seen?"after":"before")}' $S)" "after"
+chk "declining is not the default here, unlike every other question" \
+  "$(grep -c 'ask_default_yes' $S)" "2"
+chk "it restarts the service rather than only re-enabling it" \
+  "$(grep -c 'systemctl --user restart hyprchromad.service' $S)" "2"
+chk "and restarts the Omarchy shell too" "$(grep -c 'omarchy restart shell' $S)" "2"
+
 # --- the panel hands off to it -------------------------------------------
 chk "the panel runs the setup script" "$(grep -c 'bin/hyprchroma-setup' Panel.qml)" "1"
 chk "in a terminal the user can see" \
