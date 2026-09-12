@@ -269,7 +269,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.2.4"
+    echo "hyprchroma 2.2.5"
     exit 0
     ;;
 esac

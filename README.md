@@ -20,8 +20,7 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 
 Open the panel and press **i**. A setup terminal will prompt you to select
 optional frameworks, then verify the dependencies those need. Type
-`I understand` to build — from the checkout Omarchy just cloned, so what gets
-installed is what you already have.
+`I understand` to build.
 
 **Standalone (service only):**
 
@@ -30,8 +29,6 @@ git clone --depth 1 https://github.com/NobleDoodle/omarchroma
 cd omarchroma/packaging && makepkg -si
 systemctl --user enable --now hyprchromad.service
 ```
-
-Note: `makepkg` builds only the service, no QML.
 
 ## Showcase
 
