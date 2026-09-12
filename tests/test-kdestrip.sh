@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-python3 - <<'PY'
+python3 - "$REPO" <<'PY'
 import pathlib, tempfile, types
+import sys
 st = types.ModuleType("st")
-src = pathlib.Path("$REPO/lib/hyprchroma-state").read_text() \
+src = pathlib.Path(f"{sys.argv[1]}/lib/hyprchroma-state").read_text() \
     .replace('if __name__ == "__main__":\n    raise SystemExit(main())', '')
 exec(compile(src, "st", "exec"), st.__dict__)
 d = pathlib.Path(tempfile.mkdtemp())
