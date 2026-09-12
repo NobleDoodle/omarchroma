@@ -14,11 +14,11 @@ Panel {
   property var anchorItem: null
   readonly property var barIdentity: hostWidget || root
   readonly property string stateDir: Quickshell.env("XDG_STATE_HOME") !== ""
-    ? Quickshell.env("XDG_STATE_HOME") + "/omarchroma"
-    : Quickshell.env("HOME") + "/.local/state/omarchroma"
+    ? Quickshell.env("XDG_STATE_HOME") + "/hyprchroma"
+    : Quickshell.env("HOME") + "/.local/state/hyprchroma"
   readonly property string dataDir: Quickshell.env("XDG_DATA_HOME") !== ""
-    ? Quickshell.env("XDG_DATA_HOME") + "/omarchroma"
-    : Quickshell.env("HOME") + "/.local/share/omarchroma"
+    ? Quickshell.env("XDG_DATA_HOME") + "/hyprchroma"
+    : Quickshell.env("HOME") + "/.local/share/hyprchroma"
   // Commands these run resolve from here, not from the PATH the shell happened
   // to inherit. They start unattended -- at login, and on every window event --
   // so a directory earlier in the ambient PATH holding something called jq or
@@ -32,6 +32,76 @@ Panel {
   readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
   readonly property string settingsPath: stateDir + "/settings.json"
+
+  // hyprchroma is a separate package and does all the actual work; this panel
+  // only drives it. Without it every toggle would fail quietly and the panel
+  // would look broken, so the state is checked on open and the panel offers to
+  // install it instead of pretending it can do anything.
+  property bool dependencyChecked: false
+  property bool dependencyPresent: false
+  property bool daemonRunning: false
+  property bool installing: false
+  readonly property bool ready: dependencyPresent && daemonRunning
+
+  Process {
+    id: versionProcess
+    command: [ "/usr/bin/hyprchroma", "--version" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: function(code) {
+      root.dependencyPresent = (code === 0)
+      root.dependencyChecked = true
+      if (root.dependencyPresent) daemonProcess.running = true
+      else root.daemonRunning = false
+    }
+  }
+
+  Process {
+    id: daemonProcess
+    command: [ "systemctl", "--user", "is-active", "--quiet", "hyprchromad.service" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: function(code) { root.daemonRunning = (code === 0) }
+  }
+
+  // Run in Omarchy's presented terminal, never inside omarchy-shell: this
+  // authenticates, and a password prompt with nowhere to type is a hang. The
+  // panel closes first so the terminal has the keyboard. Sentinels in the
+  // runtime directory let the result be picked up after the panel is gone.
+  readonly property string installScript:
+    "set -u; runtime=${XDG_RUNTIME_DIR:-/tmp}; " +
+    "rm -f \"$runtime/hyprchroma-install.done\" \"$runtime/hyprchroma-install.failed\"; " +
+    "status=0; " +
+    "if pacman -Q hyprchroma >/dev/null 2>&1; then yay -S --needed --cleanafter hyprchroma; " +
+    "else omarchy pkg aur add hyprchroma; fi " +
+    "&& systemctl --user enable --now hyprchromad.service || status=$?; " +
+    "if [ \"$status\" -eq 0 ]; then : > \"$runtime/hyprchroma-install.done\"; " +
+    "else printf '%s\\n' \"$status\" > \"$runtime/hyprchroma-install.failed\"; fi; " +
+    "exit \"$status\""
+
+  Process {
+    id: installProcess
+    command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.installScript ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: { root.installing = false; versionProcess.running = true }
+  }
+
+  Process {
+    id: startDaemonProcess
+    command: [ "systemctl", "--user", "enable", "--now", "hyprchromad.service" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: { root.installing = false; versionProcess.running = true }
+  }
+
+  function installDependency() {
+    if (root.installing) return
+    root.installing = true
+    if (root.dependencyPresent && !root.daemonRunning) {
+      // Only the service needs starting; that takes no password and no terminal.
+      startDaemonProcess.running = true
+      return
+    }
+    root.close()
+    installProcess.running = true
+  }
 
   // Applications with a window open that started before the palette was last
   // written, so they are still drawing the previous theme. Kept in the panel
@@ -95,7 +165,7 @@ Panel {
     enabledTargets = next
     activeTarget = target
     refreshProcess.command = [
-      Quickshell.env("HOME") + "/.local/bin/omarchroma-sync",
+      "/usr/bin/hyprchroma",
       "--target=" + target,
       "--set-enabled=" + (enabled ? "true" : "false"),
       "--notify"
@@ -107,7 +177,7 @@ Panel {
     if (refreshProcess.running) return
     activeTarget = target
     refreshProcess.command = [
-      Quickshell.env("HOME") + "/.local/bin/omarchroma-sync",
+      "/usr/bin/hyprchroma",
       "--target=" + target,
       "--force",
       "--notify"
@@ -130,6 +200,15 @@ Panel {
     // While the guide is up its contents are being read, not acted on; a digit
     // would otherwise toggle a framework whose row is not on screen.
     if (root.guideOpen) return
+    // "i" only does anything while the panel is offering it, so it cannot be
+    // pressed by accident into an install nobody asked for.
+    if (key === "i" && root.dependencyChecked && !root.ready) {
+      root.installDependency()
+      return
+    }
+    // Nothing below this can work without hyprchroma, so a toggle or a refresh
+    // is ignored rather than run and silently failing.
+    if (!root.ready) return
     if (key === "r") {
       root.refresh("all")
       return
@@ -176,12 +255,7 @@ Panel {
   // it is drawing was written", which a toggle changes just as a theme does.
   Process {
     id: staleProcess
-    command: [
-      Quickshell.env("HOME") + "/.local/bin/omarchroma-state",
-      "--state-dir", root.stateDir,
-      "--data-dir", root.dataDir,
-      "report-stale-apps", "--since-last-sync"
-    ]
+    command: [ "/usr/bin/hyprchroma", "stale-apps" ]
     environment: ({ PATH: root.trustedPath })
     stdout: StdioCollector {
       waitForEnd: true
@@ -189,7 +263,7 @@ Panel {
     }
   }
 
-  onOpenedChanged: if (root.opened) root.refreshStaleApps()
+  onOpenedChanged: if (root.opened) { versionProcess.running = true; root.refreshStaleApps() }
 
   FileView {
     id: settingsFile
@@ -299,7 +373,7 @@ Panel {
         }
 
         Text {
-          visible: !root.guideOpen
+          visible: !root.guideOpen && root.ready
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
@@ -312,12 +386,49 @@ Panel {
           width: parent.width
         }
 
+        Column {
+          visible: !root.guideOpen && root.dependencyChecked && !root.ready
+          width: content.width
+          spacing: Style.space(6)
+
+          Text {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: root.installing
+              ? "Working..."
+              : (!root.dependencyPresent
+                  ? "hyprchroma is not installed. It is the package that does the theming; this panel only drives it."
+                  : "hyprchroma is installed but its background service is not running, so nothing is being kept in step.")
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            width: parent.width
+            text: root.installing
+              ? ""
+              : (!root.dependencyPresent ? "Press i to install it" : "Press i to start it")
+            color: root.bar ? root.bar.foreground : Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+
+            MouseArea {
+              anchors.fill: parent
+              enabled: !root.installing
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.installDependency()
+            }
+          }
+        }
+
         Repeater {
           model: root.frameworks
 
           delegate: Item {
             id: row
-            visible: !root.guideOpen
+            visible: !root.guideOpen && root.ready
             required property var modelData
             required property int index
             width: content.width
