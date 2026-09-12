@@ -66,16 +66,17 @@ Panel {
   // authenticates, and a password prompt with nowhere to type is a hang. The
   // panel closes first so the terminal has the keyboard. Sentinels in the
   // runtime directory let the result be picked up after the panel is gone.
+  // Deliberately no sentinel files. An earlier version wrote .done/.failed
+  // markers into $XDG_RUNTIME_DIR, falling back to /tmp -- a predictable name
+  // in a world-writable directory, truncated with ":>", which is a symlink
+  // target another account can plant. Nothing ever read them: onExited below
+  // already says when the terminal finished, and the version check that
+  // follows says whether it worked.
   readonly property string installScript:
-    "set -u; runtime=${XDG_RUNTIME_DIR:-/tmp}; " +
-    "rm -f \"$runtime/hyprchroma-install.done\" \"$runtime/hyprchroma-install.failed\"; " +
-    "status=0; " +
+    "set -u; " +
     "if pacman -Q hyprchroma >/dev/null 2>&1; then yay -S --needed --cleanafter hyprchroma; " +
     "else omarchy pkg aur add hyprchroma; fi " +
-    "&& systemctl --user enable --now hyprchromad.service || status=$?; " +
-    "if [ \"$status\" -eq 0 ]; then : > \"$runtime/hyprchroma-install.done\"; " +
-    "else printf '%s\\n' \"$status\" > \"$runtime/hyprchroma-install.failed\"; fi; " +
-    "exit \"$status\""
+    "&& systemctl --user enable --now hyprchromad.service"
 
   Process {
     id: installProcess
