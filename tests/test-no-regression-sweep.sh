@@ -33,14 +33,19 @@ chk "every python helper pins PATH" \
   "$(grep -l 'os.environ\["PATH"\] = trusted_path()' \
       lib/hyprchroma-state lib/hyprchroma-dark-reader lib/hyprchroma-palette | wc -l)" "3"
 
-# Privilege. The setup script is the only thing that may ask for any, and only
-# to install two named packages the user was shown and agreed to.
+# Privilege. The setup script is the only thing that may ask for any: a
+# direct sudo pacman for two named packages the user was shown and agreed to,
+# and one indirect path -- omarchy pkg aur add, which asks pacman the same
+# way any other AUR install does -- for Pear Desktop, a third-party
+# application, never for hyprchroma itself (see test-dependency.sh).
 chk "the service itself runs nothing privileged" \
   "$(code bin/hyprchroma lib/* | grep -cE '^[[:space:]]*(sudo|pkexec) ')" "0"
-chk "setup's only privileged call is pacman" \
+chk "setup's only direct privileged call is pacman" \
   "$(code bin/hyprchroma-setup | grep -ohE '^[[:space:]]*(sudo|pkexec) [a-z]+' | awk '{print $2}' | sort -u | paste -sd,)" "pacman"
 chk "and its package list is literal, not built from input" \
   "$(grep -cE 'missing\+=\((adw-gtk-theme|python-plyvel)\)' bin/hyprchroma-setup)" "2"
+chk "the one indirect privileged call names a literal package too" \
+  "$(grep -c 'pkg aur add pear-desktop-bin' bin/hyprchroma-setup)" "2"
 
 # Nothing is fetched and then executed: the build runs on the checkout.
 chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -cE 'curl|wget|git clone')" "0"

@@ -24,6 +24,12 @@ omarchroma_trusted_path() {
 PATH=$(omarchroma_trusted_path)
 export PATH
 
+# Computed here, ahead of everything else, rather than only when the build
+# needs it: hyprchroma-dark-reader is a plain script in this same checkout and
+# needs no build to run, so the Dark Reader question below can check whether
+# it is already configured immediately, not leave that until after makepkg.
+here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+
 bold=$'\033[1m'; dim=$'\033[2m'; reset=$'\033[0m'; warn=$'\033[1;33m'
 
 say()  { printf '%s\n' "$*"; }
@@ -38,6 +44,35 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
+# Checked before a single question is asked, not alongside the optional
+# frameworks' dependencies below: jq is what the Dark Reader check right
+# after that question reads its answer with, and python is what every helper
+# this project ships is written in. Missing either does not just leave
+# something optional inactive -- jq missing makes that very check silently
+# wrong, reading "not installed" no matter what is actually true, the same
+# failure mode this project already fixed once for the wrong reason. So this
+# is not offered like the others: declining leaves nothing safe to continue
+# into, and the script stops rather than run partly broken.
+base_missing=()
+for pkg in jq python; do
+  pacman -Qq "$pkg" &>/dev/null || base_missing+=("$pkg")
+done
+if (( ${#base_missing[@]} )); then
+  head2 "Before anything else"
+  say "hyprchroma needs these, and this script itself uses them before it can ask you anything else:"
+  say "  sudo pacman -S --needed ${base_missing[*]}"
+  say ""
+  if ask "Install them now"; then
+    sudo pacman -S --needed "${base_missing[@]}" || {
+      say "That did not finish, and nothing past this point works without them. Stopping."
+      exit 1
+    }
+  else
+    say "Setup cannot continue without them."
+    exit 1
+  fi
+fi
+
 cat <<'INTRO'
 Hyprchroma setup
 
@@ -51,8 +86,8 @@ INTRO
 head2 "Pear Desktop"
 cat <<'PEAR'
 Pear Desktop is a desktop app for YouTube Music. Hyprchroma can generate a
-stylesheet for it so its window matches your theme instead of staying dark
-green forever.
+stylesheet for it so its window matches your theme instead of staying black
+regardless of what the rest of the desktop looks like.
 
 Only useful if you actually use it. Nothing else depends on this.
 PEAR
@@ -69,7 +104,27 @@ Hyprchroma does not install the extension -- that is yours to add from your
 browser's store. This only decides whether it syncs to it when it is there.
 DR
 want_dark=no
-if ask "Include Dark Reader"; then want_dark=yes; fi
+if ask "Include Dark Reader"; then
+  want_dark=yes
+  # Right where the question was answered, not after the build finishes
+  # minutes from now: the point is to hand over the store link while it is
+  # still on screen, not to have it scroll past at the very end. By its own
+  # path, not a bare command -- hyprchroma-dark-reader is installed to
+  # /usr/lib/hyprchroma, deliberately off this script's own trusted PATH
+  # above since it is a private helper, and a bare call here always failed
+  # silently and read as "not installed" no matter what was actually true.
+  browser=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
+  installed=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
+  if [[ $installed != true ]]; then
+    say ""
+    note "Dark Reader is not installed in ${browser:-your browser}."
+    note "Add it from your browser's store and Hyprchroma will theme it from the next sync:"
+    note "  Chrome Web Store  https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh"
+    note "  Firefox Add-ons   https://addons.mozilla.org/firefox/addon/darkreader/"
+  else
+    note "Already configured in ${browser:-your browser}."
+  fi
+fi
 
 # --- what those choices need ----------------------------------------------
 head2 "Dependencies"
@@ -100,11 +155,43 @@ else
   note "Everything needed is already installed."
 fi
 
+# Pear Desktop itself is not a dependency in the sense above -- it is the
+# application being themed, not something this needs to run -- and it has no
+# package in the official repos to hand to pacman the way the others above
+# do. Same check bin/hyprchroma itself uses to decide whether Pear is worth
+# syncing at all, so this offers exactly when that would otherwise find
+# nothing to theme. pear-desktop-bin, not pear-desktop: both provide the same
+# pear-desktop binary the check above looks for, but the plain package builds
+# a full Electron app from source on install -- heavy enough, live on this
+# project's own 7.2GB test machine, to have pushed the whole session into
+# swap and taken the terminal down with it. -bin skips that build entirely.
+if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
+   [[ ! -d "$HOME/.config/YouTube Music" ]]; then
+  say ""
+  note "Pear Desktop is not installed."
+  say "  omarchy pkg aur add pear-desktop-bin"
+  say ""
+  if ask "Install it now"; then
+    if command -v omarchy >/dev/null; then
+      omarchy pkg aur add pear-desktop-bin ||
+        note "Could not install pear-desktop-bin; you can run the command above later."
+    else
+      note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
+    fi
+  else
+    note "Skipped. The panel will still offer Pear Desktop once you install it yourself."
+  fi
+fi
+
 # --- consent, then build --------------------------------------------------
 head2 "What this installs"
 cat <<CONSENT
-hyprchroma is built from source and installed with pacman, so it can be
-listed, upgraded and removed like any other package. Building it:
+hyprchroma is the background service that keeps GTK, Qt/KDE, and the
+frameworks you chose above following your Omarchy theme -- everything this
+setup has asked about runs through it, not the panel itself.
+
+It is built from source and installed with pacman, so it can be listed,
+upgraded and removed like any other package. Building it:
 
 - builds the service from this checkout with makepkg, which asks pacman to
   install the result -- nothing is downloaded, and no QML is installed
@@ -126,12 +213,12 @@ if [[ $acknowledgement != "I understand" ]]; then
 fi
 
 head2 "Building"
-# Built from the checkout this script sits in, not from a fresh download. The
-# plugin and the service are the same repository, so what Omarchy already
-# cloned is the source -- which means what gets installed is what you have in
-# front of you, and on a published listing, what was reviewed. Cloning again
-# here would let those be different things.
-here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+# $here is set at the top of this script, not here: it is the same checkout
+# this script sits in, not a fresh download. The plugin and the service are
+# the same repository, so what Omarchy already cloned is the source -- which
+# means what gets installed is what you have in front of you, and on a
+# published listing, what was reviewed. Cloning again here would let those be
+# different things.
 if [[ ! -f $here/packaging/PKGBUILD ]]; then
   say "Could not find the package recipe next to this script ($here/packaging)."
   exit 1
@@ -144,20 +231,31 @@ head2 "Applying your choices"
 [[ $want_pear == yes ]] || hyprchroma framework remove pear
 [[ $want_dark == yes ]] || hyprchroma framework remove dark-reader
 
-if [[ $want_dark == yes ]]; then
-  browser=$(hyprchroma-dark-reader --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
-  installed=$(hyprchroma-dark-reader --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
-  if [[ $installed != true ]]; then
-    say ""
-    note "Dark Reader is not installed in ${browser:-your browser}."
-    note "Add it from your browser's store and Hyprchroma will theme it from the next sync:"
-    note "  Chrome Web Store  https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh"
-    note "  Firefox Add-ons   https://addons.mozilla.org/firefox/addon/darkreader/"
-  fi
-fi
-
 systemctl --user enable --now hyprchromad.service ||
   note "Could not start hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
+
+# enable --now above starts the service only if it was not already running --
+# on an update it was, so it keeps executing whatever it had already loaded
+# into memory. pacman does not restart a running service, and the Omarchy
+# shell does not notice a changed plugin file the same way either: this is
+# exactly what made a real fix look like it had not happened at all.
+#
+# Not run automatically. omarchy restart shell was tried here and pulled back:
+# live on this project's own test machine, its relaunch step failed silently
+# once, leaving no shell running at all until it was retried by hand -- worse
+# than the stale-code problem it exists to fix. Printing the commands and
+# leaving them to be run and watched is the safer default until that is
+# understood.
+head2 "Restart to finish"
+cat <<'RESTARTINFO'
+hyprchromad.service and the Omarchy shell both keep running whatever they
+already had loaded -- neither restarts on its own when the files underneath
+it change. Run these yourself once this window closes, and watch that each
+one actually finishes before assuming it did:
+
+  systemctl --user restart hyprchromad.service
+  omarchy restart shell
+RESTARTINFO
 
 head2 "Done"
 say "Anything you left out can be put back from the panel: press / and then its number."

@@ -7,6 +7,7 @@ import re
 import secrets
 import select
 import shlex
+import signal
 import shutil
 import socket
 import stat
@@ -1076,8 +1077,45 @@ def connection_pid(name):
 # open a window as close one.
 GNOME_NAMESPACE = "org.gnome."
 
-# How long an application's own --quit is given before falling back.
-QUIT_GRACE_SECONDS = 1.5
+# How long an application's own --quit is given before escalating. Measured
+# live against this project's own idle-recycle target (nautilus 50.3.1): the
+# command returns in well under this, but the process it targets does not
+# reliably follow within it, so this is a grace period for the polite path,
+# not a promise it keeps.
+QUIT_GRACE_SECONDS = 1.0
+
+# How long a direct signal is given to take effect before the next one. Not
+# GApplication's ten-second bus-release ceiling: a signal does not wait on a
+# D-Bus round trip or a toolkit's own shutdown bookkeeping, so a process that
+# is going to die from it does so in well under a second.
+SIGNAL_GRACE_SECONDS = 1.0
+
+
+def process_alive(pid):
+    # kill(pid, 0) alone is not enough: a zombie still holds its pid until
+    # whatever forked it reaps it, so it keeps answering this the same as a
+    # running process. Whoever that parent is, it is never this daemon --
+    # every target here is an independent application started by the desktop
+    # session -- so waiting for a reap that is someone else's job to perform
+    # would be waiting on nothing. A zombie has already released everything
+    # that theming cares about: its stylesheet, its bus name. Treat it as gone.
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            # comm can itself contain ") ", so split from the right of the
+            # last ")" rather than assume a fixed field count from the left.
+            state = handle.read().rsplit(b") ", 1)[1].split()[0]
+        return state != b"Z"
+    except (OSError, IndexError):
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # Owned by someone else, or some other reason this cannot signal it --
+        # either way, not something this can wait out.
+        return False
+    return True
 
 
 def name_has_owner(name):
@@ -1148,16 +1186,26 @@ def service_file_exec(name):
     return None
 
 
-def quit_application(name, path):
-    """Ask an application to quit, preferring its own --quit for GNOME ones.
+def quit_application(pid, name, path):
+    """End an idle application, preferring its own --quit for GNOME ones, but
+    not waiting on D-Bus for a process a signal can already reach directly.
 
-    Activating the quit action leaves GApplication to time out before it gives
-    up the bus name -- ten seconds for nautilus -- whereas the same
-    application's own --quit reaches g_application_quit() and is gone in under
-    half a second. The binary comes from the D-Bus service file rather than from
-    a list here, and if the application is still there after a moment this falls
-    back to the action, so a flag that turns out not to be understood costs a
-    pause rather than the result."""
+    The polite requests come first: an application's own --quit is supposed to
+    reach g_application_quit() in under half a second, and failing that, its
+    generic quit action is the same request by a slower route. Both go through
+    GApplication's D-Bus machinery, and both were measured, live, taking far
+    longer than either is supposed to -- the action's own documented ceiling is
+    ten seconds, and the "fast" path was observed not making its own much
+    shorter one either. This is only ever called on something open_windows()
+    has already confirmed has no window on screen, so nothing visible is
+    disturbed by finishing the job with a signal instead of waiting out a
+    toolkit's bus timeout: SIGTERM first, which still runs normal cleanup
+    handlers, then SIGKILL if even that is ignored.
+
+    Returns whether the application is actually gone by the time this returns,
+    so a caller never reports something closed that is still running -- a
+    guess here is exactly what would leave a reopened window stuck on the
+    stale instance rather than a fresh one."""
     if name.startswith(GNOME_NAMESPACE):
         binary = service_file_exec(name)
         if binary:
@@ -1169,12 +1217,30 @@ def quit_application(name, path):
             deadline = time.monotonic() + QUIT_GRACE_SECONDS
             while time.monotonic() < deadline:
                 if not name_has_owner(name):
-                    return
+                    return True
                 time.sleep(0.1)
-    bus_call(name, path, "org.gtk.Actions.Activate", "quit", "[]", "{}")
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            # Already gone, or never ours to signal -- either way, nothing
+            # further to send it.
+            return not process_alive(pid)
+        deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if not process_alive(pid):
+                return True
+            time.sleep(0.05)
+    return False
 
 
 def has_quit_action(name, path):
+    """Whether this is a well-behaved GApplication-style desktop app, which is
+    what this is really asking: quit_application no longer activates this
+    action itself, but exposing one is still the filter for "a signal to this
+    is asking a desktop app to close," not "sending a signal to whatever else
+    is D-Bus activatable and idle."""
     raw = bus_call(name, path, "org.gtk.Actions.List")
     return raw is not None and re.search(r"'quit'", raw) is not None
 
@@ -1224,8 +1290,14 @@ def refresh_idle_apps(since=None):
         path = "/" + name.replace(".", "/").replace("-", "_")
         if not has_quit_action(name, path):
             continue
-        quit_application(name, path)
-        print(f"Hyprchroma: closed idle {name} so its next window is themed")
+        if quit_application(pid, name, path):
+            print(f"Hyprchroma: closed idle {name} so its next window is themed")
+        else:
+            # Not even SIGKILL worked -- an uninterruptible sleep, most likely.
+            # Silently doing nothing here would look identical to success in
+            # the log; naming the holdout is what makes a genuine failure
+            # findable instead of just a window someone reports as stale.
+            print(f"Hyprchroma: {name} did not quit; its next window may still be themed")
 
 
 def browser_client_pids():
@@ -1561,7 +1633,8 @@ def restore(state_dir, data_dir, targets, mode):
     # which is where that toggle was just recorded.
     for path in (data_dir / "dark-reader-theme.json",
                  state_dir / "settings.json",
-                 state_dir / "status.json"):
+                 state_dir / "status.json",
+                 state_dir / "last-stale-notify"):
         path.unlink(missing_ok=True)
 
 

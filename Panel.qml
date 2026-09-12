@@ -79,6 +79,30 @@ Panel {
     return false
   }
 
+  // Asking hyprchroma its version cannot answer "is hyprchroma installed":
+  // when the binary is absent the process never starts, and Quickshell emits
+  // no started, runningChanged or exited signal for a process that never ran.
+  // Nothing set dependencyChecked, so the panel that offers to install it
+  // stayed hidden in exactly the case it exists for -- a machine without the
+  // service. This asks a binary that is always there instead, and only runs
+  // the version probe once it has said yes.
+  Process {
+    id: presenceProcess
+    command: [ "/usr/bin/test", "-x", "/usr/bin/hyprchroma" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: function(code) {
+      if (code === 0) {
+        versionProcess.running = true
+      } else {
+        root.dependencyPresent = false
+        root.dependencyChecked = true
+        root.daemonRunning = false
+        root.installedVersion = ""
+        root.staleApps = []
+      }
+    }
+  }
+
   Process {
     id: versionProcess
     command: [ "/usr/bin/hyprchroma", "--version" ]
@@ -94,8 +118,16 @@ Panel {
     onExited: function(code) {
       root.dependencyPresent = (code === 0)
       root.dependencyChecked = true
-      if (root.dependencyPresent) daemonProcess.running = true
-      else { root.daemonRunning = false; root.installedVersion = "" }
+      if (root.dependencyPresent) {
+        daemonProcess.running = true
+        // Asked here rather than when the panel opens: the stale list comes
+        // from the same binary, so it can only be asked once presence is
+        // settled, and presence is settled asynchronously.
+        root.refreshStaleApps()
+      } else {
+        root.daemonRunning = false
+        root.installedVersion = ""
+      }
     }
   }
 
@@ -130,7 +162,7 @@ Panel {
     id: installProcess
     command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.setupScript ]
     environment: ({ PATH: root.trustedPath })
-    onExited: { root.installing = false; versionProcess.running = true }
+    onExited: { root.installing = false; presenceProcess.running = true }
   }
 
   Process {
@@ -151,7 +183,7 @@ Panel {
     id: startDaemonProcess
     command: [ "systemctl", "--user", "enable", "--now", "hyprchromad.service" ]
     environment: ({ PATH: root.trustedPath })
-    onExited: { root.installing = false; versionProcess.running = true }
+    onExited: { root.installing = false; presenceProcess.running = true }
   }
 
   function installDependency() {
@@ -267,6 +299,17 @@ Panel {
   // digits match each row's position, which the row displays.
   function handleKey(text) {
     var key = (text || "").toLowerCase()
+    // "i" only does anything while the panel is offering it, so it cannot be
+    // pressed by accident into an install nobody asked for.
+    if (key === "i" && root.dependencyChecked && !root.ready) {
+      root.installDependency()
+      return
+    }
+    // Nothing below this can work without hyprchroma: the guide lists
+    // applications a framework toggle left stale, and there is no framework
+    // toggle without the service. A key that would open it is ignored rather
+    // than opening an always-empty screen.
+    if (!root.ready) return
     // "/" rather than "?" so no shift is needed, and rather than "h" because
     // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
     // reason the framework rows are numbered.
@@ -284,15 +327,6 @@ Panel {
       }
       return
     }
-    // "i" only does anything while the panel is offering it, so it cannot be
-    // pressed by accident into an install nobody asked for.
-    if (key === "i" && root.dependencyChecked && !root.ready) {
-      root.installDependency()
-      return
-    }
-    // Nothing below this can work without hyprchroma, so a toggle or a refresh
-    // is ignored rather than run and silently failing.
-    if (!root.ready) return
     if (key === "r") {
       root.refresh("all")
       return
@@ -305,6 +339,9 @@ Panel {
   }
 
   function refreshStaleApps() {
+    // Same absent binary, same silent non-start. Nothing to ask until the
+    // presence probe has said the service is there.
+    if (!root.dependencyPresent) { root.staleApps = []; return }
     if (!staleProcess.running) staleProcess.running = true
   }
 
@@ -347,7 +384,7 @@ Panel {
     }
   }
 
-  onOpenedChanged: if (root.opened) { versionProcess.running = true; root.refreshStaleApps() }
+  onOpenedChanged: if (root.opened) presenceProcess.running = true
 
   FileView {
     id: settingsFile
@@ -542,46 +579,25 @@ Panel {
           width: parent.width
         }
 
-        Column {
+        // Until hyprchroma exists there is exactly one thing to do from this
+        // panel, so it gets exactly one control: the header above already
+        // says what panel this is, and this button says the one action
+        // available, in the same "Label  (key)" shape as the buttons below
+        // it once the service is ready. Everything below this block -- the
+        // framework toggles, the separator, refresh, the close-apps count --
+        // is real only once the service is; each is gated on root.ready for
+        // the same reason this replaces the old descriptive sentence.
+        Button {
           visible: !root.guideOpen && root.dependencyChecked && !root.ready
           width: content.width
-          spacing: Style.space(6)
-
-          Text {
-            width: parent.width
-            wrapMode: Text.WordWrap
-            text: root.installing
-              ? "Working..."
-              : (!root.dependencyPresent
-                  ? "hyprchroma is not installed. It is the package that does the theming; this panel only drives it."
-                  : root.outdated
-                    ? "hyprchroma " + root.installedVersion + " is installed; this panel needs "
-                      + root.expectedVersion + " or newer."
-                    : "hyprchroma is installed but its background service is not running, so nothing is being kept in step.")
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
-          Text {
-            width: parent.width
-            text: root.installing
-              ? ""
-              : (!root.dependencyPresent
-                  ? "Press i to install it"
-                  : root.outdated ? "Press i to update it" : "Press i to start it")
-            color: root.bar ? root.bar.foreground : Color.popups.text
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
-            font.bold: true
-
-            MouseArea {
-              anchors.fill: parent
-              enabled: !root.installing
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.installDependency()
-            }
-          }
+          enabled: !root.installing
+          text: root.installing
+            ? "Working..."
+            : (!root.dependencyPresent
+                ? "Install  (i)"
+                : root.outdated ? "Update  (i)" : "Start  (i)")
+          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          onClicked: root.installDependency()
         }
 
         Repeater {
@@ -644,14 +660,18 @@ Panel {
           }
         }
 
+        // Gated on root.ready, not just !guideOpen: these act on a running
+        // service, and with none installed they were showing "Refresh
+        // enabled" and "Nothing to close" over an otherwise empty panel --
+        // controls for a thing that does not exist yet.
         PanelSeparator {
-          visible: !root.guideOpen
+          visible: !root.guideOpen && root.ready
           foreground: root.bar ? root.bar.foreground : Color.popups.text
         }
 
 
         Button {
-          visible: !root.guideOpen
+          visible: !root.guideOpen && root.ready
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
@@ -663,7 +683,7 @@ Panel {
         // Reachable by mouse as well as by "/", and carries the count so the
         // number of applications waiting is visible without opening it.
         Button {
-          visible: !root.guideOpen
+          visible: !root.guideOpen && root.ready
           width: content.width
           text: root.staleApps.length > 0
             ? root.staleApps.length + " to close  (/)"
