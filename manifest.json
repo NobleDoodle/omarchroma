@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nobledoodle.omarchroma",
   "name": "Omarchroma",
-  "version": "2.2.0",
+  "version": "2.2.5",
   "author": "NobleDoodle",
   "license": "MIT",
   "description": "Change your Omarchy theme once and let the rest of your desktop follow. Toggles for GTK/GNOME, Qt/KDE Frameworks, Dark Reader and Pear Desktop, with a list of the applications still showing the previous theme. The syncing itself is done by hyprchroma, which this panel installs for you if it is missing.",

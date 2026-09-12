@@ -54,16 +54,15 @@ chk "PKGBUILD names omarchy" "$(grep -c 'omarchy: first-class' packaging/PKGBUIL
 chk "README documents a palette file for non-Omarchy systems" "$(grep -c 'palette --template' README.md)" "1"
 
 # --- no promises of a fallback that no longer exists -----------------------
-# The timer lived in the plugin's Service.qml, which the split deleted.
+# Nothing runs a fallback timer; the daemon's own sync covers that gap.
 # Only claims that one exists; the comments explaining its absence are fine.
 chk "nothing still claims a fallback timer exists" \
   "$(grep -rhoE "(service's|a) fallback timer" bin/ lib/ packaging/ README.md 2>/dev/null \
      | grep -v 'no fallback timer' | wc -l)" "0"
 
-# --- the other side of the repo boundary ----------------------------------
-# The Omarchroma plugin lives in its own repository and calls these. They are
-# interface, not implementation: removing or renaming one breaks a plugin whose
-# tests cannot see this source. Pinned here so that is a deliberate change.
+# --- the CLI the bar widget depends on -------------------------------------
+# The panel and the setup script call these. They are interface, not
+# implementation: renaming one breaks the widget. Pinned so that is deliberate.
 # Each is a case label in the dispatch; --version carries an alias, so the
 # match allows one.
 for sub in framework stale-apps palette restore --version; do
