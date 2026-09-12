@@ -10,6 +10,14 @@ for suite in tests/test-*.sh; do
     printf '%-26s %2d failed\n' "$(basename "$suite")" "$bad"
     grep FAIL <<<"$output" | sed 's/^/    /'
   fi
+  # A suite that asserts nothing is not a passing suite. Four of these once
+  # crashed on an unexpanded path and contributed zero for several releases,
+  # which counting only PASS and FAIL lines could not see.
+  if (( passed == 0 && bad == 0 )); then
+    failed=$((failed + 1))
+    printf '%-26s asserted nothing\n' "$(basename "$suite")"
+    grep -iE 'error|traceback' <<<"$output" | head -2 | sed 's/^/    /'
+  fi
 done
 
 # "omarchy plugin validate" reads the manifest only, so nothing was checking
@@ -21,6 +29,31 @@ if [[ -x /usr/lib/qt6/bin/qmlformat ]]; then
       total=$((total + 1))
     else
       failed=$((failed + 1)); printf '%-26s QML parse error\n' "$(basename "$qml")"
+    fi
+  done
+fi
+
+# Parsing is not enough. A member declared twice is valid syntax, so qmlformat
+# accepts it, but the QML engine refuses to build the component -- which shows
+# up as a panel that does not open rather than as anything on stderr. That
+# shipped once, in a release where a second copy of one function reached
+# Panel.qml. Only the categories that stop a component loading are promoted to
+# errors here: the rest of what qmllint reports is unresolved qs.Commons and
+# qs.Ui imports, which are Omarchy's and are not resolvable from a checkout.
+if [[ -x /usr/lib/qt6/bin/qmllint ]]; then
+  for qml in ./*.qml; do
+    if /usr/lib/qt6/bin/qmllint \
+         --duplicated-name error \
+         --duplicate-property-binding error \
+         --duplicate-inline-component error \
+         --duplicate-enum-entries error \
+         "$qml" 2>&1 | grep -q '^Error:'; then
+      failed=$((failed + 1)); printf '%-26s duplicate QML member\n' "$(basename "$qml")"
+      /usr/lib/qt6/bin/qmllint --duplicated-name error --duplicate-property-binding error \
+        --duplicate-inline-component error --duplicate-enum-entries error "$qml" 2>&1 \
+        | grep '^Error:' | sed 's/^/    /'
+    else
+      total=$((total + 1))
     fi
   done
 fi

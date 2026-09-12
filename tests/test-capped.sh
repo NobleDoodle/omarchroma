@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-python3 - <<'PY'
+python3 - "$REPO" <<'PY'
 import json, pathlib, tempfile, types
+import sys
 def load(name):
     m = types.ModuleType(name)
-    src = pathlib.Path(f"$REPO/bin/{name}").read_text() \
+    src = pathlib.Path(f"{sys.argv[1]}/lib/{name}").read_text() \
         .replace('if __name__ == "__main__":\n    raise SystemExit(main())','')
     exec(compile(src, name, "exec"), m.__dict__); return m
 st, dr = load("hyprchroma-state"), load("hyprchroma-dark-reader")
