@@ -30,4 +30,12 @@ hyprchroma_trusted_path() {
 }
 PATH=$(hyprchroma_trusted_path)
 export PATH
-exec /usr/bin/hyprchroma --force --quiet
+# --quiet only silences the console log line; it says nothing about the
+# desktop notification, which is --notify's own, separate gate. A theme
+# switch is a one-shot, user-initiated event, not the daemon's continuous
+# per-window-open/close sync that --notify is normally withheld from to
+# avoid repeating a popup for the same still-open app -- report_stale_apps
+# already dedupes against that case via its own last-stale-notify guard, so
+# this is the one moment "close this to finish theming" is both true and
+# not spam.
+exec /usr/bin/hyprchroma --force --quiet --notify
