@@ -44,6 +44,32 @@ chk "declining exits non-zero rather than continuing" \
 chk "the real script finds nothing missing on this machine" \
   "$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
 
+# --- sudo's own credential cache is kept warm, not left to expire cold ----
+# A live session on this exact hardware showed a cold prompt -- one that
+# happens after the terminal has been quiet for a while -- landing on a
+# documented amdgpu bug where the GPU fails to wake fast enough and sudo's
+# own PAM conversation reports authentication as failed outright. Tested
+# against a mocked sudo, since exercising a real one is out of scope here.
+keepalive_out=$(sudo() { echo "sudo called: $*"; return 0; }
+                keepalive_pid=""
+                source <(awk '/^start_sudo_keepalive\(\) \{/{grab=1} grab{print; if (/^\}$/) {n++; if (n==2) exit}}' $S)
+                run_sudo pacman -S --needed foo
+                first_pid=$keepalive_pid
+                kill -0 "$first_pid" 2>/dev/null && echo "background loop alive: yes"
+                run_sudo -v
+                [[ $keepalive_pid == "$first_pid" ]] && echo "still the same loop: yes"
+                kill "$keepalive_pid" 2>/dev/null)
+chk "the keep-alive loop actually starts" \
+  "$(grep -c 'background loop alive: yes' <<<"$keepalive_out")" "1"
+chk "a second sudo call does not start a second loop" \
+  "$(grep -c 'still the same loop: yes' <<<"$keepalive_out")" "1"
+chk "both existing sudo calls go through it" \
+  "$(grep -c '^ *run_sudo pacman -S --needed' $S)" "2"
+chk "and the build warms the credential explicitly, in case neither did" \
+  "$(grep -c '^run_sudo -v' $S)" "1"
+chk "the keep-alive is torn down on exit alongside the build directory" \
+  "$(grep -c 'kill .\$keepalive_pid. 2>/dev/null' $S)" "1"
+
 # --- nothing is built without the consent we had before --------------------
 out=$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
@@ -58,6 +84,34 @@ chk "the consent explains what hyprchroma is, not only how it is installed" \
 chk "and nothing was built" "$(grep -cE '==> Making package|Finished making' <<<"$out")" "0"
 chk "makepkg only runs after the check" \
   "$(awk '/acknowledgement != "I understand"/{seen=1} /makepkg -si/{print (seen?"after":"before")}' $S)" "after"
+
+# --- the build's own scratch space stays out of the watched plugin tree ---
+# packaging/pkg and packaging/src, left where makepkg defaults to putting
+# them, sit inside the same directory Omarchy's shell watches for plugin
+# changes. package() writing dozens of files there fired that watcher dozens
+# of times a second, mid-build, live on this project's own test machine.
+chk "the build directory is under the user's own cache, not the checkout" \
+  "$(grep -c 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' $S)" "1"
+# Not /tmp: every other directory this project touches lives under \$HOME,
+# and a directory shared by every user on the machine is a squatting target
+# regardless of what mktemp's own randomized suffix does to the leaf name.
+chk "and that cache directory is under \$HOME, never /tmp" \
+  "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' $S)" "1"
+chk "before makepkg ever runs, not after" \
+  "$(awk '/BUILDDIR=\$\(mktemp -d -p/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+chk "it is exported so makepkg actually sees it" \
+  "$(grep -c '^export BUILDDIR$' $S)" "1"
+chk "the temporary directory is removed no matter how the script exits" \
+  "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.' $S)" "1"
+# BUILDDIR alone only moves the build's scratch space (src/ and pkg/); the
+# finished package itself still defaults to \$startdir -- back inside the
+# watched tree -- unless PKGDEST says otherwise. That finished file landing
+# there, right as makepkg's own sudo pacman -U needs the password, reproduced
+# the same reload-storm-timed PAM failure this was meant to fix.
+chk "the finished package is kept out of the watched tree too" \
+  "$(grep -c '^export PKGDEST=\"\$BUILDDIR\"$' $S)" "1"
+chk "PKGDEST is set before makepkg ever runs, not after" \
+  "$(awk '/^export PKGDEST=/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
 
 # --- both optional frameworks are explained, not just named ---------------
 chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "1"
