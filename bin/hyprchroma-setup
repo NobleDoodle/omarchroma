@@ -303,13 +303,8 @@ systemctl --user enable --now hyprchromad.service ||
 # understood.
 head2 "Restart to finish"
 cat <<'RESTARTINFO'
-hyprchromad.service and the Omarchy shell both keep running whatever they
-already had loaded -- neither restarts on its own when the files underneath
-it change. Run these yourself once this window closes, and watch that each
-one actually finishes before assuming it did:
-
-  systemctl --user restart hyprchromad.service
-  omarchy restart shell
+Restart your Omarchy shell after closing this window. You can do so from
+your terminal: omarchy restart shell
 RESTARTINFO
 
 head2 "Done"
