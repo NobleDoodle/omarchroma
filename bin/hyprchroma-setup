@@ -44,6 +44,29 @@ ask() {
   [[ ${answer,,} == y || ${answer,,} == yes ]]
 }
 
+# sudo's own credential cache (five minutes by default) is what every later
+# privileged step in this script -- including makepkg's own pacman -U at the
+# very end, and the AUR install's own sudo call -- relies on to avoid asking
+# for the password again within its lifetime. Left to expire naturally, a
+# later prompt happens cold, after whatever came before it went quiet: a live
+# session on this exact hardware family showed that specific idle-then-
+# sudden-redraw transition landing on a documented amdgpu GFXOFF bug, where
+# the GPU fails to wake in time and sudo's own PAM conversation -- which
+# tolerates no delay -- reports authentication as failed outright rather than
+# merely slow. Kept refreshed here from the first successful authentication
+# onward, so every later step, including ones this script does not call
+# sudo for directly, reuses the cache silently instead of prompting cold.
+keepalive_pid=""
+start_sudo_keepalive() {
+  [[ -n $keepalive_pid ]] && return 0
+  local script_pid=$$
+  ( while kill -0 "$script_pid" 2>/dev/null; do sleep 60; sudo -n true 2>/dev/null; done ) >/dev/null 2>&1 &
+  keepalive_pid=$!
+}
+run_sudo() {
+  sudo "$@" && start_sudo_keepalive
+}
+
 # Checked before a single question is asked, not alongside the optional
 # frameworks' dependencies below: jq is what the Dark Reader check right
 # after that question reads its answer with, and python is what every helper
@@ -63,7 +86,7 @@ if (( ${#base_missing[@]} )); then
   say "  sudo pacman -S --needed ${base_missing[*]}"
   say ""
   if ask "Install them now"; then
-    sudo pacman -S --needed "${base_missing[@]}" || {
+    run_sudo pacman -S --needed "${base_missing[@]}" || {
       say "That did not finish, and nothing past this point works without them. Stopping."
       exit 1
     }
@@ -147,7 +170,7 @@ if (( ${#missing[@]} )); then
   say "  sudo pacman -S --needed ${missing[*]}"
   say ""
   if ask "Install them now"; then
-    sudo pacman -S --needed "${missing[@]}" || note "pacman did not finish; you can run the command above later."
+    run_sudo pacman -S --needed "${missing[@]}" || note "pacman did not finish; you can run the command above later."
   else
     note "Skipped. Hyprchroma installs and runs without them; those parts stay inactive."
   fi
@@ -224,6 +247,38 @@ if [[ ! -f $here/packaging/PKGBUILD ]]; then
   exit 1
 fi
 cd "$here/packaging" || exit 1
+# BUILDDIR moves only makepkg's own scratch space (src/ and pkg/), never the
+# source, which package() still reads from $startdir/.. exactly as before.
+# Left inside the checkout, that scratch space sits in the same directory
+# tree the Omarchy shell watches for plugin changes, and package() writing
+# dozens of files there fired that watcher dozens of times a second, mid-build
+# -- reloading the panel's whole QML component tree while a build was still
+# running underneath it, live on this project's own test machine.
+#
+# Under the user's own cache directory, not /tmp: every other directory this
+# project ever touches lives under $HOME, and a fixed name in a directory
+# shared by every user on the machine is a squatting target regardless of
+# what mktemp's own randomized suffix does to make the specific path hard to
+# guess -- the rule here has always been about the directory, not just the
+# name. mktemp -p still gives the leaf a name nothing else could have created
+# first.
+build_cache="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
+mkdir -p -- "$build_cache" || { say "Could not create $build_cache."; exit 1; }
+BUILDDIR=$(mktemp -d -p "$build_cache") || { say "Could not create a build directory."; exit 1; }
+trap 'rm -rf -- "$BUILDDIR"; [[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null' EXIT
+export BUILDDIR
+# BUILDDIR alone only moves makepkg's own scratch space (src/ and pkg/);
+# the finished package itself still defaults to $startdir -- this PKGBUILD's
+# own directory, back inside the watched plugin tree -- unless PKGDEST says
+# otherwise. That finished file landing there, right as makepkg's own sudo
+# pacman -U needs the password, reproduced the exact reload-storm-timed PAM
+# failure this was meant to fix, on this project's own test machine.
+export PKGDEST="$BUILDDIR"
+# Warmed here regardless of whether an earlier step already authenticated,
+# so a system with every dependency already satisfied -- which never called
+# run_sudo above -- does not hit its very first prompt deep inside makepkg's
+# own internal install step at the end of the build.
+run_sudo -v || { say "Could not authenticate; nothing was built."; exit 1; }
 makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
 
 # --- apply the choices, now that the tool exists --------------------------
