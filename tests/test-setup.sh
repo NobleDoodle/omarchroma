@@ -103,6 +103,15 @@ chk "it is exported so makepkg actually sees it" \
   "$(grep -c '^export BUILDDIR$' $S)" "1"
 chk "the temporary directory is removed no matter how the script exits" \
   "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.' $S)" "1"
+# BUILDDIR alone only moves the build's scratch space (src/ and pkg/); the
+# finished package itself still defaults to \$startdir -- back inside the
+# watched tree -- unless PKGDEST says otherwise. That finished file landing
+# there, right as makepkg's own sudo pacman -U needs the password, reproduced
+# the same reload-storm-timed PAM failure this was meant to fix.
+chk "the finished package is kept out of the watched tree too" \
+  "$(grep -c '^export PKGDEST=\"\$BUILDDIR\"$' $S)" "1"
+chk "PKGDEST is set before makepkg ever runs, not after" \
+  "$(awk '/^export PKGDEST=/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
 
 # --- both optional frameworks are explained, not just named ---------------
 chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "1"

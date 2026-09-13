@@ -267,6 +267,13 @@ mkdir -p -- "$build_cache" || { say "Could not create $build_cache."; exit 1; }
 BUILDDIR=$(mktemp -d -p "$build_cache") || { say "Could not create a build directory."; exit 1; }
 trap 'rm -rf -- "$BUILDDIR"; [[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null' EXIT
 export BUILDDIR
+# BUILDDIR alone only moves makepkg's own scratch space (src/ and pkg/);
+# the finished package itself still defaults to $startdir -- this PKGBUILD's
+# own directory, back inside the watched plugin tree -- unless PKGDEST says
+# otherwise. That finished file landing there, right as makepkg's own sudo
+# pacman -U needs the password, reproduced the exact reload-storm-timed PAM
+# failure this was meant to fix, on this project's own test machine.
+export PKGDEST="$BUILDDIR"
 # Warmed here regardless of whether an earlier step already authenticated,
 # so a system with every dependency already satisfied -- which never called
 # run_sudo above -- does not hit its very first prompt deep inside makepkg's
