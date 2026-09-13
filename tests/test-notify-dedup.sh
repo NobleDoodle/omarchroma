@@ -69,6 +69,15 @@ notify_writes() {
   wc -l < "$ROOT/notify-writes.log" | tr -d ' '
 }
 
+# -- the theme-set hook is the one caller that should pass --notify ---------
+# A theme switch is a one-shot, user-initiated event, not the daemon's
+# continuous per-window sync --notify is withheld from above -- and the
+# dedup this file already covers means it cannot repeat for the same still-
+# open app. --quiet only silences the console log line and says nothing
+# about the notification, so both flags belong on this one call together.
+chk "the theme-set hook asks to be notified, not just to run quietly" \
+    "$(grep -c '^exec /usr/bin/hyprchroma --force --quiet --notify$' "$REPO/share/hooks/hyprchroma")" "1"
+
 run() { bash "$ROOT/bin/hyprchroma" "$@" >/dev/null 2>&1; }
 
 # -- the daemon's own quiet syncs never reach the notify gate ---------------
