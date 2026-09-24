@@ -43,6 +43,11 @@ chk "no truncating open of a fixed path"       "$(sweep 'open\([^)]*, *"w"\)|exe
 chk "no /usr/local in any command path"        "$(sweep '/usr/local/s?bin')" "0"
 chk "no executable location comes from the environment" \
   "$(sweep 'HYPRCHROMA_(LIB|SHARE):-|environ\[.HYPRCHROMA_(LIB|SHARE).\]')" "0"
+# Nor from the home directory. The browser-exit waiter ran its helper out of
+# ~/.local/bin, where the pre-package installer left shims: once they were gone
+# it failed on every run, silently, and a file anyone as this user could plant
+# there would have been run unattended by the daemon.
+chk "no helper is run from the home directory" "$(sweep '\.local/bin')" "0"
 chk "every shell entry point pins PATH" \
   "$(grep -l 'PATH=$(\(hyprchroma\|omarchroma\)_trusted_path)' \
       bin/hyprchroma bin/hyprchroma-setup lib/sync-gtk-theme lib/sync-qt-kde-theme \

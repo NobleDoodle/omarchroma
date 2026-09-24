@@ -1373,8 +1373,29 @@ def refresh_idle_apps(since=None):
             print(f"Hyprchroma: {name} did not quit; its next window may still be themed")
 
 
+def dark_reader_helper():
+    """The Dark Reader helper installed beside this one.
+
+    Derived from this file's own resolved location -- /usr/lib/hyprchroma when
+    installed, lib/ in a checkout -- for the same reason the shell derives
+    HYPRCHROMA_LIB from its own path: a helper run unattended must be one only
+    whatever installed this could have put there. It was once looked up in the
+    home directory, where the pre-package installer left shims; with those
+    gone the lookup failed on every run, silently, and nothing waited for the
+    browser to exit at all."""
+    return str(Path(os.path.realpath(__file__)).parent / "hyprchroma-dark-reader")
+
+
+def dark_reader_enabled(state_dir):
+    """Whether Dark Reader is still switched on, read the way the shell's
+    target_enabled reads it: only a recorded false is off."""
+    settings = read_json(Path(state_dir) / "settings.json")
+    frameworks = settings.get("frameworks") if isinstance(settings, dict) else None
+    return not (isinstance(frameworks, dict) and frameworks.get("darkReader") is False)
+
+
 def browser_client_pids():
-    """PIDs of the default browser.
+    """PIDs of the default browser, or None if the helper cannot say.
 
     Dark Reader's settings live inside the browser's own database, so unlike the
     KDE color files this has to wait for the processes to end rather than for a
@@ -1382,14 +1403,16 @@ def browser_client_pids():
     its last window goes. Since the window is already gone by then, no further
     window event arrives to prompt a retry, which is why this needs its own
     wait."""
-    result = subprocess.run(
-        [str(Path.home() / ".local/bin/hyprchroma-dark-reader"), "--info"],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
-    )
     try:
+        result = subprocess.run(
+            [dark_reader_helper(), "--info"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
+        )
         executables = set(json.loads(result.stdout).get("executables") or [])
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        return []
+    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+        # Not "no browser": that answer would apply the theme at once, into a
+        # database a running browser may still hold.
+        return None
     if not executables:
         return []
     pids = []
@@ -1419,21 +1442,35 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
     except OSError:
         return  # another waiter already holds this
 
-    if action == "revert":
-        # Switching the toggle off already recorded darkReader as disabled, so a
-        # sync would now skip this framework entirely. Call the helper directly
-        # instead, or the revert the toggle promised would never happen.
-        finish = [str(Path.home() / ".local/bin/hyprchroma-dark-reader"),
-                  "--restore", "--mode=captured",
-                  "--state-dir", str(state_dir), "--status", str(state_dir / "status.json")]
-    else:
-        finish = ["/usr/bin/hyprchroma",
-                  "--target=dark-reader", "--quiet"]
+    status = str(state_dir / "status.json")
+    # Switching the toggle off already recorded darkReader as disabled, so a
+    # sync would now skip this framework entirely. Call the helper directly
+    # instead, or the revert the toggle promised would never happen.
+    revert = [dark_reader_helper(), "--restore", "--mode=captured",
+              "--state-dir", str(state_dir), "--status", status]
+    # Applying calls the helper directly too, not a whole sync. A sync spends
+    # most of a second -- several under load -- resolving the palette and
+    # recycling idle apps before it reaches Dark Reader, and gives up outright
+    # if the daemon's own sync, set off by the same window closing, holds the
+    # lock. Every one of those seconds is a chance for the browser to be
+    # reopened first, and one reopened before this write keeps the previous
+    # theme until it is closed again. The theme file is the one the queuing
+    # sync generated, and every later sync rewrites it, so it is current.
+    apply = [dark_reader_helper(), "--theme", str(data_dir / "dark-reader-theme.json"),
+             "--state-dir", str(state_dir), "--status", status]
     for _ in range(WATCH_ROUNDS):
         pids = browser_client_pids()
+        if pids is None:
+            return  # nothing to wait on without knowing what the browser is
         if not pids:
-            subprocess.run(finish, check=False)
-            return
+            # Switched off while this waited: the revert that toggle queued
+            # found this lock taken and left, so the revert falls to this one.
+            wanted = action == "sync" and dark_reader_enabled(state_dir)
+            # 2 is the helper finding the browser back -- reopened in the moment
+            # before the write -- so wait for that instance to close too.
+            if subprocess.run(apply if wanted else revert, check=False).returncode != 2:
+                return
+            continue
 
         descriptors = []
         for pid in pids:
