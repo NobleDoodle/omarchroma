@@ -211,7 +211,8 @@ PY
         if [[ $action == remove ]]; then
           "$HYPRCHROMA_SELF" --target="$name" --set-enabled=false --quiet || true
         fi
-        python3 - "$SETTINGS_FILE" "$key" "$action" <<'PY'
+        python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$key" "$action" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json, os, subprocess, sys
 from pathlib import Path
 
@@ -225,8 +226,7 @@ if action == "remove":
     removed.append(key)
 data["removed"] = sorted(removed)
 subprocess.run(
-    [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"),
-                  "hyprchroma-state"),
+    [HELPER,
      "write-file", "--path", str(path), "--mode", "644"],
     input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
 PY
@@ -270,7 +270,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.6.0"
+    echo "hyprchroma 2.6.1"
     exit 0
     ;;
 esac
@@ -433,7 +433,8 @@ target_enabled() {
 if [[ -n $set_enabled ]]; then
   [[ $target != "all" ]] || fail "--set-enabled requires a specific --target"
   settings_key=$(target_key "$target") || fail "unknown target: $target"
-  python3 - "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
 import subprocess
@@ -450,7 +451,7 @@ def atomic_write(path, data):
     verified, so routing through it leaves exactly one implementation of this
     in the project instead of five."""
     subprocess.run(
-        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+        [HELPER,
          "write-file", "--path", str(path)],
         input=data if isinstance(data, bytes) else data.encode(),
         check=True,
@@ -692,7 +693,8 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
   printf '%s\n' "$pear_content" |
     "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$pear_css" --mode 644
 
-  python3 - "$pear_dir/config.json" "$pear_css" <<'PY'
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$pear_dir/config.json" "$pear_css" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
 import subprocess
@@ -709,7 +711,7 @@ def atomic_write(path, data):
     verified, so routing through it leaves exactly one implementation of this
     in the project instead of five."""
     subprocess.run(
-        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+        [HELPER,
          "write-file", "--path", str(path)],
         input=data if isinstance(data, bytes) else data.encode(),
         check=True,
@@ -750,9 +752,10 @@ fi
 
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
   dark_reader_theme="$DATA_DIR/dark-reader-theme.json"
-  python3 - "$dark_reader_theme" \
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$dark_reader_theme" \
   "$theme_name" "$background" "$foreground" "$selection" \
   "$dark_background" "$accent" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
 import subprocess
@@ -769,7 +772,7 @@ def atomic_write(path, data):
     verified, so routing through it leaves exactly one implementation of this
     in the project instead of five."""
     subprocess.run(
-        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+        [HELPER,
          "write-file", "--path", str(path)],
         input=data if isinstance(data, bytes) else data.encode(),
         check=True,
@@ -842,7 +845,8 @@ PY
   fi
 fi
 
-python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" <<'PY'
+python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
 import subprocess
@@ -860,7 +864,7 @@ def atomic_write(path, data):
     verified, so routing through it leaves exactly one implementation of this
     in the project instead of five."""
     subprocess.run(
-        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"), "hyprchroma-state"),
+        [HELPER,
          "write-file", "--path", str(path)],
         input=data if isinstance(data, bytes) else data.encode(),
         check=True,

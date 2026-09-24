@@ -37,12 +37,19 @@ chk "and that exception is exactly the one expected line" \
 chk "and it is not /tmp" \
   "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' bin/hyprchroma-setup)" "1"
 chk "no rename resolves its target by pathname" "$(sweep 'os\.replace\([^,]+, [^,]+\)')" "0"
-chk "no truncating open of a fixed path"       "$(sweep 'open\([^)]*, *"w"\)|exec [0-9]+>[^&]')" "0"
+# shutil.copy* opens its destination by name too, following a symlink there:
+# the capture's backup was written that way while this looked only for open().
+chk "no truncating open of a fixed path"       "$(sweep 'open\([^)]*, *"w"\)|exec [0-9]+>[^&]|shutil\.(copy|move)')" "0"
+chk "the Python helpers create and delete only through a verified descriptor" \
+  "$(code lib/hyprchroma-state lib/hyprchroma-dark-reader lib/hyprchroma-palette |
+     grep -E '(mkdir|unlink|rmdir)\(' | grep -v 'dir_fd' | grep -vc 'safe_unlink')" "0"
 
 # Command resolution.
 chk "no /usr/local in any command path"        "$(sweep '/usr/local/s?bin')" "0"
+# environ.get as well as environ[...]: six helper calls built their path from
+# os.environ.get("HYPRCHROMA_LIB", ...) while this matched only the bracket form.
 chk "no executable location comes from the environment" \
-  "$(sweep 'HYPRCHROMA_(LIB|SHARE):-|environ\[.HYPRCHROMA_(LIB|SHARE).\]')" "0"
+  "$(sweep 'HYPRCHROMA_(LIB|SHARE):-|environ(\[|\.get\().HYPRCHROMA_(LIB|SHARE)')" "0"
 # Nor from the home directory. The browser-exit waiter ran its helper out of
 # ~/.local/bin, where the pre-package installer left shims: once they were gone
 # it failed on every run, silently, and a file anyone as this user could plant

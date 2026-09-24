@@ -405,10 +405,7 @@ def remove_import(path: Path, line: str) -> str:
     remaining = "\n".join(kept).strip()
     if not remaining:
         # Nothing of the user's was ever in it.
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        safe_unlink(path)
         return "removed"
     atomic_write(path, remaining + "\n", 0o644)
     return "stripped"
@@ -423,10 +420,7 @@ def generated_by_marker(path):
 
 
 def generated_kdeglobals(path):
-    try:
-        return "ColorScheme=Hyprchroma" in path.read_text(errors="replace")
-    except OSError:
-        return False
+    return "ColorScheme=Hyprchroma" in (read_capped(path) or "")
 
 
 def always_generated(path):
@@ -509,10 +503,10 @@ def strip_generated_kdeglobals(path):
     A backup must never hold Hyprchroma's own output: restoring it would put
     back the colors the restore was meant to remove, and capturing it again
     later would carry the same content forward indefinitely."""
-    try:
-        lines = path.read_text(errors="replace").splitlines()
-    except OSError:
+    text = read_capped(path)
+    if text is None:
         return None
+    lines = text.splitlines()
 
     kept, section, owned = [], None, False
     for line in lines:
@@ -589,12 +583,23 @@ def snapshot_file(snapshot_dir, manifest, key, path):
                 entry["existed"] = False
     if entry["existed"]:
         backup = snapshot_dir / "files" / key
-        backup.parent.mkdir(parents=True, exist_ok=True)
-        if cleaned is None:
-            shutil.copy2(path, backup)
-        else:
-            atomic_write(backup, cleaned)
-            shutil.copystat(path, backup)
+        # Through the verified writer, like every other write here. This was
+        # shutil.copy2, which opened the backup by name and followed a symlink
+        # planted there -- truncating whatever it pointed at with the user's
+        # config, unattended, on the first capture. Anything able to write the
+        # state directory could aim that at any file this account owns.
+        content = cleaned if cleaned is not None else read_capped_bytes(path)
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            content = None
+        if content is None:
+            # Unreadable, or larger than any config written by hand. Left out
+            # of the capture, so nothing is recorded that restore cannot honor.
+            print(f"Hyprchroma: not capturing {path}: unreadable or too large",
+                  file=sys.stderr)
+            return
+        atomic_write(backup, content, mode=mode)
         entry["backup"] = str(backup.relative_to(snapshot_dir))
     files[key] = entry
 
@@ -790,7 +795,7 @@ def snapshot(state_dir, data_dir, target):
 def restore_file(snapshot_dir, entry):
     path = Path(entry["path"])
     if not entry.get("existed"):
-        path.unlink(missing_ok=True)
+        safe_unlink(path)
         return
     backup = snapshot_dir / entry["backup"]
     # Replace the destination rather than writing into it. shutil.copy2 opens
@@ -829,6 +834,32 @@ def write_lines(path, lines):
 
 
 MAX_FOREIGN_FILE = 8 * 1024 * 1024
+
+
+def read_capped_bytes(path, limit=MAX_FOREIGN_FILE):
+    """read_capped for content that is copied rather than parsed."""
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError:
+        return None
+    return None if len(data) > limit else data
+
+
+def safe_unlink(path):
+    """Remove path relative to a verified descriptor for its directory, the way
+    every write is made. Already absent is the goal, not an error."""
+    path = Path(path)
+    try:
+        descriptor = open_dir(path.parent)
+    except FileNotFoundError:
+        return
+    try:
+        os.unlink(path.name, dir_fd=descriptor)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(descriptor)
 
 
 def read_capped(path, limit=MAX_FOREIGN_FILE):
@@ -1571,7 +1602,6 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
     waits, holds a lock so one runs at a time, and leaves anything past its
     bound to the service."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
-    runtime.mkdir(parents=True, exist_ok=True)
     # Created following no symlink, then opened read-only: flock needs no
     # write access, so this path can never be truncated or written through.
     prepare_lock(runtime / "hyprchroma-browser-wait.lock")
@@ -1649,7 +1679,6 @@ def watch_events(state_dir, data_dir):
     caught by the sync the daemon runs before watching, and then by the next
     window event."""
     lock_dir = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
-    lock_dir.mkdir(parents=True, exist_ok=True)
     # Created following no symlink, then opened read-only: flock needs no
     # write access, so this path can never be truncated or written through.
     prepare_lock(lock_dir / "hyprchroma-watch-events.lock")
@@ -1702,7 +1731,6 @@ def watch_kde_exit(state_dir, data_dir, action="sync"):
     theme change cannot pile up, and a pid that has already gone simply never
     registers."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
-    runtime.mkdir(parents=True, exist_ok=True)
     # Created following no symlink, then opened read-only: flock needs no
     # write access, so this path can never be truncated or written through.
     prepare_lock(runtime / "hyprchroma-kde-wait.lock")
@@ -1779,8 +1807,8 @@ def rewrite_pear_themes(chosen):
     if path.is_symlink() or not path.is_file():
         return
     try:
-        config = json.loads(path.read_text())
-    except (OSError, ValueError):
+        config = json.loads(read_capped(path) or "")
+    except ValueError:
         return
     options = config.get("options")
     if not isinstance(options, dict):
@@ -1844,7 +1872,7 @@ def restore_target_captured(snapshot_dir, manifest, target):
 def restore_target_stock(snapshot_dir, manifest, target):
     home = Path.home()
     for relative in STOCK_ABSENT_FILES[target]:
-        (home / relative).unlink(missing_ok=True)
+        safe_unlink(home / relative)
     if target == "pear":
         rewrite_pear_themes(lambda current: [
             entry for entry in current
@@ -1868,8 +1896,14 @@ def restore_target_stock(snapshot_dir, manifest, target):
         # offer. The recorded one is the app's own: Hyprchroma only ever deleted
         # these keys and never wrote them, so it cannot be Hyprchroma output.
         restore_app_color_schemes(manifest)
+        # Only if empty -- os.rmdir refuses otherwise -- and relative to a
+        # verified descriptor, like every other removal.
         try:
-            (home / ".local/share/color-schemes").rmdir()
+            descriptor = open_dir(home / ".local/share")
+            try:
+                os.rmdir("color-schemes", dir_fd=descriptor)
+            finally:
+                os.close(descriptor)
         except OSError:
             pass
     elif target == "flatpak":
@@ -1896,7 +1930,7 @@ def restore(state_dir, data_dir, targets, mode):
                  state_dir / "settings.json",
                  state_dir / "status.json",
                  state_dir / "last-stale-notify"):
-        path.unlink(missing_ok=True)
+        safe_unlink(path)
 
 
 def main():

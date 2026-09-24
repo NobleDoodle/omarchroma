@@ -655,13 +655,7 @@ def browser_running(executables: list[str]) -> bool:
 def write_status(path: Path | None, **values: object) -> None:
     if path is None:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    current = {}
-    if path.is_file():
-        try:
-            current = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
-            current = {}
+    current = read_capped_json(path)
     current.update(values)
     atomic_write(path, json.dumps(current, indent=2) + "\n")
 
@@ -676,7 +670,6 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
             "existed": value is not None,
             "value": base64.b64encode(value).decode() if value is not None else "",
         }
-    snapshot_file.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(snapshot_file, json.dumps({
         "browser": info["name"],
         "browserDesktop": info["desktop"],
@@ -687,18 +680,52 @@ def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, databa
     }, indent=2) + "\n")
 
 
+def snapshot_database(snapshot: dict) -> Path | None:
+    """The one database a snapshot may be restored into: the one apply_theme
+    would write for the browser the snapshot names, derived now.
+
+    The snapshot records a location too, but it lives in the state directory,
+    and anything able to write there could point it at any database this
+    account owns -- another extension's storage included -- and have restore
+    write whatever keys it liked into it. So the recorded location is only
+    ever compared against this, never used."""
+    desktop = snapshot.get("browserDesktop", "")
+    known = BROWSERS.get(desktop)
+    if known is None:
+        return None
+    info = dict(known, desktop=desktop, config=str(Path(known["config"]).expanduser()))
+    profile = active_profile(info)
+    if info["family"] == "firefox":
+        return profile / "storage-sync-v2.sqlite"
+    return profile / "Sync Extension Settings" / chromium_extension_id(profile)
+
+
 def restore_theme(state_dir: Path, status_file: Path | None) -> int:
     snapshot_file = state_dir / "original/dark-reader.json"
     if not snapshot_file.exists():
         print("Hyprchroma: no Dark Reader snapshot found")
         return 0
 
-    snapshot = json.loads(snapshot_file.read_text())
+    snapshot = read_capped_json(snapshot_file)
+    if not snapshot:
+        print("Hyprchroma: the Dark Reader snapshot is unreadable; not restoring it",
+              file=sys.stderr)
+        return 1
     info = BROWSERS.get(snapshot.get("browserDesktop", ""))
     if info and browser_running(info["executables"]):
         write_status(status_file, darkReader="restore-pending-browser-exit")
         print(f"Hyprchroma: close {info['name']} before restoring Dark Reader")
         return 2
+
+    database = snapshot_database(snapshot)
+    if database is None or str(database) != snapshot.get("database"):
+        # A profile switched since the capture reads the same as a tampered
+        # snapshot here, and both are refused: writing to the wrong database
+        # is the one outcome worse than not restoring.
+        print("Hyprchroma: the Dark Reader snapshot names a database other than "
+              "its browser's own; not restoring it", file=sys.stderr)
+        return 1
+    snapshot["database"] = str(database)
 
     family = snapshot.get("browserFamily", "chromium")
     if family == "firefox":
@@ -710,11 +737,14 @@ def restore_theme(state_dir: Path, status_file: Path | None) -> int:
             print("Hyprchroma: python-plyvel is required", file=sys.stderr)
             return 1
 
-        database = Path(snapshot["database"])
-        database.mkdir(parents=True, exist_ok=True)
+        os.close(open_dir(database, create=True))
         with plyvel.DB(str(database), create_if_missing=True) as db:
             for key, entry in snapshot.get("entries", {}).items():
                 raw_key = key.encode()
+                # Only the keys a capture takes, so a snapshot cannot be used
+                # to write or delete anything else in the extension's storage.
+                if raw_key not in MANAGED_KEYS or not isinstance(entry, dict):
+                    continue
                 if entry.get("existed"):
                     db.put(raw_key, base64.b64decode(entry["value"]))
                 else:
@@ -789,7 +819,7 @@ def firefox_storage_data(database: Path) -> dict:
 
 
 def write_firefox_storage_data(database: Path, data: dict) -> None:
-    database.parent.mkdir(parents=True, exist_ok=True)
+    os.close(open_dir(database.parent, create=True))
     with sqlite3.connect(database) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS storage_sync_data ("
@@ -812,7 +842,6 @@ def snapshot_firefox_settings(snapshot_file: Path, info: dict, profile: Path, da
     if snapshot_file.exists():
         return
     data = firefox_storage_data(database)
-    snapshot_file.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(snapshot_file, json.dumps({
         "browser": info["name"],
         "browserDesktop": info["desktop"],
@@ -910,7 +939,10 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         print(f"Hyprchroma: Dark Reader update queued until {info['name']} exits")
         return 2
 
-    theme = json.loads(theme_file.read_text())
+    theme = read_capped_json(theme_file)
+    if not theme:
+        print(f"Hyprchroma: cannot read the Dark Reader theme {theme_file}", file=sys.stderr)
+        return 1
     if info["family"] == "firefox":
         return apply_firefox_theme(info, theme, state_dir, status_file)
 
@@ -922,7 +954,7 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
 
     profile = active_profile(info)
     database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
-    database.mkdir(parents=True, exist_ok=True)
+    os.close(open_dir(database, create=True))
     palette_keys = {
         "darkColorScheme",
         "darkSchemeBackgroundColor",

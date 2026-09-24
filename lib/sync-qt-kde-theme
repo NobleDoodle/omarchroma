@@ -258,7 +258,8 @@ else
 fi
 
 globals_changed=$(
-  python3 - "$scheme_file" "$kdeglobals" "$(omarchy_icon_theme sync-qt-kde-theme)" <<'PY'
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$scheme_file" "$kdeglobals" "$(omarchy_icon_theme sync-qt-kde-theme)" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import hashlib
 import os
 import stat
@@ -383,8 +384,7 @@ else:
         else 0o600
     )
     subprocess.run(
-        [os.path.join(os.environ.get("HYPRCHROMA_LIB", "/usr/lib/hyprchroma"),
-                      "hyprchroma-state"),
+        [HELPER,
          "write-file", "--path", str(globals_path), "--mode", format(mode, "o")],
         input=updated_text.encode(),
         check=True,
