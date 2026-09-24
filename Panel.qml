@@ -241,14 +241,18 @@ Panel {
     { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
     { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
     { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
-    { target: "pear", label: "Pear Desktop", icon: "󰎆" }
+    { target: "pear", label: "Pear Desktop", icon: "󰎆" },
+    { target: "flatpak", label: "Flatpak apps", icon: "󰏗" }
   ]
 
+  // Flatpak is opt-in -- switching it on widens what every sandboxed app may
+  // read -- so it alone is off unless settings record it on.
   property var enabledTargets: ({
     gtk: true,
     qtKde: true,
     darkReader: true,
-    pear: true
+    pear: true,
+    flatpak: false
   })
 
   function targetKey(target) {
@@ -259,6 +263,7 @@ Panel {
 
   function targetEnabled(target) {
     var key = targetKey(target)
+    if (key === "flatpak") return enabledTargets[key] === true
     return enabledTargets[key] !== false
   }
 
@@ -269,7 +274,8 @@ Panel {
       gtk: enabledTargets.gtk !== false,
       qtKde: enabledTargets.qtKde !== false,
       darkReader: enabledTargets.darkReader !== false,
-      pear: enabledTargets.pear !== false
+      pear: enabledTargets.pear !== false,
+      flatpak: enabledTargets.flatpak === true
     }
     next[key] = enabled
     enabledTargets = next
@@ -402,13 +408,14 @@ Panel {
           gtk: frameworks.gtk !== false,
           qtKde: frameworks.qtKde !== false,
           darkReader: frameworks.darkReader !== false,
-          pear: frameworks.pear !== false
+          pear: frameworks.pear !== false,
+          flatpak: frameworks.flatpak === true
         }
       } catch (error) {
-        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true }
+        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false }
       }
     }
-    onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true }
+    onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false }
     onFileChanged: reload()
   }
 

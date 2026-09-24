@@ -78,7 +78,7 @@ os.environ["PATH"] = trusted_path()
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
 
-TARGETS = ("gtk", "qt-kde", "pear")
+TARGETS = ("gtk", "qt-kde", "pear", "flatpak")
 
 # Which snapshot entries belong to which framework, so a single framework can be
 # reverted on its own when its toggle is switched off.
@@ -86,7 +86,25 @@ TARGET_FILE_KEYS = {
     "gtk": ("gtk3_css", "gtk4_css", "gtk3_hyprchroma_css", "gtk4_hyprchroma_css"),
     "qt-kde": ("kdeglobals", "hyprchroma_colors"),
     "pear": ("pear_config", "pear_css"),
+    "flatpak": (),
 }
+
+# A Flatpak app reads its configuration from a directory of its own, so none of
+# the files the frameworks above write reaches it. These read-only grants map
+# each into every app's own config directory -- checked against a GNOME-runtime
+# app -- and are all theming needs: the two GTK directories, where gtk.css
+# imports hyprchroma.css beside it; kdeglobals; and the color-scheme directory
+# KColorSchemeManager loads a scheme from by name. Nothing of Hyprchroma's own
+# is granted: its state directory holds settings and the captured backups of
+# the user's own configs, and no theme file reads either.
+FLATPAK_FILESYSTEMS = (
+    "xdg-config/gtk-3.0:ro",
+    "xdg-config/gtk-4.0:ro",
+    "xdg-config/kdeglobals:ro",
+    "xdg-data/color-schemes:ro",
+)
+# A GTK_THEME reaching the sandbox names a theme to use over the stylesheet.
+FLATPAK_UNSET_ENV = "GTK_THEME"
 
 # Reverting to "stock" cannot mean replaying the snapshot: on a machine that has
 # had Hyprchroma before, the snapshot's "originals" are themselves Hyprchroma
@@ -109,6 +127,7 @@ STOCK_ABSENT_FILES = {
     "gtk": (".config/gtk-3.0/gtk.css", ".config/gtk-4.0/gtk.css"),
     "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Hyprchroma.colors"),
     "pear": (".config/YouTube Music/hyprchroma.css",),
+    "flatpak": (),
 }
 
 
@@ -621,6 +640,115 @@ def snapshot_gsettings(manifest):
             values[key] = value
 
 
+def flatpak_override_path():
+    """The global override "flatpak override --user" writes, found the way
+    flatpak itself finds it."""
+    user_dir = os.environ.get("FLATPAK_USER_DIR")
+    data = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    return (Path(user_dir) if user_dir else data / "flatpak") / "overrides" / "global"
+
+
+def keyfile_list(value):
+    """A GKeyFile list: items separated by semicolons not escaped as \\;."""
+    return [item for item in re.split(r"(?<!\\);", value.strip()) if item]
+
+
+def grant_path(entry):
+    """The filesystem an override entry names, without its ! or its :mode."""
+    return re.sub(r":(ro|rw|create)$", "", entry.lstrip("!"))
+
+
+def read_flatpak_override():
+    """The entries in the global override that bear on theming."""
+    found = {"filesystems": [], "unset-environment": [], "environment": set()}
+    group = None
+    for line in (safe_read(flatpak_override_path(), MAX_FOREIGN_FILE) or "").splitlines():
+        stripped = line.strip()
+        header = re.fullmatch(r"\[(.+)\]", stripped)
+        if header:
+            group = header.group(1)
+            continue
+        key, separator, value = stripped.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        if group == "Context" and key in ("filesystems", "unset-environment"):
+            found[key] = keyfile_list(value)
+        elif group == "Environment":
+            found["environment"].add(key)
+    return found
+
+
+def flatpak_unset_present(found):
+    # "--unset-env" writes both of these; a user's own GTK_THEME, set or unset,
+    # is theirs either way.
+    return (FLATPAK_UNSET_ENV in found["unset-environment"]
+            or FLATPAK_UNSET_ENV in found["environment"])
+
+
+def sync_flatpak(state_dir, data_dir):
+    """Grant every Flatpak app read access to the theme files; the state to record.
+
+    Through flatpak's own command, so the override file stays in the format
+    flatpak writes. Anything the user already has for one of these paths is
+    left exactly as they set it -- including a denial -- and not claimed."""
+    flatpak = shutil.which("flatpak", path=trusted_path())
+    if not flatpak:
+        return "not-installed"
+    snapshot(state_dir, data_dir, "flatpak")
+    found = read_flatpak_override()
+    granted = {grant_path(entry) for entry in found["filesystems"]}
+    arguments = [f"--filesystem={grant}" for grant in FLATPAK_FILESYSTEMS
+                 if grant_path(grant) not in granted]
+    if not flatpak_unset_present(found):
+        arguments.append(f"--unset-env={FLATPAK_UNSET_ENV}")
+    if arguments:
+        subprocess.run([flatpak, "override", "--user", *arguments], check=True,
+                       stdout=subprocess.DEVNULL)
+    return "synchronized"
+
+
+def remove_flatpak_grants(filesystems, unset_env):
+    """Take exactly these entries back out of the global override, leaving every
+    other line as it was.
+
+    flatpak cannot do this itself: --nofilesystem writes a "!" denial rather
+    than removing a grant, which would then override an app that asks for the
+    same path in its own manifest, and --reset removes every override the user
+    has. An entry changed since it was granted is no longer this project's, so
+    only exact matches go."""
+    path = flatpak_override_path()
+    text = safe_read(path, MAX_FOREIGN_FILE)
+    if text is None:
+        return
+    drop = {"filesystems": set(filesystems),
+            "unset-environment": {unset_env} if unset_env else set()}
+    group, kept_lines = None, []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        header = re.fullmatch(r"\[(.+)\]", stripped)
+        if header:
+            group = header.group(1)
+            kept_lines.append(line)
+            continue
+        key, separator, value = stripped.partition("=")
+        key, value = key.strip(), value.strip()
+        if separator and group == "Context" and key in drop:
+            items = keyfile_list(value)
+            kept = [item for item in items if item not in drop[key]]
+            if kept != items:
+                if kept:
+                    kept_lines.append(f"{key}={';'.join(kept)};\n")
+                continue
+        # The empty variable --unset-env writes beside unset-environment.
+        if separator and group == "Environment" and unset_env and key == unset_env and not value:
+            continue
+        kept_lines.append(line)
+    rewritten = "".join(kept_lines)
+    if rewritten != text:
+        atomic_write(path, rewritten)
+
+
 def snapshot(state_dir, data_dir, target):
     snapshot_dir = state_dir / "original"
     manifest_path = snapshot_dir / "manifest.json"
@@ -642,6 +770,17 @@ def snapshot(state_dir, data_dir, target):
         snapshot_file(snapshot_dir, manifest, "pear_config", home / ".config/YouTube Music/config.json")
         snapshot_file(snapshot_dir, manifest, "pear_css", home / ".config/YouTube Music/hyprchroma.css")
         strip_generated_pear_themes(snapshot_dir, manifest)
+    elif target == "flatpak":
+        # Which grants were the user's before this ever added any: a captured
+        # revert leaves those alone and removes only the ones added here.
+        if "flatpak" not in manifest:
+            found = read_flatpak_override()
+            granted = {grant_path(entry) for entry in found["filesystems"]}
+            manifest["flatpak"] = {
+                "presentFilesystems": [grant for grant in FLATPAK_FILESYSTEMS
+                                       if grant_path(grant) in granted],
+                "presentUnsetEnv": flatpak_unset_present(found),
+            }
     else:
         raise SystemExit(f"unknown target: {target}")
 
@@ -1691,6 +1830,15 @@ def restore_target_captured(snapshot_dir, manifest, target):
                           '@import url("hyprchroma.css");')
     elif target == "qt-kde":
         restore_app_color_schemes(manifest)
+    elif target == "flatpak":
+        # No record means this never granted anything, so there is nothing of
+        # its own to take back -- whatever is there is the user's.
+        record = manifest.get("flatpak")
+        if record is not None:
+            present = set(record.get("presentFilesystems", []))
+            remove_flatpak_grants(
+                [grant for grant in FLATPAK_FILESYSTEMS if grant not in present],
+                None if record.get("presentUnsetEnv") else FLATPAK_UNSET_ENV)
 
 
 def restore_target_stock(snapshot_dir, manifest, target):
@@ -1724,6 +1872,9 @@ def restore_target_stock(snapshot_dir, manifest, target):
             (home / ".local/share/color-schemes").rmdir()
         except OSError:
             pass
+    elif target == "flatpak":
+        # Omarchy grants Flatpak apps none of these, so stock has none of them.
+        remove_flatpak_grants(FLATPAK_FILESYSTEMS, FLATPAK_UNSET_ENV)
 
 
 def restore(state_dir, data_dir, targets, mode):
@@ -1762,6 +1913,7 @@ def main():
     rest.add_argument("--target", default="all", choices=("all",) + TARGETS)
     rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
     sub.add_parser("clear-app-color-schemes")
+    sub.add_parser("sync-flatpak")
     stale = sub.add_parser("report-stale-apps")
     stale.add_argument("--written-now", action="store_true",
                        help="the palette was just written, so judge staleness against now")
@@ -1815,6 +1967,8 @@ def main():
         snapshot(args.state_dir, args.data_dir, args.target)
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
+    elif args.command == "sync-flatpak":
+        print(sync_flatpak(args.state_dir, args.data_dir))
     elif args.command == "report-stale-apps":
         if args.written_now:
             since = int(time.time()) - LAUNCH_GRACE_SECONDS

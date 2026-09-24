@@ -101,8 +101,8 @@ Hyprchroma setup
 
 Hyprchroma carries your Omarchy theme into applications that do not follow it
 on their own. GTK and Qt/KDE are always included -- they are what most of the
-desktop is built from. The other two are optional, and this asks about them
-now so you are not left with a panel offering things you do not use.
+desktop is built from. The rest are optional, and this asks about them now so
+you are not left with a panel offering things you do not use.
 INTRO
 
 # --- the optional frameworks ----------------------------------------------
@@ -147,6 +147,23 @@ if ask "Include Dark Reader"; then
   else
     note "Already configured in ${browser:-your browser}."
   fi
+fi
+
+# Only asked where there is something to theme. A machine without Flatpak
+# answers no without being asked, which also keeps the row out of the panel.
+want_flatpak=no
+if command -v flatpak >/dev/null; then
+  head2 "Flatpak apps"
+  cat <<'FLATPAK'
+Flatpak apps read their settings from a folder of their own, so they miss the
+GTK and Qt/KDE colors above. Hyprchroma can let every Flatpak app read them:
+four read-only permissions -- your two GTK folders, kdeglobals, and your KDE
+color schemes -- and nothing else. Each app picks it up on its next launch.
+
+This changes a permission for every Flatpak app you have, which is why it is
+off unless you say so. Switching it off later removes exactly those four.
+FLATPAK
+  if ask "Include Flatpak apps"; then want_flatpak=yes; fi
 fi
 
 # --- what those choices need ----------------------------------------------
@@ -285,6 +302,13 @@ makepkg -si --needed || { say "The build did not finish; nothing else was change
 head2 "Applying your choices"
 [[ $want_pear == yes ]] || hyprchroma framework remove pear
 [[ $want_dark == yes ]] || hyprchroma framework remove dark-reader
+# Opt-in, so a yes has to switch it on rather than just leave it listed --
+# which "framework restore" does.
+if [[ $want_flatpak == yes ]]; then
+  hyprchroma framework restore flatpak
+else
+  hyprchroma framework remove flatpak
+fi
 
 systemctl --user enable --now hyprchromad.service ||
   note "Could not start hyprchromad.service; 'systemctl --user status hyprchromad' will say why."

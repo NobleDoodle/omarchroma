@@ -5,7 +5,7 @@
 **Change your Omarchy theme once and let your desktop follow.**
 
 Omarchroma applies your active palette to GTK 3/4, libadwaita, GNOME settings,
-Qt/KDE Frameworks, Dark Reader, and Pear Desktop (YouTube Music).
+Qt/KDE Frameworks, Dark Reader, Pear Desktop (YouTube Music), and Flatpak apps.
 
 It runs as a standalone user service (`hyprchroma`) with an optional Omarchy
 bar widget for convenience.
@@ -50,7 +50,7 @@ this restart, and the Omarchy shell's own, automatically.
 ```bash
 hyprchroma                        # sync only what changed
 hyprchroma --force                # rewrite everything
-hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear
+hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak
 hyprchroma framework remove pear  # remove from the panel and revert
 hyprchroma framework restore pear # put it back and sync
 hyprchroma palette --capture      # pin the current palette to a file
@@ -62,7 +62,7 @@ With the bar widget:
 | Input | Action |
 |---|---|
 | Left click palette icon | Open/close the panel |
-| `1` – `4` | Toggle kept frameworks |
+| `1` – `5` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, and any removed frameworks |
 | `i` | Install, update, or start hyprchroma when prompted |
@@ -70,8 +70,11 @@ With the bar widget:
 
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely (press `/` and its number to restore).
-* GTK and Qt/KDE are always included; Dark Reader and Pear Desktop are optional.
-  Install the Dark Reader browser extension manually for it to theme on the next sync.
+* GTK and Qt/KDE are always included; Dark Reader, Pear Desktop and Flatpak apps
+  are optional. Install the Dark Reader browser extension manually for it to theme
+  on the next sync.
+* Flatpak apps is off until you switch it on: it changes a permission for every
+  Flatpak app you have (see below). Each app picks it up on its next launch.
 
 ## Palette Sources
 
@@ -103,6 +106,7 @@ stops and changes nothing.
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
 | [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
+| `flatpak` | Flatpak app theming | Not offered |
 
 ## What it changes
 
@@ -113,6 +117,11 @@ pacman installation requires sudo).
   generated colors from `hyprchroma.css`. Custom overrides remain intact.
 * **KDE:** Edits `kdeglobals` in place, touching only the color sections
   Omarchroma manages.
+* **Flatpak apps** (only when switched on): adds four read-only grants to your
+  user's global Flatpak override, so every Flatpak app can read the theme files
+  above, and keeps `GTK_THEME` out of the sandbox. Nothing of hyprchroma's own
+  state is granted. Switching it off removes exactly those entries and leaves
+  the rest of your overrides as they were.
 
 Generated output is never included in backups.
 
@@ -125,6 +134,9 @@ Generated output is never included in backups.
 ~/.local/share/color-schemes/Hyprchroma.colors
 ~/.local/{share,state}/hyprchroma/
 ~/.config/omarchy/hooks/{theme-set,font-set}.d/hyprchroma
+~/.local/share/flatpak/overrides/global  Flatpak apps only, when switched on:
+    xdg-config/gtk-3.0:ro  xdg-config/gtk-4.0:ro  xdg-config/kdeglobals:ro
+    xdg-data/color-schemes:ro  and GTK_THEME unset
 ```
 
 ## Global Keybindings
@@ -139,6 +151,7 @@ o.bind("SUPER + ALT + G", "Omarchroma: toggle GTK", om .. " toggleGtk")
 o.bind("SUPER + ALT + K", "Omarchroma: toggle Qt/KDE", om .. " toggleQtKde")
 o.bind("SUPER + ALT + D", "Omarchroma: toggle Dark Reader", om .. " toggleDarkReader")
 o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear")
+o.bind("SUPER + ALT + F", "Omarchroma: toggle Flatpak apps", om .. " toggleFlatpak")
 o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
 ```
 

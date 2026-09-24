@@ -6,7 +6,7 @@
 # and, for a published listing, from the exact commit that was reviewed. A
 # tarball would let those differ.
 pkgname=hyprchroma
-pkgver=2.5.2
+pkgver=2.6.0
 pkgrel=1
 pkgdesc="Carry the active Omarchy theme palette into GTK, Qt/KDE, Dark Reader and Pear Desktop"
 arch=('any')
@@ -19,6 +19,7 @@ optdepends=(
   'adw-gtk-theme: GTK 3 applications follow the theme'
   'python-plyvel: Dark Reader theming in Chromium-family browsers'
   'libnotify: desktop notifications when a sync defers'
+  'flatpak: Flatpak apps follow the theme too, when switched on'
 )
 source=()
 sha256sums=()

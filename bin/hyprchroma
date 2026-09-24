@@ -120,6 +120,7 @@ target_key() {
     qt-kde) printf 'qtKde' ;;
     dark-reader) printf 'darkReader' ;;
     pear) printf 'pear' ;;
+    flatpak) printf 'flatpak' ;;
     *) return 1 ;;
   esac
 }
@@ -269,7 +270,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.5.2"
+    echo "hyprchroma 2.6.0"
     exit 0
     ;;
 esac
@@ -290,11 +291,12 @@ for argument in "$@"; do
     --target=qt-kde) target="qt-kde" ;;
     --target=dark-reader) target="dark-reader" ;;
     --target=pear) target="pear" ;;
+    --target=flatpak) target="flatpak" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
     -h|--help)
       cat <<'USAGE'
-Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear]
+Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak]
                   [--set-enabled=true|false] [--force] [--quiet] [--notify]
        hyprchroma daemon           watch for changes and keep everything in step
        hyprchroma install-hooks    place the Omarchy theme and font hooks
@@ -413,15 +415,19 @@ mkdir -p "$STATE_DIR" "$DATA_DIR"
 
 
 target_enabled() {
-  local key
+  local key default=true
   key=$(target_key "$1") || return 1
+  # Flatpak is opt-in: it widens what every sandboxed app may read, which is
+  # not something an install, an upgrade or a different toggle may do on the
+  # user's behalf. Only a recorded true turns it on.
+  [[ $key == flatpak ]] && default=false
   # Not "// true": jq's alternative operator treats false as empty as well as
   # null, so a framework switched off read back as enabled and every sync
   # re-applied the theme the toggle had just reverted. Only a missing key means
-  # enabled; a recorded false means false.
-  [[ $(jq -r --arg key "$key" \
-        '.frameworks[$key] | if . == null then true else . end' \
-        "$SETTINGS_FILE" 2>/dev/null || echo true) == "true" ]]
+  # the default; a recorded value means that value.
+  [[ $(jq -r --arg key "$key" --argjson default "$default" \
+        '.frameworks[$key] | if . == null then $default else . end' \
+        "$SETTINGS_FILE" 2>/dev/null || echo "$default") == "true" ]]
 }
 
 if [[ -n $set_enabled ]]; then
@@ -457,6 +463,8 @@ settings = json.loads(path.read_text()) if path.exists() else {}
 frameworks = settings.setdefault("frameworks", {})
 for name in ("gtk", "qtKde", "darkReader", "pear"):
     frameworks.setdefault(name, True)
+# Opt-in, unlike the rest: see target_enabled.
+frameworks.setdefault("flatpak", False)
 frameworks[key] = enabled
 atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
@@ -721,6 +729,16 @@ PY
   pear_state="synchronized"
 fi
 
+flatpak_state="disabled"
+if [[ ( $target == "all" || $target == "flatpak" ) ]] && target_enabled flatpak; then
+  log "synchronizing Flatpak apps"
+  # Read access to the theme files, granted once; the files themselves are
+  # what change with the theme, so nothing here repeats per palette.
+  flatpak_state=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-flatpak) ||
+    fail "Flatpak synchronization failed"
+fi
+
 dark_reader_exit=0
 # Hyprchroma installs nothing into the browser. If Dark Reader is not there,
 # say so once -- there is nothing to theme until the user installs it.
@@ -824,7 +842,7 @@ PY
   fi
 fi
 
-python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" <<'PY'
+python3 - "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" <<'PY'
 import json
 import os
 import subprocess
@@ -855,7 +873,7 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit, qt_kde_deferred = sys.argv[4:]
+pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state = sys.argv[4:]
 if target in {"all", "gtk"}:
     state["gtk"] = "synchronized"
 if target in {"all", "qt-kde"}:
@@ -864,6 +882,8 @@ if target in {"all", "qt-kde"}:
     state["qtKde"] = "deferred" if qt_kde_deferred == "1" else "synchronized"
 if target in {"all", "pear"}:
     state["pearDesktop"] = pear_state
+if target in {"all", "flatpak"}:
+    state["flatpak"] = flatpak_state
 if target in {"all", "dark-reader"} and dark_reader_exit == "0":
     state["darkReader"] = "synchronized"
 atomic_write(path, json.dumps(state, indent=2) + "\n")
@@ -883,6 +903,11 @@ else
              || echo "Qt and KDE synchronized" ) ;;
     dark-reader) message="Dark Reader synchronized" ;;
     pear) message=$([[ $pear_state == "synchronized" ]] && echo "Pear Desktop synchronized" || echo "Pear Desktop is not installed") ;;
+    flatpak) case "$flatpak_state" in
+               synchronized) message="Flatpak apps synchronized; each picks it up on its next launch" ;;
+               not-installed) message="Flatpak is not installed" ;;
+               *) message="Flatpak apps are switched off" ;;
+             esac ;;
     *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
        # every time, which was invisible only while no toggle could really
        # disable anything.
@@ -893,6 +918,7 @@ else
        fi
        target_enabled dark-reader && synced+=("Dark Reader")
        target_enabled pear && (( pear_installed )) && synced+=("Pear Desktop")
+       [[ $flatpak_state == "synchronized" ]] && synced+=("Flatpak apps")
        if (( ${#synced[@]} == 0 )); then
          message="nothing to synchronize; every framework is switched off"
        else
