@@ -912,6 +912,7 @@ def stale_open_apps(since=None):
     if since is None or not windows:
         return []
     reloaded = omarchy_reloaded_executables()
+    portals = gtk_portal_pids()
     names = set()
     for title, klass, pid in windows:
         started = process_started_at(pid)
@@ -920,6 +921,10 @@ def stale_open_apps(since=None):
         # A terminal, TUI or the shell already picked the theme up when Omarchy
         # told it to; naming it would send someone to restart nothing.
         if window_executable(pid) in reloaded:
+            continue
+        # A file chooser is not an application anyone restarts, and closing it
+        # is already enough: refresh_idle_apps recycles its backend then.
+        if pid in portals:
             continue
         name = window_display_name(title, klass)
         names.add(name[:1].upper() + name[1:])
@@ -1249,6 +1254,42 @@ def has_quit_action(name, path):
 # put a window on screen yet, is never mistaken for an idle service.
 LAUNCH_GRACE_SECONDS = 5
 
+# Portal backends that draw dialogs in GTK on behalf of other applications: the
+# file chooser Chromium, Electron apps such as VS Code, and every Flatpak open
+# to save or upload. Each starts at login and reads the user stylesheet once,
+# so without being recycled every such dialog keeps the palette the session
+# started with, however many themes come after it. These are the only
+# org.freedesktop services refresh_idle_apps touches; nothing else in that
+# namespace draws a window of its own.
+GTK_PORTAL_BACKENDS = (
+    "org.freedesktop.impl.portal.desktop.gtk",
+    "org.freedesktop.impl.portal.desktop.gnome",
+)
+
+
+def gtk_portal_pids():
+    """PIDs currently serving a GTK portal backend."""
+    pids = set()
+    for name in GTK_PORTAL_BACKENDS:
+        pid = connection_pid(name)
+        if pid is not None:
+            pids.add(pid)
+    return pids
+
+
+def running_binary(pid):
+    """The executable a process is running, as a path, or None.
+
+    A package upgrade replaces the file under a running process, which the
+    kernel reports as "<path> (deleted)". That is still the same program --
+    and exactly the one most in need of a restart -- so the suffix is dropped
+    rather than treated as a mismatch."""
+    try:
+        target = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+    return target.removesuffix(" (deleted)")
+
 
 def refresh_idle_apps(since=None):
     """Quit background application services still holding the previous theme.
@@ -1266,7 +1307,10 @@ def refresh_idle_apps(since=None):
     nothing on screen is touched; and exposing its own quit action, which is
     activated rather than signalling the process. Failing any check leaves it
     alone, and one already newer than the theme never qualifies, so running this
-    repeatedly changes nothing."""
+    repeatedly changes nothing.
+
+    The one named exception is GTK_PORTAL_BACKENDS, which the checks above
+    cannot see: see the comment where they are handled."""
     # Staleness is measured against when the palette on disk was last written.
     # A theme switch and a forced run both write it now, so they pass `since`;
     # an event-driven run writes nothing new and measures against the theme
@@ -1277,8 +1321,37 @@ def refresh_idle_apps(since=None):
         # Without a window list an idle service cannot be told from one in use.
         return
     windowed = {klass for _, klass, _ in windows if klass}
+    window_pids = {pid for _, _, pid in windows}
+    running = bus_names("ListActivatableNames") & bus_names("ListNames")
 
-    for name in sorted(bus_names("ListActivatableNames") & bus_names("ListNames")):
+    # The loop below skips everything under org.freedesktop., and a portal's
+    # dialog has a window class (xdg-desktop-portal-gtk) that never matches
+    # its bus name either, so that path could neither reach a portal nor see
+    # that one was busy. Asked by pid instead, since the pid is what actually
+    # ties a dialog to its backend: one with a dialog open is left alone, and
+    # the window event that closes the dialog is the run that recycles it.
+    # D-Bus activation starts a fresh one on the next request, which reads the
+    # stylesheet as it is now.
+    for name in GTK_PORTAL_BACKENDS:
+        if name not in running:
+            continue
+        pid = connection_pid(name)
+        if pid is None or pid in window_pids:
+            continue
+        started = process_started_at(pid)
+        if started is None or started >= newer_than:
+            continue
+        # Only the program the system's own service file names for this
+        # backend. Anything else holding the name is left alone.
+        binary = service_file_exec(name)
+        if not binary or running_binary(pid) != os.path.realpath(binary):
+            continue
+        if quit_application(pid, name, "/" + name.replace(".", "/")):
+            print(f"Hyprchroma: closed idle {name} so its next dialog is themed")
+        else:
+            print(f"Hyprchroma: {name} did not quit; its next dialog may still be stale")
+
+    for name in sorted(running):
         if name.startswith("org.freedesktop.") or name.lower() in windowed:
             continue
         pid = connection_pid(name)
