@@ -30,7 +30,7 @@ chk "atomic_write is the writer" "$(count 'def atomic_write' lib/hyprchroma-stat
 chk "no shell script creates its own temporary" \
   "$(count 'mktemp' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "0"
 chk "shell writes route through the audited helper" \
-  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "7"
+  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "8"
 
 chk "restore_file no longer uses copy2" "$(count 'shutil\.copy2\(snapshot_dir' lib/hyprchroma-state)" "0"
 chk "privileged block reads with O_NOFOLLOW" "$(count 'read_text\(\)' install.sh)" "0"

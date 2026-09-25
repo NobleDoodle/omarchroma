@@ -5,7 +5,9 @@
 **Change your Omarchy theme once and let your desktop follow.**
 
 Omarchroma applies your active palette to GTK 3/4, libadwaita, GNOME settings,
-Qt/KDE Frameworks, Dark Reader, Pear Desktop (YouTube Music), and Flatpak apps.
+Qt/KDE Frameworks, Dark Reader, Pear Desktop (YouTube Music), Flatpak apps, and
+the browsers Omarchy does not theme itself: Firefox, Floorp, Zen, LibreWolf,
+Waterfox and Vivaldi.
 
 It runs as a standalone user service (`hyprchroma`) with an optional Omarchy
 bar widget for convenience.
@@ -50,7 +52,7 @@ this restart, and the Omarchy shell's own, automatically.
 ```bash
 hyprchroma                        # sync only what changed
 hyprchroma --force                # rewrite everything
-hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak
+hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak | browsers
 hyprchroma framework remove pear  # remove from the panel and revert
 hyprchroma framework restore pear # put it back and sync
 hyprchroma palette --capture      # pin the current palette to a file
@@ -62,7 +64,7 @@ With the bar widget:
 | Input | Action |
 |---|---|
 | Left click palette icon | Open/close the panel |
-| `1` – `5` | Toggle kept frameworks |
+| `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, and any removed frameworks |
 | `i` | Install, update, or start hyprchroma when prompted |
@@ -70,11 +72,14 @@ With the bar widget:
 
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely (press `/` and its number to restore).
-* GTK and Qt/KDE are always included; Dark Reader, Pear Desktop and Flatpak apps
-  are optional. Install the Dark Reader browser extension manually for it to theme
-  on the next sync.
+* GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and
+  Additional browsers are optional. Install the Dark Reader browser extension
+  manually for it to theme on the next sync.
 * Flatpak apps is off until you switch it on: it changes a permission for every
   Flatpak app you have (see below). Each app picks it up on its next launch.
+* Additional browsers is off until you switch it on: it writes into your browser
+  profiles (see below). Each browser picks it up on its next start. Chromium,
+  Chrome, Brave, Edge and Helium are not included; Omarchy colors those itself.
 
 ## Palette Sources
 
@@ -107,6 +112,7 @@ stops and changes nothing.
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
 | [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
 | `flatpak` | Flatpak app theming | Not offered |
+| Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |
 
 ## What it changes
 
@@ -122,6 +128,14 @@ pacman installation requires sudo).
   above, and keeps `GTK_THEME` out of the sandbox. Nothing of hyprchroma's own
   state is granted. Switching it off removes exactly those entries and leaves
   the rest of your overrides as they were.
+* **Additional browsers** (only when switched on): colors the tabs, toolbar and
+  menus of every supported browser with a profile. Each Firefox-family profile
+  gets its own `chrome/hyprchroma.css`, one `@import` line at the top of
+  `userChrome.css`, and one line in `user.js` that lets the browser load it.
+  Vivaldi gets a custom theme named Omarchy, selected, and written only while
+  Vivaldi is closed. A `userChrome.css`, `user.js` or `Preferences` that is a
+  link (dotfiles, arkenfox) is left alone. Switching it off removes exactly what
+  it added, byte for byte, and puts your own Vivaldi theme back.
 
 Generated output is never included in backups.
 
@@ -137,6 +151,10 @@ Generated output is never included in backups.
 ~/.local/share/flatpak/overrides/global  Flatpak apps only, when switched on:
     xdg-config/gtk-3.0:ro  xdg-config/gtk-4.0:ro  xdg-config/kdeglobals:ro
     xdg-data/color-schemes:ro  and GTK_THEME unset
+<browser profile>/chrome/hyprchroma.css  Additional browsers only, when switched on
+<browser profile>/chrome/userChrome.css  one @import line, nothing else
+<browser profile>/user.js                one preference line, nothing else
+<Vivaldi profile>/Preferences            the Omarchy theme, selected
 ```
 
 ## Global Keybindings
@@ -152,6 +170,7 @@ o.bind("SUPER + ALT + K", "Omarchroma: toggle Qt/KDE", om .. " toggleQtKde")
 o.bind("SUPER + ALT + D", "Omarchroma: toggle Dark Reader", om .. " toggleDarkReader")
 o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear")
 o.bind("SUPER + ALT + F", "Omarchroma: toggle Flatpak apps", om .. " toggleFlatpak")
+o.bind("SUPER + ALT + B", "Omarchroma: toggle additional browsers", om .. " toggleBrowsers")
 o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
 ```
 

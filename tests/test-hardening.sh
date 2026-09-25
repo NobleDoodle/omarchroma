@@ -60,10 +60,11 @@ chk "a planted symlink at a real lock is still replaced" \
 # --- 4. the hook is written through the verified writer --------------------
 chk "install_hooks does not use mkdir plus install" \
   "$(countcode 'mkdir -p -- "\$directory"|install -m 755 "\$source"' bin/hyprchroma)" "0"
-# Four: the hook, the Pear stylesheet, a captured palette, and the
-# last-stale-notify record a --notify run leaves behind to dedupe against.
+# Five: the hook, the Pear stylesheet, a captured palette, the browsers'
+# palette, and the last-stale-notify record a --notify run leaves behind to
+# dedupe against.
 chk "every write in the entry point routes through the state helper" \
-  "$(countcode 'hyprchroma-state" write-file' bin/hyprchroma)" "4"
+  "$(countcode 'hyprchroma-state" write-file' bin/hyprchroma)" "5"
 
 # --- 5. an unmapped owner is trusted, and PATH never comes back empty ------
 # Under systemd's sandboxing /usr reports the overflow uid, not root. Rejecting

@@ -242,17 +242,20 @@ Panel {
     { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
     { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
     { target: "pear", label: "Pear Desktop", icon: "󰎆" },
-    { target: "flatpak", label: "Flatpak apps", icon: "󰏗" }
+    { target: "flatpak", label: "Flatpak apps", icon: "󰏗" },
+    { target: "browsers", label: "Additional browsers", icon: "󰖟" }
   ]
 
-  // Flatpak is opt-in -- switching it on widens what every sandboxed app may
-  // read -- so it alone is off unless settings record it on.
+  // Flatpak and additional browsers are opt-in -- one widens what every
+  // sandboxed app may read, the other writes into browser profiles -- so they
+  // alone are off unless settings record them on.
   property var enabledTargets: ({
     gtk: true,
     qtKde: true,
     darkReader: true,
     pear: true,
-    flatpak: false
+    flatpak: false,
+    browsers: false
   })
 
   function targetKey(target) {
@@ -263,7 +266,7 @@ Panel {
 
   function targetEnabled(target) {
     var key = targetKey(target)
-    if (key === "flatpak") return enabledTargets[key] === true
+    if (key === "flatpak" || key === "browsers") return enabledTargets[key] === true
     return enabledTargets[key] !== false
   }
 
@@ -275,7 +278,8 @@ Panel {
       qtKde: enabledTargets.qtKde !== false,
       darkReader: enabledTargets.darkReader !== false,
       pear: enabledTargets.pear !== false,
-      flatpak: enabledTargets.flatpak === true
+      flatpak: enabledTargets.flatpak === true,
+      browsers: enabledTargets.browsers === true
     }
     next[key] = enabled
     enabledTargets = next
@@ -409,13 +413,14 @@ Panel {
           qtKde: frameworks.qtKde !== false,
           darkReader: frameworks.darkReader !== false,
           pear: frameworks.pear !== false,
-          flatpak: frameworks.flatpak === true
+          flatpak: frameworks.flatpak === true,
+          browsers: frameworks.browsers === true
         }
       } catch (error) {
-        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false }
+        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
       }
     }
-    onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false }
+    onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
     onFileChanged: reload()
   }
 

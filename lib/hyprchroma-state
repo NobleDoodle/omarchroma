@@ -78,7 +78,7 @@ os.environ["PATH"] = trusted_path()
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
 
-TARGETS = ("gtk", "qt-kde", "pear", "flatpak")
+TARGETS = ("gtk", "qt-kde", "pear", "flatpak", "browsers")
 
 # Which snapshot entries belong to which framework, so a single framework can be
 # reverted on its own when its toggle is switched off.
@@ -87,6 +87,7 @@ TARGET_FILE_KEYS = {
     "qt-kde": ("kdeglobals", "hyprchroma_colors"),
     "pear": ("pear_config", "pear_css"),
     "flatpak": (),
+    "browsers": (),
 }
 
 # A Flatpak app reads its configuration from a directory of its own, so none of
@@ -128,6 +129,7 @@ STOCK_ABSENT_FILES = {
     "qt-kde": (".config/kdeglobals", ".local/share/color-schemes/Hyprchroma.colors"),
     "pear": (".config/YouTube Music/hyprchroma.css",),
     "flatpak": (),
+    "browsers": (),
 }
 
 
@@ -752,6 +754,688 @@ def remove_flatpak_grants(filesystems, unset_env):
     rewritten = "".join(kept_lines)
     if rewritten != text:
         atomic_write(path, rewritten)
+
+
+# ------------------------------------------------------------ browsers --
+# Browsers whose own interface -- tabs, toolbar, menus -- Omarchy leaves alone.
+# Chromium, Chrome, Edge, Brave and Helium are not here: Omarchy themes those
+# itself with a managed BrowserThemeColor policy, which would override anything
+# set in a profile. Each root is where that browser keeps its profiles, native
+# and Flatpak; only roots that actually hold profiles are touched.
+FIREFOX_FAMILY = (
+    ("Firefox", (".mozilla/firefox", ".config/mozilla/firefox",
+                 ".var/app/org.mozilla.firefox/.mozilla/firefox",
+                 ".var/app/org.mozilla.firefox/config/mozilla/firefox")),
+    ("Floorp", (".floorp", ".config/floorp", ".var/app/one.ablaze.floorp/.floorp")),
+    ("Zen", (".zen", ".config/zen", ".var/app/app.zen_browser.zen/.zen")),
+    ("LibreWolf", (".librewolf", ".config/librewolf", ".config/librewolf/librewolf",
+                   ".var/app/io.gitlab.librewolf-community/.librewolf")),
+    ("Waterfox", (".waterfox", ".config/waterfox", ".var/app/net.waterfox.waterfox/.waterfox")),
+)
+VIVALDI_ROOTS = (".config/vivaldi", ".config/vivaldi-snapshot",
+                 ".var/app/com.vivaldi.Vivaldi/config/vivaldi")
+VIVALDI_EXECUTABLES = {"vivaldi-bin"}
+
+BROWSER_STYLESHEET = "hyprchroma.css"
+USERCHROME_IMPORT = '@import url("hyprchroma.css");'
+# userChrome.css is ignored unless this is on. user.js is re-applied at every
+# start, so the line is the whole of the change and removing it is the revert.
+USERJS_PREF = ('user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);'
+               ' // hyprchroma')
+# The same preference as the browser saves it. Gecko copies what user.js sets
+# into prefs.js, so taking the user.js line out leaves it on; this is the line
+# that a revert has to remove as well, when it was not on to begin with.
+STYLESHEETS_PREF = re.compile(
+    r'\s*user_pref\("toolkit\.legacyUserProfileCustomizations\.stylesheets",\s*true\);\s*')
+VIVALDI_THEME_ID = "Hyprchroma"
+VIVALDI_CURRENT = ("vivaldi", "themes", "current")
+VIVALDI_USER_THEMES = ("vivaldi", "themes", "user")
+# Vivaldi schedules themes by the OS light/dark preference unless told
+# otherwise, choosing from these two and ignoring "current" -- so both are set.
+VIVALDI_OS_SCHEDULE = ("vivaldi", "theme", "schedule", "o_s")
+BROWSER_COLORS = ("background", "dark_background", "foreground", "accent",
+                  "selection", "selection_foreground", "muted")
+HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def contained_directory(base, candidate):
+    """candidate resolved, if it is a directory strictly inside base resolved."""
+    base = os.path.realpath(base)
+    resolved = os.path.realpath(candidate)
+    if resolved == base or os.path.commonpath([base, resolved]) != base:
+        return None
+    return Path(resolved) if os.path.isdir(resolved) else None
+
+
+def firefox_profiles(root):
+    """The profiles a Firefox-family profiles.ini lists -- only those inside root.
+
+    profiles.ini allows absolute paths, and a browser can rewrite its own
+    profiles.ini, so an entry pointing anywhere else is refused: accepting it
+    would let one browser aim this at any directory the account owns."""
+    text = read_capped(root / "profiles.ini")
+    if text is None:
+        return []
+    found = set()
+    section, path, relative = "", None, "1"
+
+    def flush():
+        if section.startswith("Profile") and path:
+            candidate = root / path if relative == "1" else Path(path)
+            directory = contained_directory(root, candidate)
+            if directory is not None:
+                found.add(directory)
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        header = re.fullmatch(r"\[(.+)\]", stripped)
+        if header:
+            flush()
+            section, path, relative = header.group(1), None, "1"
+            continue
+        key, separator, value = stripped.partition("=")
+        if separator and key.strip() == "Path":
+            path = value.strip()
+        elif separator and key.strip() == "IsRelative":
+            relative = value.strip()
+    flush()
+    return sorted(found)
+
+
+def vivaldi_profiles(root):
+    """Vivaldi profile directories named in Local State, inside root."""
+    text = read_capped(root / "Local State")
+    if text is None:
+        return []
+    try:
+        cache = json.loads(text).get("profile", {}).get("info_cache", {})
+    except (ValueError, AttributeError):
+        return []
+    names = set(cache) if isinstance(cache, dict) else set()
+    names.add("Default")
+    found = []
+    for name in sorted(names):
+        if not re.fullmatch(r"[A-Za-z0-9 _-]+", str(name)):
+            continue
+        directory = contained_directory(root, root / name)
+        if directory is not None and (directory / "Preferences").is_file():
+            found.append(directory)
+    return found
+
+
+def detected_browsers():
+    """(name, family, profiles) for every supported browser with a profile here."""
+    home = Path.home()
+    detected = []
+    for name, roots in FIREFOX_FAMILY:
+        profiles = sorted({profile for relative in roots
+                           for profile in firefox_profiles(home / relative)})
+        if profiles:
+            detected.append((name, "firefox", profiles))
+    profiles = sorted({profile for relative in VIVALDI_ROOTS
+                       for profile in vivaldi_profiles(home / relative)})
+    if profiles:
+        detected.append(("Vivaldi", "vivaldi", profiles))
+    return detected
+
+
+def browser_palette(data_dir):
+    """The palette the sync wrote for this framework, or None if it is unusable."""
+    text = read_capped(data_dir / "browsers-theme.json")
+    try:
+        palette = json.loads(text) if text is not None else None
+    except ValueError:
+        return None
+    if not isinstance(palette, dict) or palette.get("mode") not in ("dark", "light"):
+        return None
+    if not all(HEX_COLOR.fullmatch(str(palette.get(key, ""))) for key in BROWSER_COLORS):
+        return None
+    return palette
+
+
+def firefox_stylesheet(palette):
+    """userChrome CSS for the Firefox family. Only variables Firefox 155 and
+    Floorp 156 both define and read are set, checked against their own
+    stylesheets; Zen's are from its theme file, and derive the rest of its
+    palette from the two it is given."""
+    colors = {key: palette[key] for key in BROWSER_COLORS}
+    return f"""/* Generated by Hyprchroma from the active Omarchy palette. */
+
+:root {{
+  color-scheme: {palette["mode"]} !important;
+}}
+
+:root, :root * {{
+  --hyprchroma-bg: {colors["background"]};
+  --hyprchroma-bg-dark: {colors["dark_background"]};
+  --hyprchroma-fg: {colors["foreground"]};
+  --hyprchroma-accent: {colors["accent"]};
+  --hyprchroma-selection: {colors["selection"]};
+  --hyprchroma-selection-fg: {colors["selection_foreground"]};
+  --hyprchroma-muted: {colors["muted"]};
+
+  --toolbox-background-color: var(--hyprchroma-bg-dark) !important;
+  --toolbox-background-color-inactive: var(--hyprchroma-bg-dark) !important;
+  --toolbox-text-color: var(--hyprchroma-fg) !important;
+  --toolbox-text-color-inactive: color-mix(in srgb, var(--hyprchroma-fg) 70%, var(--hyprchroma-bg-dark)) !important;
+  --lwt-accent-color: var(--hyprchroma-bg-dark) !important;
+  --lwt-accent-color-inactive: var(--hyprchroma-bg-dark) !important;
+  --lwt-text-color: var(--hyprchroma-fg) !important;
+
+  --toolbar-background-color: var(--hyprchroma-bg) !important;
+  --toolbar-text-color: var(--hyprchroma-fg) !important;
+  --toolbarbutton-icon-fill: var(--hyprchroma-fg) !important;
+  --toolbarbutton-background-color-hover: color-mix(in srgb, var(--hyprchroma-fg) 10%, transparent) !important;
+  --toolbarbutton-background-color-active: color-mix(in srgb, var(--hyprchroma-fg) 16%, transparent) !important;
+
+  --tab-background-color-selected: var(--hyprchroma-bg) !important;
+  --tab-selected-textcolor: var(--hyprchroma-fg) !important;
+  --tab-selected-outline-color: transparent !important;
+  --tab-loading-fill: var(--hyprchroma-accent) !important;
+
+  --toolbar-field-background-color: color-mix(in srgb, var(--hyprchroma-fg) 6%, var(--hyprchroma-bg)) !important;
+  --toolbar-field-text-color: var(--hyprchroma-fg) !important;
+  --toolbar-field-border-color: transparent !important;
+  --toolbar-field-background-color-focus: var(--hyprchroma-bg) !important;
+  --toolbar-field-text-color-focus: var(--hyprchroma-fg) !important;
+  --toolbar-field-border-color-focus: var(--hyprchroma-accent) !important;
+
+  --urlbarview-background-color-selected: var(--hyprchroma-selection) !important;
+  --urlbarview-text-color-selected: var(--hyprchroma-selection-fg) !important;
+  --urlbarview-background-color-hover: color-mix(in srgb, var(--hyprchroma-fg) 8%, var(--hyprchroma-bg)) !important;
+  --urlbarview-separator-color: var(--hyprchroma-muted) !important;
+  --urlbarview-text-color-secondary: color-mix(in srgb, var(--hyprchroma-fg) 65%, var(--hyprchroma-bg)) !important;
+
+  --panel-background-color: var(--hyprchroma-bg) !important;
+  --panel-text-color: var(--hyprchroma-fg) !important;
+  --panel-border-color: var(--hyprchroma-muted) !important;
+  --background-color-box: var(--hyprchroma-bg) !important;
+  --text-color: var(--hyprchroma-fg) !important;
+
+  --sidebar-background-color: var(--hyprchroma-bg-dark) !important;
+  --sidebar-text-color: var(--hyprchroma-fg) !important;
+  --sidebar-border-color: var(--hyprchroma-muted) !important;
+
+  --chrome-content-separator-color: var(--hyprchroma-bg-dark) !important;
+  --tabpanel-background-color: var(--hyprchroma-bg) !important;
+  --newtab-background-color: var(--hyprchroma-bg) !important;
+
+  --focus-outline-color: var(--hyprchroma-accent) !important;
+  --color-accent-primary: var(--hyprchroma-accent) !important;
+  --color-accent-primary-hover: color-mix(in srgb, var(--hyprchroma-accent) 85%, var(--hyprchroma-fg)) !important;
+  --color-accent-primary-active: color-mix(in srgb, var(--hyprchroma-accent) 70%, var(--hyprchroma-fg)) !important;
+  --button-text-color-primary: var(--hyprchroma-bg) !important;
+
+  /* Zen colors its text from these two, which its gradient generator sets
+     inline -- for a light theme when no workspace has a gradient of its own. */
+  --toolbox-textcolor: var(--hyprchroma-fg) !important;
+  --toolbar-color-scheme: {palette["mode"]} !important;
+  --zen-primary-color: var(--hyprchroma-accent) !important;
+  --zen-branding-bg: var(--hyprchroma-bg-dark) !important;
+  --zen-branding-bg-reverse: var(--hyprchroma-fg) !important;
+  --zen-main-browser-background: var(--hyprchroma-bg-dark) !important;
+  --zen-main-browser-background-toolbar: var(--hyprchroma-bg-dark) !important;
+  --zen-dialog-background: var(--hyprchroma-bg) !important;
+  --zen-urlbar-background: color-mix(in srgb, var(--hyprchroma-fg) 6%, var(--hyprchroma-bg)) !important;
+}}
+
+#navigator-toolbox {{
+  background-color: var(--hyprchroma-bg-dark) !important;
+}}
+"""
+
+
+def stylesheets_pref_on(profile):
+    text = read_capped(profile / "prefs.js") or ""
+    return any(STYLESHEETS_PREF.fullmatch(line) for line in text.splitlines())
+
+
+def profile_holders(profile):
+    """PIDs with this Gecko profile's lock file open: the browser running on it.
+
+    The lock symlink beside it is left behind by a crash or a kill, so it says
+    nothing about whether anything is running; an open descriptor does. Found
+    by path rather than by PID, because a Flatpak browser's PID in the symlink
+    is the one from inside its sandbox."""
+    lock = os.path.realpath(profile / ".parentlock")
+    holders = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = os.listdir(entry / "fd")
+        except OSError:
+            continue  # gone, or not this account's to read
+        for descriptor in descriptors:
+            try:
+                if os.readlink(entry / "fd" / descriptor) == lock:
+                    holders.append(int(entry.name))
+                    break
+            except OSError:
+                continue
+    return holders
+
+
+def prepend_line(path, line):
+    """Put line first in a file of the user's and change nothing else in it, so
+    strip_line can hand back exactly the bytes that were there.
+
+    A linked userChrome.css or user.js -- a dotfiles checkout, arkenfox -- is
+    refused rather than replaced by a copy, which would quietly cut the user's
+    link, or written through, which would follow it wherever it pointed."""
+    if path.is_symlink():
+        raise OSError(f"refusing a linked file: {path}")
+    text = read_capped(path)
+    if text is None:
+        if path.exists():
+            raise OSError(f"cannot read {path}")
+        atomic_write(path, line + "\n", 0o644)
+    elif not any(row.strip() == line for row in text.splitlines()):
+        atomic_write(path, line + "\n" + text)
+
+
+def strip_line(path, line, keep_empty):
+    """Take out exactly what prepend_line put in. An emptied file is removed
+    unless it was there, empty, beforehand."""
+    if path.is_symlink():
+        return  # prepend_line never wrote to it
+    text = read_capped(path)
+    if text is None:
+        return
+    rows = text.splitlines(keepends=True)
+    kept = "".join(row for row in rows if row.strip() != line)
+    if len(kept) == len(text):
+        return
+    if kept or keep_empty:
+        atomic_write(path, kept)
+    else:
+        safe_unlink(path)
+
+
+def sync_firefox_profile(profile, stylesheet, manifest):
+    """Theme one Firefox-family profile. The stylesheet is ours outright; the
+    other two files are the user's and get one line each."""
+    userchrome, userjs = profile / "chrome" / "userChrome.css", profile / "user.js"
+    linked = [path.name for path in (userchrome, userjs) if path.is_symlink()]
+    if linked:
+        # Checked before anything is written, so a refused profile is untouched.
+        raise OSError(f"refusing linked files in {profile}: {', '.join(linked)}")
+    captured = manifest.setdefault("browsers", {}).setdefault("firefox", {})
+    if str(profile) not in captured:
+        captured[str(profile)] = {
+            "stylesheetsPref": stylesheets_pref_on(profile),
+            "existed": {"chrome": (profile / "chrome").exists(),
+                        "userChrome": userchrome.exists(), "userJs": userjs.exists()},
+        }
+    path = profile / "chrome" / BROWSER_STYLESHEET
+    if read_capped(path) != stylesheet:
+        atomic_write(path, stylesheet, 0o644)
+    prepend_line(userchrome, USERCHROME_IMPORT)
+    prepend_line(userjs, USERJS_PREF)
+
+
+def revert_firefox_profile(profile, manifest):
+    """Un-theme one profile. Returns the PIDs still to wait for, if any."""
+    captured = manifest.get("browsers", {}).get("firefox", {})
+    record = captured.get(str(profile))
+    existed = record.get("existed", {}) if isinstance(record, dict) else {}
+    safe_unlink(profile / "chrome" / BROWSER_STYLESHEET)
+    strip_line(profile / "chrome" / "userChrome.css", USERCHROME_IMPORT,
+               keep_empty=existed.get("userChrome") is True)
+    strip_line(profile / "user.js", USERJS_PREF, keep_empty=existed.get("userJs") is True)
+    # The chrome folder too, if this is what put it there and nothing is left.
+    if existed.get("chrome") is not True:
+        try:
+            descriptor = open_dir(profile)
+            try:
+                os.rmdir("chrome", dir_fd=descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            pass
+    if not isinstance(record, dict):
+        return []  # never themed by this, so the preference is the user's own
+    if not record.get("stylesheetsPref") and stylesheets_pref_on(profile):
+        # The browser writes prefs.js out whole from memory when it exits, so an
+        # edit made while it runs is undone; it waits for the browser to close.
+        holders = profile_holders(profile)
+        if holders:
+            return holders
+        text = None if (profile / "prefs.js").is_symlink() else read_capped(profile / "prefs.js")
+        if text is not None:
+            kept = [line for line in text.splitlines(keepends=True)
+                    if not STYLESHEETS_PREF.fullmatch(line)]
+            atomic_write(profile / "prefs.js", "".join(kept))
+    captured.pop(str(profile), None)
+    return []
+
+
+def pref_get(prefs, keys):
+    node = prefs
+    for key in keys:
+        if not isinstance(node, dict) or key not in node:
+            return False, None
+        node = node[key]
+    return True, node
+
+
+def pref_set(prefs, keys, value):
+    node = prefs
+    for key in keys[:-1]:
+        if not isinstance(node.get(key), dict):
+            node[key] = {}
+        node = node[key]
+    node[keys[-1]] = value
+
+
+def pref_delete(prefs, keys):
+    """Remove a preference and any dictionary it leaves empty, so a value that
+    was never set goes back to being unset rather than becoming an empty one."""
+    chain, node = [prefs], prefs
+    for key in keys[:-1]:
+        node = node.get(key) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            return
+        chain.append(node)
+    node.pop(keys[-1], None)
+    for depth in range(len(keys) - 1, 0, -1):
+        if chain[depth]:
+            break
+        chain[depth - 1].pop(keys[depth - 1], None)
+
+
+def load_vivaldi_prefs(profile):
+    if (profile / "Preferences").is_symlink():
+        return None  # rewritten in place, it would stop being the user's link
+    text = read_capped(profile / "Preferences")
+    try:
+        prefs = json.loads(text) if text is not None else None
+    except ValueError:
+        return None
+    return prefs if isinstance(prefs, dict) else None
+
+
+def write_vivaldi_prefs(profile, prefs):
+    path = profile / "Preferences"
+    text = json.dumps(prefs, separators=(",", ":"), ensure_ascii=False)
+    # Escaped as Chromium's own writer escapes them ("<" can only occur inside
+    # a string), to stay close to what Vivaldi writes. What a revert guarantees
+    # is the values, types included: Vivaldi rewrites this file in its own
+    # formatting every time it runs, down to how it prints a large double.
+    text = text.replace("<", "\\u003C").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    atomic_write(path, text, stat.S_IMODE(path.stat().st_mode))
+
+
+def vivaldi_theme(palette):
+    # The accent is the active tab against a window of the darker shade -- the
+    # pairing the Firefox stylesheet makes, and what Omarchy seeds Chromium with.
+    # An accent of the darker shade too left the active tab indistinguishable.
+    return {
+        "engineVersion": 1, "version": 1,
+        "id": VIVALDI_THEME_ID, "name": "Omarchy",
+        "colorBg": palette["background"],
+        "colorFg": palette["foreground"],
+        "colorAccentBg": palette["background"],
+        "colorHighlightBg": palette["accent"],
+        "colorWindowBg": palette["dark_background"],
+        "accentFromPage": False, "accentOnWindow": False, "accentSaturationLimit": 1,
+        "preferSystemAccent": False, "colorPosition": "unified",
+        "alpha": 1, "blur": 0, "contrast": 0, "radius": 8,
+        "backgroundImage": "", "backgroundPosition": "stretch", "backgroundSource": "",
+        "transparencyTabBar": False, "transparencyTabs": False, "url": "",
+    }
+
+
+def sync_vivaldi_profile(profile, palette, manifest):
+    prefs = load_vivaldi_prefs(profile)
+    if prefs is None:
+        return False
+    # What this profile had before this ever changed it, captured once, so a
+    # revert puts back the user's own theme choice rather than Vivaldi's default.
+    captured = manifest.setdefault("browsers", {}).setdefault("vivaldi", {})
+    if str(profile) not in captured:
+        has_current, current = pref_get(prefs, VIVALDI_CURRENT)
+        has_os, os_schedule = pref_get(prefs, VIVALDI_OS_SCHEDULE)
+        captured[str(profile)] = {"hasCurrent": has_current, "current": current,
+                                  "hasOS": has_os, "os": os_schedule}
+    before = json.dumps(prefs, sort_keys=True)
+    _, themes = pref_get(prefs, VIVALDI_USER_THEMES)
+    themes = [theme for theme in (themes if isinstance(themes, list) else [])
+              if not (isinstance(theme, dict) and theme.get("id") == VIVALDI_THEME_ID)]
+    pref_set(prefs, VIVALDI_USER_THEMES, themes + [vivaldi_theme(palette)])
+    pref_set(prefs, VIVALDI_CURRENT, VIVALDI_THEME_ID)
+    pref_set(prefs, VIVALDI_OS_SCHEDULE, {"light": VIVALDI_THEME_ID, "dark": VIVALDI_THEME_ID})
+    if json.dumps(prefs, sort_keys=True) != before:
+        write_vivaldi_prefs(profile, prefs)
+    return True
+
+
+def is_ours(value):
+    """A theme preference that still selects this framework's theme."""
+    if isinstance(value, dict):
+        return VIVALDI_THEME_ID in value.values()
+    return value == VIVALDI_THEME_ID
+
+
+def revert_vivaldi_profile(profile, manifest):
+    prefs = load_vivaldi_prefs(profile)
+    if prefs is None:
+        return
+    before = json.dumps(prefs, sort_keys=True)
+    _, themes = pref_get(prefs, VIVALDI_USER_THEMES)
+    if isinstance(themes, list):
+        kept = [theme for theme in themes
+                if not (isinstance(theme, dict) and theme.get("id") == VIVALDI_THEME_ID)]
+        if kept:
+            pref_set(prefs, VIVALDI_USER_THEMES, kept)
+        else:
+            pref_delete(prefs, VIVALDI_USER_THEMES)
+    record = manifest.get("browsers", {}).get("vivaldi", {}).get(str(profile), {})
+    for keys, has, value in ((VIVALDI_CURRENT, "hasCurrent", "current"),
+                             (VIVALDI_OS_SCHEDULE, "hasOS", "os")):
+        # Only a value that still selects ours is taken back. One that does not
+        # is the user's -- picked since, or already restored by an earlier
+        # revert -- and a revert repeated with no capture left must not clear it.
+        if not is_ours(pref_get(prefs, keys)[1]):
+            continue
+        if record.get(has) and not is_ours(record.get(value)):
+            pref_set(prefs, keys, record[value])
+        else:
+            # Never set before this, or captured from an earlier run of this
+            # very framework: either way the user's value is Vivaldi's default.
+            pref_delete(prefs, keys)
+    if json.dumps(prefs, sort_keys=True) != before:
+        write_vivaldi_prefs(profile, prefs)
+    # Reverted: whatever the profile holds from here on is the user's, so a
+    # later switch back on captures that rather than this stale record.
+    manifest.get("browsers", {}).get("vivaldi", {}).pop(str(profile), None)
+
+
+def vivaldi_pids():
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit() and window_executable(entry.name) in VIVALDI_EXECUTABLES:
+            pids.append(int(entry.name))
+    return pids
+
+
+def browsers_enabled(state_dir):
+    """Opt-in: only a recorded true is on, read the way the shell reads it."""
+    settings = read_json(Path(state_dir) / "settings.json")
+    frameworks = settings.get("frameworks") if isinstance(settings, dict) else None
+    return isinstance(frameworks, dict) and frameworks.get("browsers") is True
+
+
+def spawn_browsers_waiter(state_dir, data_dir):
+    """Wait for Vivaldi to exit in the background, then finish the job."""
+    subprocess.Popen(
+        [os.path.realpath(__file__), "--state-dir", str(state_dir),
+         "--data-dir", str(data_dir), "watch-browsers-exit"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def sync_browsers(state_dir, data_dir, revert=False, spawn=True):
+    """Theme -- or, with revert, un-theme -- every supported browser found.
+
+    Returns (state, summary, pids still to wait for). The Firefox family reads
+    its stylesheet at start, so its files can be written while it runs; the
+    change shows at the next start. Vivaldi rewrites its Preferences on exit, so
+    a running Vivaldi is left for a background wait rather than written under
+    it, and so is the one prefs.js line a Firefox-family revert takes out."""
+    detected = detected_browsers()
+    if not detected:
+        return "not-installed", "no supported browser found", []
+    palette = None if revert else browser_palette(data_dir)
+    if not revert and palette is None:
+        raise SystemExit("hyprchroma-state: no usable browser palette")
+    manifest_path = state_dir / "original" / "manifest.json"
+    manifest = read_json(manifest_path)
+    captured_before = json.dumps(manifest, sort_keys=True)
+    stylesheet = firefox_stylesheet(palette) if palette else None
+    done, pending, waits, skipped = [], [], [], set()
+    for name, family, profiles in detected:
+        held = vivaldi_pids() if family == "vivaldi" else []
+        if not held:
+            for profile in profiles:
+                try:
+                    if family == "firefox":
+                        if revert:
+                            held += revert_firefox_profile(profile, manifest)
+                        else:
+                            sync_firefox_profile(profile, stylesheet, manifest)
+                    elif revert:
+                        revert_vivaldi_profile(profile, manifest)
+                    elif not sync_vivaldi_profile(profile, palette, manifest):
+                        skipped.add(name)
+                except OSError:
+                    # One profile this will not write into -- a linked user.js,
+                    # a folder that fails the ownership checks -- is no reason
+                    # to leave every other browser as it was.
+                    skipped.add(name)
+        if held:
+            pending.append(name)
+            waits.extend(held)
+        else:
+            done.append(name)
+    # Records emptied by a revert go too, rather than lingering as {}.
+    captured = manifest.get("browsers")
+    if isinstance(captured, dict):
+        for family in [key for key, value in captured.items() if not value]:
+            captured.pop(family)
+        if not captured:
+            manifest.pop("browsers")
+    if json.dumps(manifest, sort_keys=True) != captured_before:
+        write_json(manifest_path, manifest)
+    if pending and spawn:
+        spawn_browsers_waiter(state_dir, data_dir)
+    summary = ", ".join(done)
+    if pending:
+        summary += ("; " if summary else "") + " and ".join(pending) + " when it closes"
+    if skipped:
+        summary += ("; " if summary else "") + "could not safely change a profile of " + \
+            " or ".join(sorted(skipped))
+    return ("pending" if pending else "synchronized"), summary, sorted(set(waits))
+
+
+def record_browsers_state(state_dir, value):
+    """Keep status.json's answer current when the change lands after the sync
+    that recorded "pending" -- both for the panel, and because "pending" is what
+    has the service retry this."""
+    path = state_dir / "status.json"
+    status = read_json(path)
+    if status and status.get("browsers") != value:
+        status["browsers"] = value
+        write_json(path, status)
+
+
+def resume_browsers(state_dir, data_dir):
+    """Finish browser work a waiter did not: theme it if still pending while on,
+    or revert what is still captured while off. Nothing outstanding, no change."""
+    enabled = browsers_enabled(state_dir)
+    if enabled:
+        outstanding = read_json(state_dir / "status.json").get("browsers") == "pending"
+    else:
+        # A capture is dropped only once its revert finishes, so one still here
+        # with the framework off is a revert that outlived its waiter.
+        outstanding = "browsers" in read_json(state_dir / "original" / "manifest.json")
+    if not outstanding:
+        return None
+    state, _, _ = sync_browsers(state_dir, data_dir, revert=not enabled)
+    record_browsers_state(state_dir, state if enabled else "disabled")
+    return state
+
+
+class sync_lock:
+    """The sync script's own lock, held around a waiter's write so it cannot
+    interleave with a sync's read-modify-write of the manifest and status.
+    Bounded: a sync takes seconds, and one that hangs must not strand this."""
+
+    def __init__(self, state_dir, seconds=60):
+        self.path = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir) / "hyprchroma-sync.lock"
+        self.seconds = seconds
+        self.handle = None
+
+    def __enter__(self):
+        prepare_lock(self.path)
+        self.handle = open(self.path, "r")
+        deadline = time.monotonic() + self.seconds
+        while True:
+            try:
+                fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError:
+                if time.monotonic() > deadline:
+                    return self  # proceed unserialized rather than never
+                time.sleep(0.25)
+
+    def __exit__(self, *_):
+        self.handle.close()
+
+
+def watch_browsers_exit(state_dir, data_dir):
+    """Finish whatever sync_browsers had to leave until a browser exited.
+
+    Which of the two -- theme or revert -- is decided when it exits, from the
+    setting as it is then, so a toggle flipped while waiting is honored rather
+    than the one that started the wait."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+    prepare_lock(runtime / "hyprchroma-browsers-wait.lock")
+    lock = open(runtime / "hyprchroma-browsers-wait.lock", "r")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return  # another waiter already holds this
+    for _ in range(WATCH_ROUNDS):
+        # Trying first, and waiting on exactly what that still found running,
+        # means a browser reopened in the moment before a write is waited for
+        # again rather than written under.
+        with sync_lock(state_dir):
+            revert = not browsers_enabled(state_dir)
+            state, _, pids = sync_browsers(state_dir, data_dir, revert=revert, spawn=False)
+            if state != "pending":
+                record_browsers_state(state_dir, "disabled" if revert else state)
+                return
+        descriptors = []
+        for pid in pids:
+            try:
+                descriptors.append(os.pidfd_open(pid))
+            except OSError:
+                continue
+        if not descriptors:
+            continue
+        poller = select.poll()
+        for descriptor in descriptors:
+            poller.register(descriptor, select.POLLIN)
+        remaining = set(descriptors)
+        while remaining:
+            events = poller.poll(WATCH_TIMEOUT_SECONDS * 1000)
+            if not events:
+                return
+            for descriptor, _ in events:
+                poller.unregister(descriptor)
+                os.close(descriptor)
+                remaining.discard(descriptor)
 
 
 def snapshot(state_dir, data_dir, target):
@@ -1915,7 +2599,13 @@ def restore(state_dir, data_dir, targets, mode):
     snapshot_dir = state_dir / "original"
     manifest = read_json(snapshot_dir / "manifest.json")
     for target in targets:
-        if mode == "stock":
+        if target == "browsers":
+            # Omarchy themes none of these, so stock and captured are the same.
+            state, summary, _ = sync_browsers(state_dir, data_dir, revert=True)
+            if state == "pending":
+                print(f"Hyprchroma: browsers reverted: {summary}")
+                continue
+        elif mode == "stock":
             restore_target_stock(snapshot_dir, manifest, target)
         else:
             restore_target_captured(snapshot_dir, manifest, target)
@@ -1948,6 +2638,12 @@ def main():
     rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
     sub.add_parser("clear-app-color-schemes")
     sub.add_parser("sync-flatpak")
+    browsers = sub.add_parser("sync-browsers")
+    browsers.add_argument("--revert", action="store_true")
+    browsers.add_argument("--resume", action="store_true",
+                          help="only finish work a waiter left outstanding")
+    sub.add_parser("watch-browsers-exit")
+    sub.add_parser("detect-browsers")
     stale = sub.add_parser("report-stale-apps")
     stale.add_argument("--written-now", action="store_true",
                        help="the palette was just written, so judge staleness against now")
@@ -1985,7 +2681,7 @@ def main():
 
     # write-file and prepare-lock act on one named path; everything else
     # works on the state and data trees and must be given both.
-    if args.command not in ("write-file", "prepare-lock",
+    if args.command not in ("write-file", "prepare-lock", "detect-browsers",
                             "ensure-import", "remove-import") and (
             args.state_dir is None or args.data_dir is None):
         parser.error("--state-dir and --data-dir are required for " + args.command)
@@ -2003,6 +2699,18 @@ def main():
         clear_app_color_schemes(args.state_dir)
     elif args.command == "sync-flatpak":
         print(sync_flatpak(args.state_dir, args.data_dir))
+    elif args.command == "sync-browsers":
+        if args.resume:
+            resume_browsers(args.state_dir, args.data_dir)
+            return
+        state, summary, _ = sync_browsers(args.state_dir, args.data_dir, revert=args.revert)
+        print(state)
+        print(summary)
+    elif args.command == "watch-browsers-exit":
+        watch_browsers_exit(args.state_dir, args.data_dir)
+    elif args.command == "detect-browsers":
+        for name, _, _ in detected_browsers():
+            print(name)
     elif args.command == "report-stale-apps":
         if args.written_now:
             since = int(time.time()) - LAUNCH_GRACE_SECONDS

@@ -166,6 +166,26 @@ FLATPAK
   if ask "Include Flatpak apps"; then want_flatpak=yes; fi
 fi
 
+# The same helper the service uses decides what is installed, so this asks
+# about exactly the browsers it would theme -- and not at all if there are none.
+want_browsers=no
+found_browsers=$("$here/lib/hyprchroma-state" detect-browsers 2>/dev/null | paste -sd, - | sed 's/,/, /g')
+if [[ -n $found_browsers ]]; then
+  head2 "Additional browsers"
+  cat <<BROWSERS
+Omarchy colors Chromium, Chrome, Brave, Edge and Helium itself, but not these,
+which Hyprchroma found here: $found_browsers.
+
+Hyprchroma can color their tabs, toolbar and menus too. It adds a stylesheet
+to each Firefox-family profile, and a custom theme to Vivaldi, which it writes
+once Vivaldi is closed. Each browser picks it up on its next start.
+
+It changes files inside your browser profiles, which is why it is off unless
+you say so. Switching it off removes exactly what it added.
+BROWSERS
+  if ask "Include additional browsers"; then want_browsers=yes; fi
+fi
+
 # --- what those choices need ----------------------------------------------
 head2 "Dependencies"
 missing=()
@@ -308,6 +328,11 @@ if [[ $want_flatpak == yes ]]; then
   hyprchroma framework restore flatpak
 else
   hyprchroma framework remove flatpak
+fi
+if [[ $want_browsers == yes ]]; then
+  hyprchroma framework restore browsers
+else
+  hyprchroma framework remove browsers
 fi
 
 systemctl --user enable --now hyprchromad.service ||

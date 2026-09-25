@@ -121,6 +121,7 @@ target_key() {
     dark-reader) printf 'darkReader' ;;
     pear) printf 'pear' ;;
     flatpak) printf 'flatpak' ;;
+    browsers) printf 'browsers' ;;
     *) return 1 ;;
   esac
 }
@@ -270,7 +271,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.6.1"
+    echo "hyprchroma 2.7.0"
     exit 0
     ;;
 esac
@@ -292,11 +293,12 @@ for argument in "$@"; do
     --target=dark-reader) target="dark-reader" ;;
     --target=pear) target="pear" ;;
     --target=flatpak) target="flatpak" ;;
+    --target=browsers) target="browsers" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
     -h|--help)
       cat <<'USAGE'
-Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak]
+Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
                   [--set-enabled=true|false] [--force] [--quiet] [--notify]
        hyprchroma daemon           watch for changes and keep everything in step
        hyprchroma install-hooks    place the Omarchy theme and font hooks
@@ -419,8 +421,9 @@ target_enabled() {
   key=$(target_key "$1") || return 1
   # Flatpak is opt-in: it widens what every sandboxed app may read, which is
   # not something an install, an upgrade or a different toggle may do on the
-  # user's behalf. Only a recorded true turns it on.
-  [[ $key == flatpak ]] && default=false
+  # user's behalf. Additional browsers is too: it writes into browser profiles.
+  # Only a recorded true turns either on.
+  [[ $key == flatpak || $key == browsers ]] && default=false
   # Not "// true": jq's alternative operator treats false as empty as well as
   # null, so a framework switched off read back as enabled and every sync
   # re-applied the theme the toggle had just reverted. Only a missing key means
@@ -466,6 +469,7 @@ for name in ("gtk", "qtKde", "darkReader", "pear"):
     frameworks.setdefault(name, True)
 # Opt-in, unlike the rest: see target_enabled.
 frameworks.setdefault("flatpak", False)
+frameworks.setdefault("browsers", False)
 frameworks[key] = enabled
 atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
@@ -600,6 +604,7 @@ if [[ -f "$STATUS_FILE" ]]; then
   previous_fingerprint=$(jq -r '.fingerprint // ""' "$STATUS_FILE" 2>/dev/null || true)
   dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
   qt_kde_state=$(jq -r '.qtKde // ""' "$STATUS_FILE" 2>/dev/null || true)
+  browsers_previous=$(jq -r '.browsers // ""' "$STATUS_FILE" 2>/dev/null || true)
 fi
 qt_kde_state=${qt_kde_state:-}
 
@@ -620,6 +625,26 @@ fi
 if (( ! force )); then
   "$HYPRCHROMA_LIB/hyprchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+fi
+
+# Browser work that had to wait for a browser to close can outlive the waiter
+# left to finish it: a browser kept open all afternoon. It is retried here, on
+# its own, rather than by letting "pending" defeat the unchanged-state check
+# below as Qt/KDE's "deferred" does -- that would run every framework on every
+# window event for as long as the browser stayed open. Both checks are jq, so a
+# quiet window event starts nothing new; a capture outlives only an unfinished
+# revert, so one found while switched off is exactly that.
+browsers_resume=0
+if [[ $target == "all" ]]; then
+  if target_enabled browsers; then
+    if (( ! force )) && [[ ${browsers_previous:-} == "pending" ]]; then browsers_resume=1; fi
+  elif jq -e 'has("browsers")' "$STATE_DIR/original/manifest.json" >/dev/null 2>&1; then
+    browsers_resume=1
+  fi
+fi
+if (( browsers_resume )); then
+  "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+    sync-browsers --resume >/dev/null 2>&1 || true
 fi
 
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
@@ -741,6 +766,24 @@ if [[ ( $target == "all" || $target == "flatpak" ) ]] && target_enabled flatpak;
     fail "Flatpak synchronization failed"
 fi
 
+browsers_state="disabled"
+browsers_summary=""
+if [[ ( $target == "all" || $target == "browsers" ) ]] && target_enabled browsers; then
+  log "synchronizing additional browsers"
+  # Every value here already passed color()'s #rrggbb check; the helper checks
+  # again when it reads the file back, since the file sits in the data dir.
+  printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
+    "$mode" "$background" "$dark_background" "$foreground" "$accent" \
+    "$selection" "$selection_foreground" "$muted" |
+    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/browsers-theme.json" --mode 644
+  browsers_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-browsers) ||
+    fail "Additional browsers synchronization failed"
+  browsers_state=${browsers_output%%$'\n'*}
+  browsers_summary=${browsers_output#*$'\n'}
+  if [[ -n $browsers_summary ]]; then log "additional browsers: $browsers_summary"; fi
+fi
+
 dark_reader_exit=0
 # Hyprchroma installs nothing into the browser. If Dark Reader is not there,
 # say so once -- there is nothing to theme until the user installs it.
@@ -845,7 +888,7 @@ PY
   fi
 fi
 
-python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" <<'PY'
+python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -877,7 +920,7 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state = sys.argv[4:]
+pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state = sys.argv[4:]
 if target in {"all", "gtk"}:
     state["gtk"] = "synchronized"
 if target in {"all", "qt-kde"}:
@@ -888,6 +931,8 @@ if target in {"all", "pear"}:
     state["pearDesktop"] = pear_state
 if target in {"all", "flatpak"}:
     state["flatpak"] = flatpak_state
+if target in {"all", "browsers"}:
+    state["browsers"] = browsers_state
 if target in {"all", "dark-reader"} and dark_reader_exit == "0":
     state["darkReader"] = "synchronized"
 atomic_write(path, json.dumps(state, indent=2) + "\n")
@@ -912,6 +957,11 @@ else
                not-installed) message="Flatpak is not installed" ;;
                *) message="Flatpak apps are switched off" ;;
              esac ;;
+    browsers) case "$browsers_state" in
+                synchronized|pending) message="Additional browsers: $browsers_summary; each picks it up on its next start" ;;
+                not-installed) message="No additional browser found to theme" ;;
+                *) message="Additional browsers are switched off" ;;
+              esac ;;
     *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
        # every time, which was invisible only while no toggle could really
        # disable anything.
@@ -923,6 +973,7 @@ else
        target_enabled dark-reader && synced+=("Dark Reader")
        target_enabled pear && (( pear_installed )) && synced+=("Pear Desktop")
        [[ $flatpak_state == "synchronized" ]] && synced+=("Flatpak apps")
+       [[ $browsers_state == "synchronized" || $browsers_state == "pending" ]] && synced+=("additional browsers")
        if (( ${#synced[@]} == 0 )); then
          message="nothing to synchronize; every framework is switched off"
        else

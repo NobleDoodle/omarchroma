@@ -80,6 +80,7 @@ BarWidget {
     function toggleDarkReader(): void { root.toggleFramework("dark-reader") }
     function togglePear(): void { root.toggleFramework("pear") }
     function toggleFlatpak(): void { root.toggleFramework("flatpak") }
+    function toggleBrowsers(): void { root.toggleFramework("browsers") }
     function refresh(): void { root.refreshEnabled() }
   }
 
