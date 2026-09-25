@@ -173,7 +173,7 @@ found_browsers=$("$here/lib/hyprchroma-state" detect-browsers 2>/dev/null | past
 if [[ -n $found_browsers ]]; then
   head2 "Additional browsers"
   cat <<BROWSERS
-Omarchy colors Chromium, Chrome, Brave, Edge and Helium itself, but not these,
+Omarchy colors Chromium, Chrome, Brave and Helium itself, but not these,
 which Hyprchroma found here: $found_browsers.
 
 Hyprchroma can color their tabs, toolbar and menus too. It adds a stylesheet

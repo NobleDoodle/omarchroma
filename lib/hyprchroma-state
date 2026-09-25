@@ -758,7 +758,7 @@ def remove_flatpak_grants(filesystems, unset_env):
 
 # ------------------------------------------------------------ browsers --
 # Browsers whose own interface -- tabs, toolbar, menus -- Omarchy leaves alone.
-# Chromium, Chrome, Edge, Brave and Helium are not here: Omarchy themes those
+# Chromium, Chrome, Brave and Helium are not here: Omarchy themes those
 # itself with a managed BrowserThemeColor policy, which would override anything
 # set in a profile. Each root is where that browser keeps its profiles, native
 # and Flatpak; only roots that actually hold profiles are touched.

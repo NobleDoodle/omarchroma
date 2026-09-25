@@ -79,7 +79,7 @@ With the bar widget:
   Flatpak app you have (see below). Each app picks it up on its next launch.
 * Additional browsers is off until you switch it on: it writes into your browser
   profiles (see below). Each browser picks it up on its next start. Chromium,
-  Chrome, Brave, Edge and Helium are not included; Omarchy colors those itself.
+  Chrome, Brave and Helium are not included; Omarchy colors those itself.
 
 ## Palette Sources
 

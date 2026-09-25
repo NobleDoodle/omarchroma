@@ -309,13 +309,6 @@ BROWSERS = {
         "executables": ["vivaldi-bin", "vivaldi-stable"],
         "policy": "/etc/chromium/policies/managed",
     },
-    "microsoft-edge.desktop": {
-        "name": "Microsoft Edge",
-        "family": "chromium",
-        "config": "~/.config/microsoft-edge",
-        "executables": ["msedge", "microsoft-edge"],
-        "policy": "/etc/opt/edge/policies/managed",
-    },
     "firefox.desktop": {
         "name": "Firefox",
         "family": "firefox",
