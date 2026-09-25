@@ -2,7 +2,9 @@
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 python3 - "$REPO" <<'PY'
 import json, pathlib, tempfile, types
+import os
 import sys
+os.environ["HOME"] = tempfile.mkdtemp()  # never the real home, whatever is stubbed
 st = types.ModuleType("st")
 src = pathlib.Path(f"{sys.argv[1]}/lib/hyprchroma-dark-reader").read_text() \
     .replace('if __name__ == "__main__":\n    raise SystemExit(main())','')

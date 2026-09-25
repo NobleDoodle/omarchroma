@@ -9,7 +9,19 @@ code(){ sed -e 's/[[:space:]]*#.*//' "$@"; }
 countcode(){ local pat=$1; shift; code "$@" | grep -ohE "$pat" | wc -l; }
 P=lib/hyprchroma-palette
 
-T=$(mktemp -d "$HOME/palette-XXXXXX"); trap 'rm -rf "$T"' EXIT
+# A throwaway home with a synthetic Omarchy theme in it, which the real
+# omarchy command then answers against: the capture checks below then test the
+# resolver, not whichever theme this machine happens to be on -- and seeding
+# never lands in a real home, even when this suite is run on its own.
+ROOT=$(mktemp -d); trap 'rm -rf "$ROOT"' EXIT
+export HOME=$ROOT
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+source "$REPO/tests/lib-omarchy.sh"
+seed_omarchy_theme
+# Omarchy's own themes leave this out and derive it, which is the point of
+# the "derives rather than stores" check.
+sed -i '/^selection_foreground = /d' "$HOME/.local/state/omarchy/current/theme/colors.toml"
+T=$(mktemp -d "$HOME/palette-XXXXXX")
 mkdir -p "$T/hyprchroma"
 
 # --- the file format is complete and self-describing ----------------------

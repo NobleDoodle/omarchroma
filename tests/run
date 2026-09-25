@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Every suite, plus a parse check on the QML. Exit non-zero if anything fails.
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." || exit 1
+
+# Every suite runs against a throwaway home. One that forgot to isolate itself
+# -- the Dark Reader lock suite, whose stubs stopped matching when the helper
+# went from one browser to all of them -- otherwise reaches the real one: it
+# wrote its test theme into a real Firefox profile's Dark Reader settings.
+sandbox=$(mktemp -d)
+trap 'rm -rf "$sandbox"' EXIT
+export HOME=$sandbox/home XDG_RUNTIME_DIR=$sandbox/run
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+mkdir -p "$HOME" "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 total=0; failed=0
 for suite in tests/test-*.sh; do
   output=$(bash "$suite" 2>&1)
@@ -9,6 +19,15 @@ for suite in tests/test-*.sh; do
   if (( bad )); then
     printf '%-26s %2d failed\n' "$(basename "$suite")" "$bad"
     grep FAIL <<<"$output" | sed 's/^/    /'
+  fi
+  # A suite that crashes partway is not a passing one either: every check after
+  # the crash silently never ran. Two did exactly that when the Dark Reader
+  # helper went from one browser to all of them -- each still printed a PASS or
+  # two first, so the rule below could not see it.
+  if grep -q 'Traceback (most recent call last)' <<<"$output"; then
+    failed=$((failed + 1))
+    printf '%-26s crashed partway\n' "$(basename "$suite")"
+    grep -E '^[A-Za-z]+(Error|Exception)' <<<"$output" | head -2 | sed 's/^/    /'
   fi
   # A suite that asserts nothing is not a passing suite. Four of these once
   # crashed on an unexpanded path and contributed zero for several releases,
