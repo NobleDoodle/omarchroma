@@ -45,7 +45,7 @@ dr = types.ModuleType("dr")
 exec(compile(src.replace('if __name__ == "__main__":\n    raise SystemExit(main())', ''),
              "dr", "exec"), dr.__dict__)
 # Whatever runs on this machine is not the point here.
-dr.browser_running = lambda executables: False
+dr.target_pids = lambda target: []
 
 def chk(name, got, want):
     print(f"  {'PASS' if got == want else 'FAIL'} {name}"
@@ -55,6 +55,7 @@ def chk(name, got, want):
 config = home / ".config/chromium"
 profile = config / "Default"
 (profile / "Extensions" / dr.CHROMIUM_STORE_EXTENSION_ID).mkdir(parents=True)
+(profile / "Preferences").write_text("{}")
 (config / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
 own = profile / "Sync Extension Settings" / dr.CHROMIUM_STORE_EXTENSION_ID
 
@@ -63,23 +64,53 @@ victim = profile / "Local Extension Settings" / ("p" * 32)
 victim.mkdir(parents=True)
 with plyvel.DB(str(victim), create_if_missing=True) as db:
     db.put(b"vault", b"untouched")
+def victim_state():
+    with plyvel.DB(str(victim)) as db:
+        return db.get(b"vault"), db.get(b"enabled")
 
 state = home / "state"
 (state / "original").mkdir(parents=True)
 snap = state / "original/dark-reader.json"
-def snapshot(database, entries):
-    snap.write_text(json.dumps({"browser": "Chromium", "browserDesktop": "chromium.desktop",
-                                "browserFamily": "chromium", "browserProfile": str(profile),
-                                "database": str(database), "entries": entries}))
 enc = lambda value: {"existed": True, "value": __import__("base64").b64encode(value).decode()}
+key = str(profile.resolve())
 
-snapshot(victim, {"vault": enc(b"attacker"), "enabled": enc(b"true")})
+# The format the single-browser releases wrote, which named its own database.
+snap.write_text(json.dumps({"browser": "Chromium", "browserDesktop": "chromium.desktop",
+                            "browserFamily": "chromium", "browserProfile": str(profile),
+                            "database": str(victim),
+                            "entries": {"vault": enc(b"attacker"), "enabled": enc(b"true")}}))
 chk("a snapshot naming another database is refused", dr.restore_theme(state, None), 1)
-with plyvel.DB(str(victim)) as db:
-    chk("...and that database is left exactly as it was",
-        (db.get(b"vault"), db.get(b"enabled")), (b"untouched", None))
+chk("...that database is left exactly as it was", victim_state(), (b"untouched", None))
+chk("...and the profile's own settings are not written either", own.exists(), False)
 
-snapshot(own, {"enabled": enc(b"false"), "vault": enc(b"attacker")})
+# The same format, honest: it migrates to the profile's own database.
+snap.write_text(json.dumps({"browser": "Chromium", "browserDesktop": "chromium.desktop",
+                            "browserFamily": "chromium", "browserProfile": str(profile),
+                            "database": str(own),
+                            "entries": {"vault": enc(b"attacker"), "enabled": enc(b"true")}}))
+chk("an honest capture in that format still restores", dr.restore_theme(state, None), 0)
+with plyvel.DB(str(own)) as db:
+    chk("...into the profile's own Dark Reader, derived from disk", db.get(b"enabled"), b"true")
+    chk("...taking only the keys a capture takes", db.get(b"vault"), None)
+
+# A capture keyed by a location that is not a Dark Reader profile at all.
+snap.write_text(json.dumps({"version": 2, "targets": {str(victim): {
+    "browser": "chromium", "captured": True, "extensionId": "p" * 32,
+    "entries": {"vault": enc(b"attacker")}}}}))
+chk("a capture for somewhere no profile is found restores nothing", dr.restore_theme(state, None), 0)
+chk("...and the database there is left exactly as it was", victim_state(), (b"untouched", None))
+
+# Captured from another Dark Reader than the one in the profile now.
+snap.write_text(json.dumps({"version": 2, "targets": {key: {
+    "browser": "chromium", "captured": True, "extensionId": "a" * 32,
+    "entries": {"enabled": enc(b"false")}}}}))
+chk("a capture from another extension id in the profile is refused", dr.restore_theme(state, None), 1)
+with plyvel.DB(str(own)) as db:
+    chk("...and the profile's own settings are not touched", db.get(b"enabled"), b"true")
+
+snap.write_text(json.dumps({"version": 2, "targets": {key: {
+    "browser": "chromium", "captured": True, "extensionId": dr.CHROMIUM_STORE_EXTENSION_ID,
+    "entries": {"enabled": enc(b"false"), "vault": enc(b"attacker")}}}}))
 chk("the browser's own database is restored", dr.restore_theme(state, None), 0)
 with plyvel.DB(str(own)) as db:
     chk("...its managed keys put back", db.get(b"enabled"), b"false")

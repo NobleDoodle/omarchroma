@@ -8,9 +8,9 @@ import re
 import secrets
 import sqlite3
 import stat
-import subprocess
 import sys
 import tempfile
+from collections import namedtuple
 from pathlib import Path
 
 
@@ -284,145 +284,6 @@ MANAGED_KEYS = [
     b"presets",
 ]
 
-BROWSERS = {
-    "helium.desktop": {
-        "name": "Helium",
-        "family": "chromium",
-        "config": "~/.config/net.imput.helium",
-        "executables": ["helium", "helium-browser"],
-        "policy": "/etc/chromium/policies/managed",
-    },
-    "chromium.desktop": {
-        "name": "Chromium",
-        "family": "chromium",
-        "config": "~/.config/chromium",
-        "executables": ["chromium"],
-        "policy": "/etc/chromium/policies/managed",
-    },
-    "google-chrome.desktop": {
-        "name": "Google Chrome",
-        "family": "chromium",
-        "config": "~/.config/google-chrome",
-        "executables": ["chrome", "google-chrome"],
-        "policy": "/etc/opt/chrome/policies/managed",
-    },
-    "google-chrome-stable.desktop": {
-        "name": "Google Chrome",
-        "family": "chromium",
-        "config": "~/.config/google-chrome",
-        "executables": ["chrome", "google-chrome-stable"],
-        "policy": "/etc/opt/chrome/policies/managed",
-    },
-    "brave-browser.desktop": {
-        "name": "Brave",
-        "family": "chromium",
-        "config": "~/.config/BraveSoftware/Brave-Browser",
-        "executables": ["brave", "brave-browser"],
-        "policy": "/etc/brave/policies/managed",
-    },
-    "vivaldi-stable.desktop": {
-        "name": "Vivaldi",
-        "family": "chromium",
-        "config": "~/.config/vivaldi",
-        "executables": ["vivaldi-bin", "vivaldi-stable"],
-        "policy": "/etc/chromium/policies/managed",
-    },
-    "firefox.desktop": {
-        "name": "Firefox",
-        "family": "firefox",
-        "config": "~/.mozilla/firefox",
-        "executables": ["firefox"],
-        "policy": "/usr/lib/firefox/distribution/policies.json",
-    },
-    "firefox-developer-edition.desktop": {
-        "name": "Firefox Developer Edition",
-        "family": "firefox",
-        "config": "~/.mozilla/firefox",
-        "executables": ["firefox-developer-edition", "firefox"],
-        "policy": "/usr/lib/firefox-developer-edition/distribution/policies.json",
-    },
-    "librewolf.desktop": {
-        "name": "LibreWolf",
-        "family": "firefox",
-        "config": "~/.librewolf",
-        "executables": ["librewolf"],
-        "policy": "/usr/lib/librewolf/distribution/policies.json",
-    },
-    "waterfox.desktop": {
-        "name": "Waterfox",
-        "family": "firefox",
-        "config": "~/.waterfox",
-        "executables": ["waterfox"],
-        "policy": "/usr/lib/waterfox/distribution/policies.json",
-    },
-    "floorp.desktop": {
-        "name": "Floorp",
-        "family": "firefox",
-        "config": "~/.floorp",
-        "executables": ["floorp"],
-        "policy": "/usr/lib/floorp/distribution/policies.json",
-    },
-    "zen-browser.desktop": {
-        "name": "Zen Browser",
-        "family": "firefox",
-        "config": "~/.zen",
-        "executables": ["zen", "zen-browser"],
-        "policy": "/usr/lib/zen-browser/distribution/policies.json",
-    },
-    "zen.desktop": {
-        "name": "Zen Browser",
-        "family": "firefox",
-        "config": "~/.zen",
-        "executables": ["zen", "zen-browser"],
-        "policy": "/usr/lib/zen-browser/distribution/policies.json",
-    },
-}
-
-
-def command_output(command: list[str]) -> str:
-    result = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
-
-
-def default_desktop() -> str:
-    return (
-        command_output(["xdg-settings", "get", "default-web-browser"])
-        or command_output(["xdg-mime", "query", "default", "x-scheme-handler/https"])
-    )
-
-
-def browser_info() -> dict:
-    desktop = default_desktop()
-    info = BROWSERS.get(desktop)
-    if info is None:
-        return {
-            "supported": False,
-            "desktop": desktop,
-            "name": desktop or "No default browser",
-        }
-
-    result = dict(info)
-    result["supported"] = True
-    result["desktop"] = desktop
-    result["config"] = str(Path(result["config"]).expanduser())
-    profile = active_profile(result)
-    result["profile"] = str(profile)
-    result["darkReaderInstalled"] = dark_reader_installed(result, profile)
-    return result
-
-
-def dark_reader_installed(info: dict, profile: Path) -> bool:
-    if info["family"] == "firefox":
-        return firefox_dark_reader_installed(profile)
-    return chromium_dark_reader_installed(profile)
-
-
 # A Chromium extension id is exactly 32 characters drawn from a-p: it is a
 # hex digest re-encoded into that alphabet. Anything else is not an id.
 CHROMIUM_ID_PATTERN = re.compile(r"\A[a-p]{32}\Z")
@@ -580,255 +441,17 @@ def chromium_dark_reader_installed(profile: Path) -> bool:
     return bool(entry) and any(key in entry for key in ("manifest", "path"))
 
 
-
-
 def firefox_dark_reader_installed(profile: Path) -> bool:
-    extensions_json = profile / "extensions.json"
-    if extensions_json.is_file():
-        try:
-            addons = read_capped_json(extensions_json).get("addons", [])
-            for addon in addons:
-                if addon.get("id") == FIREFOX_EXTENSION_ID and addon.get("active", True):
-                    return True
-        except (json.JSONDecodeError, OSError):
-            pass
+    addons = read_capped_json(profile / "extensions.json").get("addons")
+    for addon in addons if isinstance(addons, list) else []:
+        if (isinstance(addon, dict) and addon.get("id") == FIREFOX_EXTENSION_ID
+                and addon.get("active", True)):
+            return True
     if (profile / "extensions" / f"{FIREFOX_EXTENSION_ID}.xpi").exists():
         return True
     if (profile / "browser-extension-data" / FIREFOX_EXTENSION_ID).exists():
         return True
     return False
-
-
-def active_profile(info: dict) -> Path:
-    config_dir = Path(info["config"])
-    if info["family"] == "firefox":
-        return firefox_active_profile(config_dir)
-    return chromium_active_profile(config_dir)
-
-
-def chromium_active_profile(config_dir: Path) -> Path:
-    local_state = config_dir / "Local State"
-    if local_state.is_file():
-        try:
-            state = read_capped_json(local_state)
-            profile = state.get("profile", {}).get("last_used")
-            if profile and "/" not in profile and profile not in {".", ".."}:
-                return config_dir / profile
-        except (json.JSONDecodeError, OSError):
-            pass
-    return config_dir / "Default"
-
-
-def firefox_active_profile(config_dir: Path) -> Path:
-    profiles_ini = config_dir / "profiles.ini"
-    if not profiles_ini.is_file():
-        return config_dir
-
-    parser = configparser.ConfigParser()
-    try:
-        parser.read(profiles_ini)
-    except configparser.Error:
-        return config_dir
-
-    install_default = None
-    for section in parser.sections():
-        if section.startswith("Install") and parser.has_option(section, "Default"):
-            install_default = parser.get(section, "Default")
-            break
-
-    selected = None
-    for section in parser.sections():
-        if not section.startswith("Profile"):
-            continue
-        path = parser.get(section, "Path", fallback="")
-        if not path:
-            continue
-        if install_default and path == install_default:
-            selected = section
-            break
-        if parser.get(section, "Default", fallback="0") == "1":
-            selected = section
-
-    if selected is None:
-        for section in parser.sections():
-            if section.startswith("Profile") and parser.has_option(section, "Path"):
-                selected = section
-                break
-    if selected is None:
-        return config_dir
-
-    path = Path(parser.get(selected, "Path"))
-    if parser.get(selected, "IsRelative", fallback="1") == "1":
-        return config_dir / path
-    return path
-
-
-def browser_running(executables: list[str]) -> bool:
-    expected = set(executables)
-    proc = Path("/proc")
-    for entry in proc.iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            executable = (entry / "exe").resolve().name
-        except OSError:
-            continue
-        if executable in expected:
-            return True
-    return False
-
-
-def write_status(path: Path | None, **values: object) -> None:
-    if path is None:
-        return
-    current = read_capped_json(path)
-    current.update(values)
-    atomic_write(path, json.dumps(current, indent=2) + "\n")
-
-
-def snapshot_settings(db, snapshot_file: Path, info: dict, profile: Path, database: Path) -> None:
-    if snapshot_file.exists():
-        return
-    entries = {}
-    for key in MANAGED_KEYS:
-        value = db.get(key)
-        entries[key.decode()] = {
-            "existed": value is not None,
-            "value": base64.b64encode(value).decode() if value is not None else "",
-        }
-    atomic_write(snapshot_file, json.dumps({
-        "browser": info["name"],
-        "browserDesktop": info["desktop"],
-        "browserFamily": "chromium",
-        "browserProfile": str(profile),
-        "database": str(database),
-        "entries": entries,
-    }, indent=2) + "\n")
-
-
-def snapshot_database(snapshot: dict) -> Path | None:
-    """The one database a snapshot may be restored into: the one apply_theme
-    would write for the browser the snapshot names, derived now.
-
-    The snapshot records a location too, but it lives in the state directory,
-    and anything able to write there could point it at any database this
-    account owns -- another extension's storage included -- and have restore
-    write whatever keys it liked into it. So the recorded location is only
-    ever compared against this, never used."""
-    desktop = snapshot.get("browserDesktop", "")
-    known = BROWSERS.get(desktop)
-    if known is None:
-        return None
-    info = dict(known, desktop=desktop, config=str(Path(known["config"]).expanduser()))
-    profile = active_profile(info)
-    if info["family"] == "firefox":
-        return profile / "storage-sync-v2.sqlite"
-    return profile / "Sync Extension Settings" / chromium_extension_id(profile)
-
-
-def restore_theme(state_dir: Path, status_file: Path | None) -> int:
-    snapshot_file = state_dir / "original/dark-reader.json"
-    if not snapshot_file.exists():
-        print("Hyprchroma: no Dark Reader snapshot found")
-        return 0
-
-    snapshot = read_capped_json(snapshot_file)
-    if not snapshot:
-        print("Hyprchroma: the Dark Reader snapshot is unreadable; not restoring it",
-              file=sys.stderr)
-        return 1
-    info = BROWSERS.get(snapshot.get("browserDesktop", ""))
-    if info and browser_running(info["executables"]):
-        write_status(status_file, darkReader="restore-pending-browser-exit")
-        print(f"Hyprchroma: close {info['name']} before restoring Dark Reader")
-        return 2
-
-    database = snapshot_database(snapshot)
-    if database is None or str(database) != snapshot.get("database"):
-        # A profile switched since the capture reads the same as a tampered
-        # snapshot here, and both are refused: writing to the wrong database
-        # is the one outcome worse than not restoring.
-        print("Hyprchroma: the Dark Reader snapshot names a database other than "
-              "its browser's own; not restoring it", file=sys.stderr)
-        return 1
-    snapshot["database"] = str(database)
-
-    family = snapshot.get("browserFamily", "chromium")
-    if family == "firefox":
-        restore_firefox_theme(snapshot)
-    else:
-        try:
-            import plyvel
-        except ImportError:
-            print("Hyprchroma: python-plyvel is required", file=sys.stderr)
-            return 1
-
-        os.close(open_dir(database, create=True))
-        with plyvel.DB(str(database), create_if_missing=True) as db:
-            for key, entry in snapshot.get("entries", {}).items():
-                raw_key = key.encode()
-                # Only the keys a capture takes, so a snapshot cannot be used
-                # to write or delete anything else in the extension's storage.
-                if raw_key not in MANAGED_KEYS or not isinstance(entry, dict):
-                    continue
-                if entry.get("existed"):
-                    db.put(raw_key, base64.b64decode(entry["value"]))
-                else:
-                    db.delete(raw_key)
-
-    write_status(status_file, darkReader="restored")
-    print(f"Hyprchroma: Dark Reader restored for {snapshot.get('browser', 'browser')}")
-    return 0
-
-
-def reset_theme(status_file: Path | None) -> int:
-    """Return Dark Reader to its factory defaults.
-
-    Deliberately independent of the snapshot. On a machine that has had
-    Hyprchroma before, the recorded "original" is itself Hyprchroma output --
-    its theme and every builtIn entry in customThemes already name the generated
-    scheme -- so replaying it reinstates a previous generation rather than
-    stock. Deleting the managed keys instead lets Dark Reader rebuild its own
-    defaults, and costs nothing user-made: Hyprchroma only ever overwrote the
-    built-in schemes in place."""
-    info = browser_info()
-    if not info["supported"]:
-        print(f"Hyprchroma: {info['name']} is not a supported browser")
-        return 0
-    if browser_running(info["executables"]):
-        write_status(status_file, darkReader="reset-pending-browser-exit")
-        print(f"Hyprchroma: close {info['name']} before resetting Dark Reader")
-        return 2
-
-    profile = active_profile(info)
-    if info["family"] == "firefox":
-        database = profile / "storage-sync-v2.sqlite"
-        if database.exists():
-            with sqlite3.connect(database) as connection:
-                connection.execute(
-                    "DELETE FROM storage_sync_data WHERE ext_id = ?",
-                    (FIREFOX_EXTENSION_ID,),
-                )
-                connection.commit()
-    else:
-        try:
-            import plyvel
-        except ImportError:
-            print("Hyprchroma: python-plyvel is required", file=sys.stderr)
-            return 1
-
-        database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
-        if not database.is_dir():
-            print("Hyprchroma: no Dark Reader settings to reset")
-            write_status(status_file, darkReader="reset")
-            return 0
-        with plyvel.DB(str(database), create_if_missing=False) as db:
-            for key in MANAGED_KEYS:
-                db.delete(key)
-
-    write_status(status_file, darkReader="reset")
-    print(f"Hyprchroma: Dark Reader reset to defaults for {info['name']}")
-    return 0
 
 
 def firefox_storage_data(database: Path) -> dict:
@@ -841,7 +464,11 @@ def firefox_storage_data(database: Path) -> dict:
         ).fetchone()
     if row is None or row[0] is None:
         return {}
-    return json.loads(row[0])
+    data = json.loads(row[0])
+    if not isinstance(data, dict):
+        # Overwriting it would destroy whatever it is; this profile is skipped.
+        raise ValueError("Dark Reader's stored settings are not an object")
+    return data
 
 
 def write_firefox_storage_data(database: Path, data: dict) -> None:
@@ -864,157 +491,345 @@ def write_firefox_storage_data(database: Path, data: dict) -> None:
         connection.commit()
 
 
-def snapshot_firefox_settings(snapshot_file: Path, info: dict, profile: Path, database: Path) -> None:
-    if snapshot_file.exists():
-        return
-    data = firefox_storage_data(database)
-    atomic_write(snapshot_file, json.dumps({
-        "browser": info["name"],
-        "browserDesktop": info["desktop"],
-        "browserFamily": "firefox",
-        "browserProfile": str(profile),
-        "database": str(database),
-        "dataExisted": bool(data),
-        "data": data,
-    }, indent=2) + "\n")
+# -- browsers -----------------------------------------------------------------
+# Dark Reader is themed wherever it is installed: every profile of every
+# browser below that has it, not only the default browser's current profile.
+# Each root is where that browser keeps its profiles. Native installs only: a
+# Flatpak browser's profile lies inside its sandbox, and the LevelDB and SQLite
+# libraries these databases are written through open paths by name, following
+# any link the sandbox plants. "desktops" maps a snapshot from the releases
+# that themed only the default browser, which named it by desktop file.
+BROWSERS = {
+    "helium": {"name": "Helium", "family": "chromium",
+               "roots": ["~/.config/net.imput.helium"],
+               "executables": ["helium", "helium-browser"],
+               "desktops": ["helium.desktop"]},
+    "chromium": {"name": "Chromium", "family": "chromium",
+                 "roots": ["~/.config/chromium"],
+                 "executables": ["chromium"],
+                 "desktops": ["chromium.desktop"]},
+    "google-chrome": {"name": "Google Chrome", "family": "chromium",
+                      "roots": ["~/.config/google-chrome"],
+                      "executables": ["chrome", "google-chrome", "google-chrome-stable"],
+                      "desktops": ["google-chrome.desktop", "google-chrome-stable.desktop"]},
+    "brave": {"name": "Brave", "family": "chromium",
+              "roots": ["~/.config/BraveSoftware/Brave-Browser"],
+              "executables": ["brave", "brave-browser"],
+              "desktops": ["brave-browser.desktop"]},
+    "vivaldi": {"name": "Vivaldi", "family": "chromium",
+                "roots": ["~/.config/vivaldi"],
+                "executables": ["vivaldi-bin", "vivaldi-stable"],
+                "desktops": ["vivaldi-stable.desktop"]},
+    # Developer Edition keeps its profiles beside Firefox's, in one profiles.ini.
+    "firefox": {"name": "Firefox", "family": "firefox",
+                "roots": ["~/.mozilla/firefox", "~/.config/mozilla/firefox"],
+                "desktops": ["firefox.desktop", "firefox-developer-edition.desktop"]},
+    "librewolf": {"name": "LibreWolf", "family": "firefox",
+                  "roots": ["~/.librewolf", "~/.config/librewolf", "~/.config/librewolf/librewolf"],
+                  "desktops": ["librewolf.desktop"]},
+    "waterfox": {"name": "Waterfox", "family": "firefox",
+                 "roots": ["~/.waterfox", "~/.config/waterfox"],
+                 "desktops": ["waterfox.desktop"]},
+    "floorp": {"name": "Floorp", "family": "firefox",
+               "roots": ["~/.floorp", "~/.config/floorp"],
+               "desktops": ["floorp.desktop"]},
+    "zen": {"name": "Zen Browser", "family": "firefox",
+            "roots": ["~/.zen", "~/.config/zen"],
+            "desktops": ["zen-browser.desktop", "zen.desktop"]},
+}
+
+Target = namedtuple("Target", "browser name family profile")
+
+# A profile folder name as Chromium makes them: Default, Profile 1, and so on.
+# It becomes a path component, so nothing that could leave the root passes.
+PROFILE_NAME = re.compile(r"\A[A-Za-z0-9 _-]+\Z")
 
 
-def restore_firefox_theme(snapshot: dict) -> None:
-    database = Path(snapshot["database"])
-    if snapshot.get("dataExisted"):
-        write_firefox_storage_data(database, snapshot.get("data", {}))
-        return
-    if not database.exists():
-        return
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            "DELETE FROM storage_sync_data WHERE ext_id = ?",
-            (FIREFOX_EXTENSION_ID,),
-        )
-        connection.commit()
+def contained(root: Path, candidate: Path) -> Path | None:
+    """candidate resolved, if it is a directory strictly inside root resolved."""
+    base = os.path.realpath(root)
+    resolved = os.path.realpath(candidate)
+    if resolved == base or os.path.commonpath([base, resolved]) != base:
+        return None
+    return Path(resolved) if os.path.isdir(resolved) else None
 
 
-def apply_firefox_theme(info: dict, theme: dict, state_dir: Path | None, status_file: Path | None) -> int:
-    profile = active_profile(info)
-    database = profile / "storage-sync-v2.sqlite"
-    if state_dir is not None:
-        snapshot_firefox_settings(state_dir / "original/dark-reader.json", info, profile, database)
-
-    data = firefox_storage_data(database)
-    data["theme"] = theme
-    data["enabled"] = True
-    data["enabledByDefault"] = True
-    data["detectDarkTheme"] = False
-    data["automation"] = {"enabled": False, "mode": "", "behavior": "OnOff"}
-    data["changeBrowserTheme"] = False
-    data["syncSettings"] = True
-
-    palette_keys = {
-        "darkColorScheme",
-        "darkSchemeBackgroundColor",
-        "darkSchemeTextColor",
-        "scrollbarColor",
-        "selectionColor",
-        "styleSystemControls",
-        "stylesheet",
-    }
-    for key in ("customThemes", "presets"):
-        entries = data.get(key)
-        if not isinstance(entries, list):
+def chromium_profiles(root: Path) -> list[Path]:
+    """The profiles a Chromium-family Local State names, and Default."""
+    state = read_capped_json(root / "Local State").get("profile")
+    state = state if isinstance(state, dict) else {}
+    cache = state.get("info_cache")
+    names = set(cache) if isinstance(cache, dict) else set()
+    names.add("Default")
+    if isinstance(state.get("last_used"), str):
+        names.add(state["last_used"])
+    found = []
+    for name in sorted(names, key=str):
+        if not PROFILE_NAME.match(str(name)):
             continue
-        for entry in entries:
-            entry_theme = entry.get("theme")
-            if isinstance(entry_theme, dict):
-                entry_theme.update({
-                    name: theme[name]
-                    for name in palette_keys
-                    if name in theme
-                })
-    write_firefox_storage_data(database, data)
-
-    write_status(
-        status_file,
-        browser=info["name"],
-        browserDesktop=info["desktop"],
-        browserProfile=str(profile),
-        darkReader="synchronized",
-    )
-    print(f"Hyprchroma: Dark Reader synchronized for {info['name']}")
-    return 0
+        directory = contained(root, root / name)
+        if directory is not None and (directory / "Preferences").is_file():
+            found.append(directory)
+    return found
 
 
-def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | None) -> int:
-    info = browser_info()
-    if not info["supported"]:
-        write_status(
-            status_file,
-            browser=info["name"],
-            browserDesktop=info["desktop"],
-            darkReader="unsupported",
-        )
-        print(f"Hyprchroma: {info['name']} is not a supported browser")
-        return 0
+def firefox_profiles(root: Path) -> list[Path]:
+    """Every profile a Firefox-family profiles.ini lists, inside root.
 
-    if browser_running(info["executables"]):
-        write_status(
-            status_file,
-            browser=info["name"],
-            browserDesktop=info["desktop"],
-            darkReader="pending-browser-exit",
-        )
-        print(f"Hyprchroma: Dark Reader update queued until {info['name']} exits")
-        return 2
+    profiles.ini allows absolute paths. One pointing outside the browser's own
+    folder is refused rather than followed, so the file cannot aim this at any
+    other directory the account owns."""
+    text = read_capped(root / "profiles.ini")
+    if text is None:
+        return []
+    parser = configparser.RawConfigParser(strict=False)
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return []
+    found = set()
+    for section in parser.sections():
+        if not section.startswith("Profile"):
+            continue
+        path = parser.get(section, "Path", fallback="")
+        if not path:
+            continue
+        relative = parser.get(section, "IsRelative", fallback="1") == "1"
+        directory = contained(root, root / path if relative else Path(path))
+        if directory is not None:
+            found.add(directory)
+    return sorted(found)
 
-    theme = read_capped_json(theme_file)
-    if not theme:
-        print(f"Hyprchroma: cannot read the Dark Reader theme {theme_file}", file=sys.stderr)
-        return 1
-    if info["family"] == "firefox":
-        return apply_firefox_theme(info, theme, state_dir, status_file)
 
+def dark_reader_targets() -> list:
+    """Every profile of every supported browser that has Dark Reader installed."""
+    targets, seen = [], set()
+    for browser, spec in BROWSERS.items():
+        family = spec["family"]
+        for root in spec["roots"]:
+            root = Path(root).expanduser()
+            profiles = firefox_profiles(root) if family == "firefox" else chromium_profiles(root)
+            for profile in profiles:
+                if profile in seen:
+                    continue
+                seen.add(profile)
+                installed = (firefox_dark_reader_installed(profile) if family == "firefox"
+                             else chromium_dark_reader_installed(profile))
+                if installed:
+                    targets.append(Target(browser, spec["name"], family, profile))
+    return targets
+
+
+def running_executable(pid: str) -> str | None:
+    """The executable a process runs. A browser updated while it is open keeps
+    running the replaced binary, which the kernel reports with " (deleted)"
+    after its path -- the same browser, and still holding its databases."""
+    try:
+        executable = os.path.basename(os.readlink(f"/proc/{pid}/exe"))
+    except OSError:
+        return None
+    return executable.removesuffix(" (deleted)")
+
+
+def pids_running(executables) -> list[int]:
+    expected = set(executables)
+    return [int(entry.name) for entry in Path("/proc").iterdir()
+            if entry.name.isdigit() and running_executable(entry.name) in expected]
+
+
+def profile_holders(profile: Path) -> list[int]:
+    """PIDs with a Gecko profile's lock file open: the browser running on it.
+
+    Exact where a process name is not -- Zen runs as zen-bin, say -- and the
+    lock symlink beside it, left by a crash or a kill, says nothing about
+    whether anything is running."""
+    lock = os.path.join(os.path.realpath(profile), ".parentlock")
+    holders = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = os.listdir(entry / "fd")
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                if os.readlink(entry / "fd" / descriptor) == lock:
+                    holders.append(int(entry.name))
+                    break
+            except OSError:
+                continue
+    return holders
+
+
+def target_pids(target) -> list[int]:
+    """The processes that must exit before this profile's Dark Reader storage
+    is written: the browser holding the profile. A Chromium profile's browser
+    is known by its executable, a Gecko one by the profile lock it holds."""
+    if target.family == "firefox":
+        return profile_holders(target.profile)
+    return pids_running(BROWSERS[target.browser]["executables"])
+
+
+def browser_info() -> dict:
+    """Where Dark Reader is, and which of those browsers are open now."""
+    targets = dark_reader_targets()
+    running = {}
+    for target in targets:
+        pids = target_pids(target)
+        if pids:
+            running.setdefault(target.name, set()).update(pids)
+    return {
+        "installed": bool(targets),
+        "browsers": sorted({target.name for target in targets}),
+        "profiles": [str(target.profile) for target in targets],
+        # Changes when Dark Reader appears in, or goes from, any profile, so a
+        # sync that would otherwise find nothing changed themes it at once.
+        "signature": ";".join(f"{target.browser}:{target.profile}" for target in targets),
+        "running": [{"name": name, "pids": sorted(pids)} for name, pids in sorted(running.items())],
+    }
+
+
+# -- captures -------------------------------------------------------------------
+SNAPSHOT = Path("original") / "dark-reader.json"
+
+
+def empty_snapshot() -> dict:
+    return {"version": 2, "targets": {}}
+
+
+def load_snapshot(state_dir: Path) -> dict | None:
+    """The captures, one per profile, or None if the file is unusable.
+
+    Keyed by profile and only ever looked up for a profile found on disk: a
+    capture never supplies where it is restored to. The state directory is
+    writable by anything running as this account, and a capture that named its
+    own database could aim a restore at any database the account owns --
+    another extension's storage included."""
+    path = state_dir / SNAPSHOT
+    if not path.exists():
+        return empty_snapshot()
+    snapshot = read_capped_json(path)
+    if snapshot.get("version") == 2 and isinstance(snapshot.get("targets"), dict):
+        return snapshot
+    if "browserDesktop" in snapshot:
+        # Written back at once: the migration reads status.json's single-browser
+        # fields, and the next status write drops them, so a migration kept
+        # only in memory would lose a browser themed without a capture.
+        snapshot = migrate_snapshot(snapshot, state_dir)
+        save_snapshot(state_dir, snapshot)
+        return snapshot
+    return None
+
+
+def save_snapshot(state_dir: Path, snapshot: dict) -> None:
+    atomic_write(state_dir / SNAPSHOT, json.dumps(snapshot, indent=2) + "\n")
+
+
+def browser_for_desktop(desktop: object) -> str | None:
+    return next((browser for browser, spec in BROWSERS.items()
+                 if desktop in spec["desktops"]), None)
+
+
+def migrate_snapshot(legacy: dict, state_dir: Path) -> dict:
+    """A capture from the releases that themed only the default browser.
+
+    Those captured the first default browser and never another: one themed
+    after the default changed has no original to go back to. status.json names
+    the last one themed, and if that is not the captured one it is recorded as
+    themed without a capture, which a revert resets to Dark Reader's own
+    defaults rather than leaving it themed for good."""
+    snapshot = empty_snapshot()
+    browser = browser_for_desktop(legacy.get("browserDesktop"))
+    profile = legacy.get("browserProfile")
+    if browser and isinstance(profile, str):
+        entry = {"browser": browser, "captured": True}
+        if BROWSERS[browser]["family"] == "firefox":
+            entry.update(dataExisted=bool(legacy.get("dataExisted")), data=legacy.get("data") or {})
+        else:
+            entry.update(extensionId=Path(str(legacy.get("database", ""))).name,
+                         entries=legacy.get("entries") or {})
+        snapshot["targets"][os.path.realpath(profile)] = entry
+    status = read_capped_json(state_dir / "status.json")
+    themed, browser = status.get("browserProfile"), browser_for_desktop(status.get("browserDesktop"))
+    if (browser and isinstance(themed, str) and status.get("darkReader") == "synchronized"
+            and os.path.realpath(themed) not in snapshot["targets"]):
+        snapshot["targets"][os.path.realpath(themed)] = {"browser": browser, "captured": False}
+    return snapshot
+
+
+def write_status(path: Path | None, **values: object) -> None:
+    if path is None:
+        return
+    current = read_capped_json(path)
+    # Written by the releases that themed one browser; the lists replace them.
+    for legacy in ("browser", "browserDesktop", "browserProfile"):
+        current.pop(legacy, None)
+    current.update(values)
+    atomic_write(path, json.dumps(current, indent=2) + "\n")
+
+
+# -- one profile -------------------------------------------------------------------
+class Pending(Exception):
+    """The browser took the database between the check and the write."""
+
+
+def load_plyvel():
     try:
         import plyvel
     except ImportError:
-        print("Hyprchroma: python-plyvel is required", file=sys.stderr)
-        return 1
+        raise RuntimeError("python-plyvel is required for Chromium browsers") from None
+    return plyvel
 
-    profile = active_profile(info)
-    database = profile / "Sync Extension Settings" / chromium_extension_id(profile)
-    os.close(open_dir(database, create=True))
-    palette_keys = {
-        "darkColorScheme",
-        "darkSchemeBackgroundColor",
-        "darkSchemeTextColor",
-        "scrollbarColor",
-        "selectionColor",
-        "styleSystemControls",
-        "stylesheet",
-    }
 
+def chromium_database(target) -> tuple[str, Path]:
+    extension = chromium_extension_id(target.profile)
+    return extension, target.profile / "Sync Extension Settings" / extension
+
+
+def open_leveldb(plyvel, database: Path, create: bool):
     try:
-        db = plyvel.DB(str(database), create_if_missing=True)
+        return plyvel.DB(str(database), create_if_missing=create)
     except plyvel.IOError as error:
-        # browser_running() above is not atomic with this open: the browser can
-        # start, or grab the lock for its own writes, in the gap between that
-        # check and here. Rather than assume the check is enough and let the
-        # database's own lock surface as an unhandled crash, this treats the
-        # one error LevelDB raises for "someone else has it open" exactly like
-        # the check finding the browser already running -- everything else
-        # from a corrupt database is a real failure and still propagates.
+        # The running check is not atomic with this open: the browser can start,
+        # or take the lock for its own writes, in between. The one error LevelDB
+        # raises for "someone else has it open" is treated exactly like the
+        # check finding it running; anything else is a real failure.
         if "lock" not in str(error).lower():
             raise
-        write_status(
-            status_file,
-            browser=info["name"],
-            browserDesktop=info["desktop"],
-            darkReader="pending-browser-exit",
-        )
-        print(f"Hyprchroma: Dark Reader update queued until {info['name']} exits")
-        return 2
+        raise Pending() from None
 
-    with db:
-        if state_dir is not None:
-            snapshot_settings(db, state_dir / "original/dark-reader.json", info, profile, database)
+
+PALETTE_KEYS = {
+    "darkColorScheme",
+    "darkSchemeBackgroundColor",
+    "darkSchemeTextColor",
+    "scrollbarColor",
+    "selectionColor",
+    "styleSystemControls",
+    "stylesheet",
+}
+
+
+def recolored(entries: object, theme: dict) -> object:
+    """customThemes or presets with the palette written into each, in place."""
+    if isinstance(entries, list):
+        for entry in entries:
+            entry_theme = entry.get("theme") if isinstance(entry, dict) else None
+            if isinstance(entry_theme, dict):
+                entry_theme.update({name: theme[name] for name in PALETTE_KEYS if name in theme})
+    return entries
+
+
+def apply_chromium(target, theme: dict, capture) -> None:
+    plyvel = load_plyvel()
+    extension, database = chromium_database(target)
+    os.close(open_dir(database, create=True))
+    with open_leveldb(plyvel, database, create=True) as db:
+        capture(lambda: {"extensionId": extension, "entries": {
+            key.decode(): {"existed": (value := db.get(key)) is not None,
+                           "value": base64.b64encode(value).decode() if value is not None else ""}
+            for key in MANAGED_KEYS}})
         db.put(b"theme", json.dumps(theme, separators=(",", ":")).encode())
         db.put(b"enabled", b"true")
         db.put(b"enabledByDefault", b"true")
@@ -1022,31 +837,189 @@ def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | No
         db.put(b"automation", b'{"enabled":false,"mode":"","behavior":"OnOff"}')
         db.put(b"changeBrowserTheme", b"false")
         db.put(b"syncSettings", b"true")
-
         for key in (b"customThemes", b"presets"):
             raw = db.get(key)
             if raw is None:
                 continue
-            entries = json.loads(raw)
-            for entry in entries:
-                entry_theme = entry.get("theme")
-                if isinstance(entry_theme, dict):
-                    entry_theme.update({
-                        name: theme[name]
-                        for name in palette_keys
-                        if name in theme
-                    })
-            db.put(key, json.dumps(entries, separators=(",", ":")).encode())
+            try:
+                entries = json.loads(raw)
+            except (ValueError, RecursionError):
+                continue
+            db.put(key, json.dumps(recolored(entries, theme), separators=(",", ":")).encode())
 
-    write_status(
-        status_file,
-        browser=info["name"],
-        browserDesktop=info["desktop"],
-        browserProfile=str(profile),
-        darkReader="synchronized",
-    )
-    print(f"Hyprchroma: Dark Reader synchronized for {info['name']}")
-    return 0
+
+def apply_firefox(target, theme: dict, capture) -> None:
+    database = target.profile / "storage-sync-v2.sqlite"
+    data = firefox_storage_data(database)
+    capture(lambda: {"dataExisted": bool(data), "data": json.loads(json.dumps(data))})
+    data["theme"] = theme
+    data["enabled"] = True
+    data["enabledByDefault"] = True
+    data["detectDarkTheme"] = False
+    data["automation"] = {"enabled": False, "mode": "", "behavior": "OnOff"}
+    data["changeBrowserTheme"] = False
+    data["syncSettings"] = True
+    for key in ("customThemes", "presets"):
+        recolored(data.get(key), theme)
+    write_firefox_storage_data(database, data)
+
+
+def reset_target(target) -> None:
+    """Dark Reader's own defaults: the managed keys deleted, so it rebuilds them."""
+    if target.family == "firefox":
+        database = target.profile / "storage-sync-v2.sqlite"
+        if database.exists():
+            with sqlite3.connect(database) as connection:
+                connection.execute("DELETE FROM storage_sync_data WHERE ext_id = ?",
+                                   (FIREFOX_EXTENSION_ID,))
+                connection.commit()
+        return
+    plyvel = load_plyvel()
+    _, database = chromium_database(target)
+    if not database.is_dir():
+        return
+    with open_leveldb(plyvel, database, create=False) as db:
+        for key in MANAGED_KEYS:
+            db.delete(key)
+
+
+def restore_target(target, entry: dict) -> None:
+    if entry.get("captured") is False:
+        reset_target(target)
+        return
+    if target.family == "firefox":
+        database = target.profile / "storage-sync-v2.sqlite"
+        if entry.get("dataExisted"):
+            data = entry.get("data")
+            if not isinstance(data, dict):
+                raise ValueError("the capture's data is not an object")
+            write_firefox_storage_data(database, data)
+        elif database.exists():
+            with sqlite3.connect(database) as connection:
+                connection.execute("DELETE FROM storage_sync_data WHERE ext_id = ?",
+                                   (FIREFOX_EXTENSION_ID,))
+                connection.commit()
+        return
+    plyvel = load_plyvel()
+    extension, database = chromium_database(target)
+    if entry.get("extensionId") != extension:
+        # Captured from another extension instance in this profile -- a store
+        # install replaced by a side-loaded one, say. Its values are not this
+        # one's to be handed.
+        raise ValueError("captured from a different Dark Reader in this profile")
+    os.close(open_dir(database, create=True))
+    with open_leveldb(plyvel, database, create=True) as db:
+        for key, value in (entry.get("entries") or {}).items():
+            raw_key = key.encode()
+            # Only the keys a capture takes, so a capture cannot be used to
+            # write or delete anything else in the extension's storage.
+            if raw_key not in MANAGED_KEYS or not isinstance(value, dict):
+                continue
+            if value.get("existed"):
+                db.put(raw_key, base64.b64decode(value["value"], validate=True))
+            else:
+                db.delete(raw_key)
+
+
+# -- every profile ---------------------------------------------------------------
+def for_each_target(targets, act, verb: str) -> tuple[list, list, list]:
+    """act on every target whose browser is closed. Returns (done, pending,
+    failed) browser names. One profile that fails -- a database the browser
+    left corrupt, say -- is no reason to leave every other one as it was."""
+    done, pending, failed = [], [], []
+    for target in targets:
+        if target_pids(target):
+            pending.append(target.name)
+            continue
+        try:
+            if act(target) is not False:
+                done.append(target.name)
+        except Pending:
+            pending.append(target.name)
+        except Exception as error:  # noqa: BLE001 -- reported, and counted as failed
+            print(f"Hyprchroma: could not {verb} Dark Reader in {target.name} "
+                  f"({target.profile.name}): {error}", file=sys.stderr)
+            failed.append(target.name)
+    return sorted(set(done)), sorted(set(pending)), sorted(set(failed))
+
+
+def outcome(done, pending, failed, finished: str, waiting: str, status_file) -> int:
+    write_status(status_file, darkReader=waiting if pending else finished,
+                 darkReaderBrowsers=done, darkReaderPending=pending)
+    if done:
+        print(f"Hyprchroma: Dark Reader {finished} for {', '.join(done)}")
+    if pending:
+        print(f"Hyprchroma: Dark Reader waits for {' and '.join(pending)} to close")
+    return 1 if failed else 2 if pending else 0
+
+
+def apply_theme(theme_file: Path, state_dir: Path | None, status_file: Path | None) -> int:
+    theme = read_capped_json(theme_file)
+    if not theme:
+        print(f"Hyprchroma: cannot read the Dark Reader theme {theme_file}", file=sys.stderr)
+        return 1
+    targets = dark_reader_targets()
+    if not targets:
+        write_status(status_file, darkReader="not-installed", darkReaderBrowsers=[],
+                     darkReaderPending=[])
+        print("Hyprchroma: Dark Reader is not installed in any supported browser")
+        return 0
+    snapshot = load_snapshot(state_dir) if state_dir is not None else empty_snapshot()
+    if snapshot is None:
+        # Rewriting it would lose every original in it; theming without it would
+        # leave nothing to revert to.
+        print("Hyprchroma: the Dark Reader snapshot is unreadable; not theming anything",
+              file=sys.stderr)
+        return 1
+
+    def act(target):
+        def capture(read):
+            # Taken once per profile, and on disk before anything is written over
+            # what it records.
+            key = str(target.profile)
+            if state_dir is None or key in snapshot["targets"]:
+                return
+            snapshot["targets"][key] = {"browser": target.browser, "captured": True, **read()}
+            save_snapshot(state_dir, snapshot)
+        (apply_firefox if target.family == "firefox" else apply_chromium)(target, theme, capture)
+
+    return outcome(*for_each_target(targets, act, "theme"),
+                   "synchronized", "pending-browser-exit", status_file)
+
+
+def restore_theme(state_dir: Path, status_file: Path | None) -> int:
+    snapshot = load_snapshot(state_dir)
+    if snapshot is None:
+        print("Hyprchroma: the Dark Reader snapshot is unreadable; not restoring it",
+              file=sys.stderr)
+        return 1
+    if not snapshot["targets"]:
+        print("Hyprchroma: no Dark Reader snapshot found")
+        return 0
+
+    def act(target):
+        entry = snapshot["targets"].get(str(target.profile))
+        if not isinstance(entry, dict) or entry.get("browser") != target.browser:
+            return False  # never themed by this
+        restore_target(target, entry)
+        return True
+
+    return outcome(*for_each_target(dark_reader_targets(), act, "restore"),
+                   "restored", "restore-pending-browser-exit", status_file)
+
+
+def reset_theme(status_file: Path | None) -> int:
+    """Return Dark Reader to its factory defaults, in every profile.
+
+    Deliberately independent of the captures. On a machine that has had
+    Hyprchroma before, a recorded "original" can itself be Hyprchroma output --
+    its theme and every builtIn entry in customThemes already name the generated
+    scheme -- so replaying it reinstates a previous generation rather than
+    stock. Deleting the managed keys instead lets Dark Reader rebuild its own
+    defaults, and costs nothing user-made: Hyprchroma only ever overwrote the
+    built-in schemes in place."""
+    return outcome(*for_each_target(dark_reader_targets(), reset_target, "reset"),
+                   "reset", "reset-pending-browser-exit", status_file)
 
 
 def main() -> int:

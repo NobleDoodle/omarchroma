@@ -2498,43 +2498,74 @@ def dark_reader_enabled(state_dir):
     return not (isinstance(frameworks, dict) and frameworks.get("darkReader") is False)
 
 
-def browser_client_pids():
-    """PIDs of the default browser, or None if the helper cannot say.
+def browser_client_groups():
+    """The processes of each browser holding a Dark Reader profile open, one
+    list per browser, or None if the helper cannot say.
 
-    Dark Reader's settings live inside the browser's own database, so unlike the
-    KDE color files this has to wait for the processes to end rather than for a
-    window to close -- and a browser leaves a good many running for a while after
-    its last window goes. Since the window is already gone by then, no further
-    window event arrives to prompt a retry, which is why this needs its own
-    wait."""
+    Dark Reader's settings live inside each browser's own database, so unlike
+    the KDE color files this waits for the processes to end rather than for a
+    window to close -- and a browser leaves a good many running for a while
+    after its last window goes. Since the window is already gone by then, no
+    further window event arrives to prompt a retry, which is why this needs its
+    own wait."""
     try:
         result = subprocess.run(
             [dark_reader_helper(), "--info"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
         )
-        executables = set(json.loads(result.stdout).get("executables") or [])
-    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
-        # Not "no browser": that answer would apply the theme at once, into a
-        # database a running browser may still hold.
+        running = json.loads(result.stdout).get("running")
+        groups = [[int(pid) for pid in entry["pids"]] for entry in running]
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        # Not "nothing running": that answer would apply the theme at once, into
+        # a database a running browser may still hold.
         return None
-    if not executables:
-        return []
-    pids = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        if window_executable(entry.name) in executables:
-            pids.append(int(entry.name))
-    return pids
+    return [group for group in groups if group]
+
+
+def wait_for_any_group(groups):
+    """Block until every process of any one group has exited: True, or False if
+    nothing ended in WATCH_TIMEOUT_SECONDS. Any one browser, not all of them --
+    a profile whose browser has closed is written then, not held back until
+    every other browser with Dark Reader has closed too."""
+    left = {}
+    owner = {}
+    for index, group in enumerate(groups):
+        left[index] = 0
+        for pid in group:
+            try:
+                descriptor = os.pidfd_open(pid)
+            except OSError:
+                continue  # exited between listing it and waiting on it
+            owner[descriptor] = index
+            left[index] += 1
+    try:
+        if any(count == 0 for count in left.values()):
+            return True
+        poller = select.poll()
+        for descriptor in owner:
+            poller.register(descriptor, select.POLLIN)
+        while True:
+            events = poller.poll(WATCH_TIMEOUT_SECONDS * 1000)
+            if not events:
+                return False
+            for descriptor, _ in events:
+                poller.unregister(descriptor)
+                left[owner[descriptor]] -= 1
+                if left[owner[descriptor]] == 0:
+                    return True
+    finally:
+        for descriptor in owner:
+            os.close(descriptor)
 
 
 def watch_browser_exit(state_dir, data_dir, action="sync"):
-    """Apply or revert Dark Reader once the browser has actually exited.
+    """Apply or revert Dark Reader once a browser holding it has exited.
 
-    Waits on pidfds, so the kernel wakes this when the last process ends rather
-    than anything polling for it. Re-arms if the browser spawns more while it
-    waits, holds a lock so one runs at a time, and leaves anything past its
-    bound to the service."""
+    Waits on pidfds, so the kernel wakes this when a browser's last process
+    ends rather than anything polling for it. Each round waits for one browser,
+    then lets the helper write every profile whose browser is closed; it
+    re-arms while any is still open or is reopened, holds a lock so one runs at
+    a time, and leaves anything past its bound to the service."""
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
     # Created following no symlink, then opened read-only: flock needs no
     # write access, so this path can never be truncated or written through.
@@ -2562,40 +2593,18 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
     apply = [dark_reader_helper(), "--theme", str(data_dir / "dark-reader-theme.json"),
              "--state-dir", str(state_dir), "--status", status]
     for _ in range(WATCH_ROUNDS):
-        pids = browser_client_pids()
-        if pids is None:
-            return  # nothing to wait on without knowing what the browser is
-        if not pids:
-            # Switched off while this waited: the revert that toggle queued
-            # found this lock taken and left, so the revert falls to this one.
-            wanted = action == "sync" and dark_reader_enabled(state_dir)
-            # 2 is the helper finding the browser back -- reopened in the moment
-            # before the write -- so wait for that instance to close too.
-            if subprocess.run(apply if wanted else revert, check=False).returncode != 2:
-                return
-            continue
-
-        descriptors = []
-        for pid in pids:
-            try:
-                descriptors.append(os.pidfd_open(pid))
-            except OSError:
-                continue  # exited between listing it and waiting on it
-        if not descriptors:
-            continue
-
-        poller = select.poll()
-        for descriptor in descriptors:
-            poller.register(descriptor, select.POLLIN)
-        remaining = set(descriptors)
-        while remaining:
-            events = poller.poll(WATCH_TIMEOUT_SECONDS * 1000)
-            if not events:
-                return  # nothing ended in all that time; the service covers it
-            for descriptor, _ in events:
-                poller.unregister(descriptor)
-                os.close(descriptor)
-                remaining.discard(descriptor)
+        groups = browser_client_groups()
+        if groups is None:
+            return  # nothing to wait on without knowing what is open
+        if groups and not wait_for_any_group(groups):
+            return  # nothing ended in all that time; the service covers it
+        # Switched off while this waited: the revert that toggle queued found
+        # this lock taken and left, so the revert falls to this one.
+        wanted = action == "sync" and dark_reader_enabled(state_dir)
+        # 2 is the helper finding a browser still open -- another one, or this
+        # one reopened in the moment before the write -- so wait again.
+        if subprocess.run(apply if wanted else revert, check=False).returncode != 2:
+            return
 
 
 def watch_events(state_dir, data_dir):

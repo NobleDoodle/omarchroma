@@ -124,7 +124,8 @@ your theme's colors into it, so pages are tinted to match the rest of the
 desktop rather than the extension's own grey.
 
 Hyprchroma does not install the extension -- that is yours to add from your
-browser's store. This only decides whether it syncs to it when it is there.
+browser's store. This only decides whether it syncs to it, in every browser
+and profile it is installed in, not only your default browser.
 DR
 want_dark=no
 if ask "Include Dark Reader"; then
@@ -136,16 +137,15 @@ if ask "Include Dark Reader"; then
   # /usr/lib/hyprchroma, deliberately off this script's own trusted PATH
   # above since it is a private helper, and a bare call here always failed
   # silently and read as "not installed" no matter what was actually true.
-  browser=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true)
-  installed=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '.darkReaderInstalled // false' 2>/dev/null || echo false)
-  if [[ $installed != true ]]; then
+  found_in=$("$here/lib/hyprchroma-dark-reader" --info 2>/dev/null | jq -r '(.browsers // []) | join(", ")' 2>/dev/null || true)
+  if [[ -z $found_in ]]; then
     say ""
-    note "Dark Reader is not installed in ${browser:-your browser}."
-    note "Add it from your browser's store and Hyprchroma will theme it from the next sync:"
+    note "Dark Reader is not installed in any supported browser yet."
+    note "Add it from a browser's store and Hyprchroma will theme it from the next sync:"
     note "  Chrome Web Store  https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh"
     note "  Firefox Add-ons   https://addons.mozilla.org/firefox/addon/darkreader/"
   else
-    note "Already configured in ${browser:-your browser}."
+    note "Found in $found_in; each is themed, and any browser you add it to later."
   fi
 fi
 

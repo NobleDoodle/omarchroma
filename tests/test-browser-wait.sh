@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Dark Reader's settings live in the browser's own database, locked while the
-# browser runs, so a theme change made with the browser open waits for it to
+# Dark Reader's settings live in each browser's own database, locked while the
+# browser runs, so a theme change made with a browser open waits for it to
 # exit. The waiter that did that looked the helper up in ~/.local/bin, where
 # the pre-package installer used to leave shims. With those gone it raised
 # FileNotFoundError on its first line, every time, into /dev/null -- nothing
@@ -40,7 +40,7 @@ chk("...never one under the home directory",
 # -- a helper that cannot run is "cannot tell", not "no browser" -----------
 st.__dict__["__file__"] = str(root / "elsewhere/hyprchroma-state")
 chk("a missing helper reports that it cannot tell, rather than crashing",
-    st.browser_client_pids(), None)
+    st.browser_client_groups(), None)
 st.__dict__["__file__"] = str(repo / "lib/hyprchroma-state")
 
 # -- what the waiter runs, and when ----------------------------------------
@@ -49,11 +49,12 @@ def settings(dark_reader):
 
 commands = []
 
-def waiter(pids_sequence, returncodes=(0,), action="sync"):
-    """Drive watch_browser_exit through a scripted browser; return what it ran."""
-    ran, pids, codes = [], list(pids_sequence), list(returncodes)
+def waiter(groups_sequence, returncodes=(0,), action="sync"):
+    """Drive watch_browser_exit through scripted browsers; return what it ran.
+    Each step is what --info reports open: one list of PIDs per browser."""
+    ran, groups, codes = [], list(groups_sequence), list(returncodes)
     commands.clear()
-    st.browser_client_pids = lambda: pids.pop(0) if pids else []
+    st.browser_client_groups = lambda: groups.pop(0) if groups else []
     def run(command, check=False):
         commands.append(command)
         ran.append(command[1])  # --theme for an apply, --restore for a revert
@@ -63,7 +64,7 @@ def waiter(pids_sequence, returncodes=(0,), action="sync"):
     return ran
 
 settings(True)
-chk("the browser gone and Dark Reader on: the theme is applied",
+chk("no browser with Dark Reader open and it on: the theme is applied",
     waiter([[]]), ["--theme"])
 chk("...by the helper itself, not a whole sync that has to win the sync lock",
     commands[0][0], helper)
@@ -76,14 +77,14 @@ chk("switched off while waiting: the revert that toggle queued is done instead",
 settings(True)
 chk("a revert waiter reverts", waiter([[]], action="revert"), ["--restore"])
 
-chk("the helper unable to say what the browser is: nothing is run",
+chk("the helper unable to say what is open: nothing is run",
     waiter([None]), [])
 
 # Reopened in the moment before the write: the helper finds it back and says
 # 2, so the waiter waits for that instance too, then writes once it is gone.
 reopened = subprocess.Popen(["sleep", "0.3"])
 chk("a browser reopened before the write is waited out, then written",
-    waiter([[], [reopened.pid], []], returncodes=(2, 0)), ["--theme", "--theme"])
+    waiter([[], [[reopened.pid]], []], returncodes=(2, 0)), ["--theme", "--theme"])
 reopened.wait()
 
 # -- how soon after the last process ends the write starts -----------------
@@ -91,11 +92,9 @@ reopened.wait()
 # rather than assumed from the pidfd design.
 browser = subprocess.Popen(["sleep", "0.5"])
 ended = {}
-def pids():
-    return [browser.pid] if browser.poll() is None else []
-st.browser_client_pids = pids
+st.browser_client_groups = lambda: [[browser.pid]] if browser.poll() is None else []
 def run(command, check=False):
-    ended["at"] = time.monotonic()
+    ended.setdefault("at", time.monotonic())
     return types.SimpleNamespace(returncode=0)
 st.subprocess = types.SimpleNamespace(run=run)
 start = time.monotonic()
@@ -104,5 +103,26 @@ browser.wait()
 lag = ended["at"] - start - 0.5
 chk(f"the write starts within 0.2s of the browser's last process ending",
     lag < 0.2, True)
+
+# -- two browsers: the one that closes is themed without waiting on the other -
+# Helium closes while Firefox stays open all afternoon: Helium's profile is
+# written as soon as Helium is gone, not when every browser has finished.
+closes = subprocess.Popen(["sleep", "0.3"])
+stays = subprocess.Popen(["sleep", "30"])
+closes_tabs = subprocess.Popen(["sleep", "0.1"])   # a renderer that went first
+ended.clear()
+def open_now():
+    groups = [[pid.pid for pid in (closes, closes_tabs) if pid.poll() is None],
+              [stays.pid]]
+    return [group for group in groups if group]
+st.browser_client_groups = open_now
+st.subprocess = types.SimpleNamespace(run=run)
+start = time.monotonic()
+st.watch_browser_exit(state, data, "sync")
+chk("with two browsers open, the one that closes is written straight away",
+    ended["at"] - start < 1.0, True)
+chk("...only once all of its own processes are gone, not at its first to exit",
+    ended["at"] - start >= 0.3, True)
+stays.kill(); stays.wait(); closes.wait(); closes_tabs.wait()
 E
 rm -rf "$ROOT"

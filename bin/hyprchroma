@@ -271,7 +271,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.7.1"
+    echo "hyprchroma 2.8.0"
     exit 0
     ;;
 esac
@@ -574,11 +574,13 @@ bright_yellow=$(color bright_yellow)
 blue=$(color blue)
 magenta=$(color magenta)
 mode=$(palette_mode)
-browser_info=$("$HYPRCHROMA_LIB/hyprchroma-dark-reader" --info 2>/dev/null || printf '{}')
-browser_desktop=$(jq -r '.desktop // ""' <<<"$browser_info")
-browser_name=$(jq -r '.name // "the browser"' <<<"$browser_info")
-browser_supported=$(jq -r '.supported // false' <<<"$browser_info")
-browser_has_dark_reader=$(jq -r '.darkReaderInstalled // false' <<<"$browser_info")
+# Every browser profile Dark Reader is installed in, not only the default
+# browser's. The signature changes when it is added to or removed from any of
+# them, and is part of the fingerprint, so that is themed at the next sync.
+dark_reader_info=$("$HYPRCHROMA_LIB/hyprchroma-dark-reader" --info 2>/dev/null || printf '{}')
+dark_reader_signature=$(jq -r '.signature // ""' <<<"$dark_reader_info")
+dark_reader_known=$(jq -r 'has("installed")' <<<"$dark_reader_info" 2>/dev/null || echo false)
+dark_reader_installed=$(jq -r '.installed // false' <<<"$dark_reader_info")
 pear_installed=0
 if command -v pear-desktop >/dev/null || [[ -d "$HOME/.config/YouTube Music" ]]; then
   pear_installed=1
@@ -592,7 +594,7 @@ fingerprint=$(
     "$dark_foreground" "$light_foreground" "$bright_foreground" "$accent" \
     "$muted" "$red" "$bright_red" "$green" "$bright_green" \
     "$yellow" "$bright_yellow" "$blue" "$magenta" \
-    "$browser_desktop" "$pear_installed" \
+    "$dark_reader_signature" "$pear_installed" \
     "$(omarchy font current 2>/dev/null || true)" \
     "$(jq -c '.frameworks // {}' "$SETTINGS_FILE" 2>/dev/null || echo '{}')" |
     sha256sum | cut -d' ' -f1
@@ -785,12 +787,13 @@ if [[ ( $target == "all" || $target == "browsers" ) ]] && target_enabled browser
 fi
 
 dark_reader_exit=0
-# Hyprchroma installs nothing into the browser. If Dark Reader is not there,
-# say so once -- there is nothing to theme until the user installs it.
+# Hyprchroma installs nothing into a browser. If Dark Reader is in none of
+# them, say so -- there is nothing to theme until the user adds it somewhere.
+# Only when the helper answered: a failed lookup is not an empty one.
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
-   && [[ $browser_supported == "true" && $browser_has_dark_reader != "true" ]]; then
-  log "Dark Reader is not installed in $browser_name; install it and Hyprchroma will theme it"
-  notify_user "Install Dark Reader in $browser_name and Hyprchroma will theme it"
+   && [[ $dark_reader_known == "true" && $dark_reader_installed != "true" ]]; then
+  log "Dark Reader is not installed in any supported browser; add it and Hyprchroma will theme it"
+  notify_user "Add Dark Reader to a browser and Hyprchroma will theme it"
 fi
 
 if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
@@ -933,16 +936,20 @@ if target in {"all", "flatpak"}:
     state["flatpak"] = flatpak_state
 if target in {"all", "browsers"}:
     state["browsers"] = browsers_state
-if target in {"all", "dark-reader"} and dark_reader_exit == "0":
-    state["darkReader"] = "synchronized"
+# Nothing for darkReader: the Dark Reader helper records its own outcome --
+# which browsers are done, which it waits on, or that none has it installed --
+# and writing "synchronized" over that here claimed all of them, including
+# with the framework switched off.
 atomic_write(path, json.dumps(state, indent=2) + "\n")
 PY
 
 if (( dark_reader_exit == 2 )); then
+  # The helper names the browsers it is waiting on; the rest are already done.
+  dark_reader_waiting=$(jq -r '(.darkReaderPending // []) | join(" and ")' "$STATUS_FILE" 2>/dev/null || true)
   if [[ $target == "dark-reader" ]]; then
-    message="Dark Reader will update after the browser exits"
+    message="Dark Reader will update in ${dark_reader_waiting:-the browser} once it closes"
   else
-    message="Enabled frameworks synchronized; Dark Reader will update after the browser exits"
+    message="Enabled frameworks synchronized; Dark Reader will update in ${dark_reader_waiting:-the browser} once it closes"
   fi
 else
   case "$target" in

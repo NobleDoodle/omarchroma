@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# apply_theme checked browser_running() before opening the browser's
+# apply_theme checked whether the browser ran before opening the browser's
 # extension-settings database, then opened it unguarded. That check is not
 # atomic with the open: the browser can grab the database's own lock in the
-# gap between them, or browser_running()'s process-name match can simply miss
+# gap between them, or the running check can simply miss
 # it, and the open then raised plyvel.IOError -- an unhandled traceback in the
 # daemon's log on every sync, instead of the same deferred outcome the check
 # was there to produce.
@@ -13,7 +13,9 @@ python3 -c "import plyvel" 2>/dev/null || { echo "  SKIP (python-plyvel not inst
 
 python3 - "$REPO" <<'E'
 import importlib.util, sys, types, json, tempfile, shutil
+import os
 from pathlib import Path
+os.environ["HOME"] = tempfile.mkdtemp()  # never the real home, whatever is stubbed
 
 src = open(sys.argv[1] + "/lib/hyprchroma-dark-reader").read()
 dr = types.ModuleType("dr")
@@ -35,19 +37,15 @@ try:
     import plyvel
     holder = plyvel.DB(str(database), create_if_missing=True)
 
-    dr.browser_info = lambda: {
-        "supported": True, "name": "Test Browser", "desktop": "test.desktop",
-        "family": "chromium", "executables": ["definitely-not-running"],
-        "config": str(profile),
-    }
-    dr.active_profile = lambda info: profile
+    dr.dark_reader_targets = lambda: [dr.Target("chromium", "Test Browser", "chromium", profile)]
+    dr.target_pids = lambda target: []   # the running check misses it
     dr.chromium_extension_id = lambda profile: "a" * 32
 
     theme_file = root / "theme.json"
     theme_file.write_text(json.dumps({"stylesheet": ""}))
     status_file = root / "status.json"
 
-    # browser_running() sees no matching process name, so this reaches the
+    # The running check finds nothing, so this reaches the
     # open the way a name-detection miss or a genuine race would.
     try:
         result = dr.apply_theme(theme_file, None, status_file)
@@ -60,6 +58,7 @@ try:
     status = json.loads(status_file.read_text())
     chk("status records the same deferred outcome as the upfront check",
         status.get("darkReader"), "pending-browser-exit")
+    chk("...naming the browser it waits on", status.get("darkReaderPending"), ["Test Browser"])
 
     holder.close()
 finally:

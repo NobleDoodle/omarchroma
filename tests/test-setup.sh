@@ -158,8 +158,8 @@ chk "the store links appear live, at the point Dark Reader is chosen" \
   "$(grep -c 'Chrome Web Store' <<<"$dr_out")" "1"
 chk "before the build even starts" \
   "$(grep -cE '==> Making package|Finished making' <<<"$dr_out")" "0"
-chk "it is read from where it is actually installed, twice" \
-  "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "2"
+chk "where it is installed is read from the helper, by its own path" \
+  "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "1"
 
 # --- Pear Desktop is offered for install when wanted and missing ---------
 # A real machine may already have pear-desktop, or a ~/.config/YouTube Music

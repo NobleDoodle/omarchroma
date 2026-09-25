@@ -75,6 +75,10 @@ With the bar widget:
 * GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and
   Additional browsers are optional. Install the Dark Reader browser extension
   manually for it to theme on the next sync.
+* Dark Reader is themed in every browser profile it is installed in, not only
+  your default browser: Chromium, Chrome, Brave, Vivaldi, Helium, Firefox,
+  Floorp, Zen, LibreWolf and Waterfox. A browser that is open is themed when it
+  closes, since its settings live in the browser's own database.
 * Flatpak apps is off until you switch it on: it changes a permission for every
   Flatpak app you have (see below). Each app picks it up on its next launch.
 * Additional browsers is off until you switch it on: it writes into your browser
