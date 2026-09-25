@@ -15,6 +15,7 @@ import sys
 import subprocess
 import tempfile
 import time
+from collections import namedtuple
 from datetime import datetime
 from pathlib import Path
 
@@ -206,49 +207,57 @@ def open_dir(path, create: bool = False) -> int:
 def atomic_write(path, data, mode: int | None = None) -> None:
     """Replace path with data, through a temporary in a verified directory."""
     path = Path(path)
-    if isinstance(data, str):
-        data = data.encode()
     descriptor = open_dir(path.parent, create=True)
     try:
-        if mode is None:
-            try:
-                mode = stat.S_IMODE(
-                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False).st_mode)
-            except (FileNotFoundError, OSError):
-                mode = 0o644
-        temporary = None
-        for _ in range(_TEMPORARY_ATTEMPTS):
-            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
-            try:
-                opened = os.open(
-                    candidate,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o600,
-                    dir_fd=descriptor,
-                )
-            except FileExistsError:
-                continue
-            temporary = candidate
-            break
-        if temporary is None:
-            raise OSError(f"could not create a temporary beside {path}")
-        try:
-            with os.fdopen(opened, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-                os.fchmod(handle.fileno(), mode)
-            os.replace(temporary, path.name,
-                       src_dir_fd=descriptor, dst_dir_fd=descriptor)
-            os.fsync(descriptor)
-        except BaseException:
-            try:
-                os.unlink(temporary, dir_fd=descriptor)
-            except FileNotFoundError:
-                pass
-            raise
+        atomic_write_at(descriptor, path.name, data, mode)
     finally:
         os.close(descriptor)
+
+
+def atomic_write_at(descriptor: int, name: str, data, mode: int | None = None) -> None:
+    """atomic_write for a name in a directory already open and verified, so a
+    caller that walked there itself, following no link, keeps that walk."""
+    if name in ("", ".", "..") or "/" in name:
+        raise OSError(f"refusing to write {name!r}: not a plain file name")
+    if isinstance(data, str):
+        data = data.encode()
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(
+                os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+        except (FileNotFoundError, OSError):
+            mode = 0o644
+    temporary = None
+    for _ in range(_TEMPORARY_ATTEMPTS):
+        candidate = f".{name}.{secrets.token_hex(8)}.tmp"
+        try:
+            opened = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=descriptor,
+            )
+        except FileExistsError:
+            continue
+        temporary = candidate
+        break
+    if temporary is None:
+        raise OSError(f"could not create a temporary beside {name}")
+    try:
+        with os.fdopen(opened, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, name,
+                   src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        os.fsync(descriptor)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def safe_read(path, limit: int) -> str | None:
@@ -262,11 +271,21 @@ def safe_read(path, limit: int) -> str | None:
     except OSError:
         return None
     try:
-        opened = os.open(path.name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=descriptor)
+        # O_NONBLOCK, and nothing but a regular file: a fifo planted at the path
+        # would otherwise block this unattended service indefinitely.
+        opened = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=descriptor)
     except OSError:
         return None
     finally:
         os.close(descriptor)
+    try:
+        regular = stat.S_ISREG(os.fstat(opened).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(opened)
+        return None
     try:
         with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
             content = handle.read(limit + 1)
@@ -619,9 +638,9 @@ def strip_generated_pear_themes(snapshot_dir, manifest):
     backup = snapshot_dir / entry["backup"]
     try:
         config = json.loads(backup.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return
-    options = config.get("options")
+    options = config.get("options") if isinstance(config, dict) else None
     if not isinstance(options, dict) or not isinstance(options.get("themes"), list):
         return
     kept = [theme for theme in options["themes"]
@@ -798,33 +817,175 @@ BROWSER_COLORS = ("background", "dark_background", "foreground", "accent",
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
-def contained_directory(base, candidate):
-    """candidate resolved, if it is a directory strictly inside base resolved."""
-    base = os.path.realpath(base)
-    resolved = os.path.realpath(candidate)
-    if resolved == base or os.path.commonpath([base, resolved]) != base:
+class BrowserProfile(namedtuple("BrowserProfile", "anchor parts")):
+    """A browser profile folder: the anchor it lies beneath, resolved the way
+    the user's own folders are, and the components below it.
+
+    Below the anchor is the browser's to write -- and for a Flatpak, its
+    sandbox's -- so those components are only ever walked following no link,
+    never resolved by pathname: a link planted there must stop the walk, not
+    steer a write or a removal somewhere outside the profile."""
+    __slots__ = ()
+
+    @property
+    def path(self):
+        return Path(self.anchor, *self.parts)
+
+    @property
+    def name(self):
+        return self.path.name
+
+    def __str__(self):
+        return str(self.path)
+
+    def open(self, *below, create=False):
+        return open_beneath(self.anchor, self.parts + below, create)
+
+
+def open_child(descriptor, part, create=False):
+    """A verified descriptor for one directory below descriptor, never a link:
+    O_NOFOLLOW refuses one outright rather than resolving it."""
+    if part in ("", ".", "..") or "/" in part or "\0" in part:
+        raise OSError(f"refusing the path component {part!r}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        nested = os.open(part, flags, dir_fd=descriptor)
+    except FileNotFoundError:
+        if not create:
+            raise
+        os.mkdir(part, SAFE_DIR_MODE, dir_fd=descriptor)
+        nested = os.open(part, flags, dir_fd=descriptor)
+    try:
+        _verify_directory(nested, part)
+    except BaseException:
+        os.close(nested)
+        raise
+    return nested
+
+
+def open_beneath(anchor, parts, create=False):
+    """A verified descriptor for anchor/parts that follows no link below anchor.
+
+    open_dir resolves its whole path first, which is right for the user's own
+    folders and wrong below one another program writes into."""
+    descriptor = open_dir(anchor)
+    try:
+        for part in parts:
+            nested = open_child(descriptor, part, create)
+            os.close(descriptor)
+            descriptor = nested
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def lstat_at(descriptor, name):
+    try:
+        return os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
         return None
-    return Path(resolved) if os.path.isdir(resolved) else None
 
 
-def firefox_profiles(root):
-    """The profiles a Firefox-family profiles.ini lists -- only those inside root.
+def read_at(descriptor, name, limit=None):
+    """The text of a regular file named relative to a verified directory, or
+    None. No link is followed and nothing but a regular file is read -- opened
+    blocking, a fifo planted where a file belongs would stall this unattended
+    service indefinitely. The bytes are decoded as they are, without newline
+    translation, so what is written back is exactly what was read."""
+    limit = MAX_FOREIGN_FILE if limit is None else limit
+    try:
+        opened = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=descriptor)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(opened).st_mode):
+            return None
+        chunks, size = [], 0
+        while size <= limit:
+            chunk = os.read(opened, min(1 << 20, limit + 1 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(opened)
+    data = b"".join(chunks)
+    if len(data) > limit:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
-    profiles.ini allows absolute paths, and a browser can rewrite its own
-    profiles.ini, so an entry pointing anywhere else is refused: accepting it
-    would let one browser aim this at any directory the account owns."""
-    text = read_capped(root / "profiles.ini")
+
+def browser_root(home, relative):
+    """(root, anchor) for one of the roots above. A Flatpak's data folder,
+    ~/.var/app/<id>, is the bind mount its sandbox writes into and cannot
+    itself replace, so that is the anchor; a native root is its own."""
+    parts = Path(relative).parts
+    if parts[:2] == (".var", "app"):
+        return Path(home, *parts), Path(home, *parts[:3])
+    return Path(home, *parts), Path(home, *parts)
+
+
+def root_beneath(root, anchor):
+    root = Path(root)
+    anchor = root if anchor is None else Path(anchor)
+    return os.path.realpath(anchor), root.relative_to(anchor).parts
+
+
+def read_root_file(base, inner, name):
+    try:
+        descriptor = open_beneath(base, inner)
+    except OSError:
+        return None
+    try:
+        return read_at(descriptor, name)
+    finally:
+        os.close(descriptor)
+
+
+def is_profile_folder(profile):
+    try:
+        os.close(profile.open())
+    except OSError:
+        return False
+    return True
+
+
+def firefox_profiles(root, anchor=None):
+    """The profiles a Firefox-family profiles.ini lists -- only those below root.
+
+    profiles.ini allows absolute paths, and a browser rewrites its own
+    profiles.ini, so an entry anywhere else is refused: accepting it would let
+    one browser aim this at any directory the account owns. Every folder is
+    then reached from the anchor following no link, which also refuses a
+    profile folder that is itself a link out."""
+    base, inner = root_beneath(root, anchor)
+    text = read_root_file(base, inner, "profiles.ini")
     if text is None:
         return []
+    lexical = (Path(root), Path(base, *inner))
     found = set()
     section, path, relative = "", None, "1"
 
     def flush():
-        if section.startswith("Profile") and path:
-            candidate = root / path if relative == "1" else Path(path)
-            directory = contained_directory(root, candidate)
-            if directory is not None:
-                found.add(directory)
+        if not (section.startswith("Profile") and path):
+            return
+        if relative == "1":
+            parts = None if path.startswith("/") else Path(path).parts
+        else:
+            parts = next((Path(path).relative_to(prefix).parts for prefix in lexical
+                          if Path(path).is_relative_to(prefix)), None)
+        if not parts or any(part in ("", ".", "..") for part in parts):
+            return
+        candidate = BrowserProfile(base, inner + parts)
+        if is_profile_folder(candidate):
+            found.add(candidate)
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -842,14 +1003,15 @@ def firefox_profiles(root):
     return sorted(found)
 
 
-def vivaldi_profiles(root):
-    """Vivaldi profile directories named in Local State, inside root."""
-    text = read_capped(root / "Local State")
+def vivaldi_profiles(root, anchor=None):
+    """Vivaldi profile folders named in Local State, below root."""
+    base, inner = root_beneath(root, anchor)
+    text = read_root_file(base, inner, "Local State")
     if text is None:
         return []
     try:
         cache = json.loads(text).get("profile", {}).get("info_cache", {})
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, RecursionError):
         return []
     names = set(cache) if isinstance(cache, dict) else set()
     names.add("Default")
@@ -857,9 +1019,17 @@ def vivaldi_profiles(root):
     for name in sorted(names):
         if not re.fullmatch(r"[A-Za-z0-9 _-]+", str(name)):
             continue
-        directory = contained_directory(root, root / name)
-        if directory is not None and (directory / "Preferences").is_file():
-            found.append(directory)
+        candidate = BrowserProfile(base, inner + (name,))
+        try:
+            descriptor = candidate.open()
+        except OSError:
+            continue
+        try:
+            present = lstat_at(descriptor, "Preferences") is not None
+        finally:
+            os.close(descriptor)
+        if present:
+            found.append(candidate)
     return found
 
 
@@ -869,11 +1039,11 @@ def detected_browsers():
     detected = []
     for name, roots in FIREFOX_FAMILY:
         profiles = sorted({profile for relative in roots
-                           for profile in firefox_profiles(home / relative)})
+                           for profile in firefox_profiles(*browser_root(home, relative))})
         if profiles:
             detected.append((name, "firefox", profiles))
     profiles = sorted({profile for relative in VIVALDI_ROOTS
-                       for profile in vivaldi_profiles(home / relative)})
+                       for profile in vivaldi_profiles(*browser_root(home, relative))})
     if profiles:
         detected.append(("Vivaldi", "vivaldi", profiles))
     return detected
@@ -985,9 +1155,9 @@ def firefox_stylesheet(palette):
 """
 
 
-def stylesheets_pref_on(profile):
-    text = read_capped(profile / "prefs.js") or ""
-    return any(STYLESHEETS_PREF.fullmatch(line) for line in text.splitlines())
+def stylesheets_pref_on(text):
+    """Whether prefs.js text has the preference on."""
+    return any(STYLESHEETS_PREF.fullmatch(line) for line in (text or "").splitlines())
 
 
 def profile_holders(profile):
@@ -996,8 +1166,8 @@ def profile_holders(profile):
     The lock symlink beside it is left behind by a crash or a kill, so it says
     nothing about whether anything is running; an open descriptor does. Found
     by path rather than by PID, because a Flatpak browser's PID in the symlink
-    is the one from inside its sandbox."""
-    lock = os.path.realpath(profile / ".parentlock")
+    is the one from inside its sandbox. Only compared, never opened."""
+    lock = os.path.join(str(profile), ".parentlock")
     holders = []
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit():
@@ -1016,62 +1186,83 @@ def profile_holders(profile):
     return holders
 
 
-def prepend_line(path, line):
+def prepend_line(descriptor, name, line):
     """Put line first in a file of the user's and change nothing else in it, so
     strip_line can hand back exactly the bytes that were there.
 
-    A linked userChrome.css or user.js -- a dotfiles checkout, arkenfox -- is
-    refused rather than replaced by a copy, which would quietly cut the user's
-    link, or written through, which would follow it wherever it pointed."""
-    if path.is_symlink():
-        raise OSError(f"refusing a linked file: {path}")
-    text = read_capped(path)
+    A link -- a dotfiles checkout, arkenfox -- or anything else that is not a
+    regular file is refused, rather than replaced by a copy, which would quietly
+    cut the user's link, or written through, which would follow it wherever it
+    pointed."""
+    info = lstat_at(descriptor, name)
+    if info is None:
+        atomic_write_at(descriptor, name, line + "\n", 0o644)
+        return
+    if not stat.S_ISREG(info.st_mode):
+        raise OSError(f"refusing {name}: not a regular file")
+    text = read_at(descriptor, name)
     if text is None:
-        if path.exists():
-            raise OSError(f"cannot read {path}")
-        atomic_write(path, line + "\n", 0o644)
-    elif not any(row.strip() == line for row in text.splitlines()):
-        atomic_write(path, line + "\n" + text)
+        raise OSError(f"cannot read {name}")
+    if not any(row.strip() == line for row in text.splitlines()):
+        atomic_write_at(descriptor, name, line + "\n" + text, stat.S_IMODE(info.st_mode))
 
 
-def strip_line(path, line, keep_empty):
+def strip_line(descriptor, name, line, keep_empty):
     """Take out exactly what prepend_line put in. An emptied file is removed
     unless it was there, empty, beforehand."""
-    if path.is_symlink():
+    info = lstat_at(descriptor, name)
+    if info is None or not stat.S_ISREG(info.st_mode):
         return  # prepend_line never wrote to it
-    text = read_capped(path)
+    text = read_at(descriptor, name)
     if text is None:
         return
-    rows = text.splitlines(keepends=True)
-    kept = "".join(row for row in rows if row.strip() != line)
+    kept = "".join(row for row in text.splitlines(keepends=True) if row.strip() != line)
     if len(kept) == len(text):
         return
     if kept or keep_empty:
-        atomic_write(path, kept)
+        atomic_write_at(descriptor, name, kept, stat.S_IMODE(info.st_mode))
     else:
-        safe_unlink(path)
+        os.unlink(name, dir_fd=descriptor)
 
 
 def sync_firefox_profile(profile, stylesheet, manifest):
     """Theme one Firefox-family profile. The stylesheet is ours outright; the
     other two files are the user's and get one line each."""
-    userchrome, userjs = profile / "chrome" / "userChrome.css", profile / "user.js"
-    linked = [path.name for path in (userchrome, userjs) if path.is_symlink()]
-    if linked:
+    descriptor = profile.open()
+    try:
+        chrome_info = lstat_at(descriptor, "chrome")
+        userjs_info = lstat_at(descriptor, "user.js")
+        userchrome_info = None
+        if chrome_info is not None:
+            if not stat.S_ISDIR(chrome_info.st_mode):
+                raise OSError(f"refusing {profile}: its chrome folder is a link")
+            chrome = open_child(descriptor, "chrome")
+            try:
+                userchrome_info = lstat_at(chrome, "userChrome.css")
+            finally:
+                os.close(chrome)
         # Checked before anything is written, so a refused profile is untouched.
-        raise OSError(f"refusing linked files in {profile}: {', '.join(linked)}")
-    captured = manifest.setdefault("browsers", {}).setdefault("firefox", {})
-    if str(profile) not in captured:
-        captured[str(profile)] = {
-            "stylesheetsPref": stylesheets_pref_on(profile),
-            "existed": {"chrome": (profile / "chrome").exists(),
-                        "userChrome": userchrome.exists(), "userJs": userjs.exists()},
-        }
-    path = profile / "chrome" / BROWSER_STYLESHEET
-    if read_capped(path) != stylesheet:
-        atomic_write(path, stylesheet, 0o644)
-    prepend_line(userchrome, USERCHROME_IMPORT)
-    prepend_line(userjs, USERJS_PREF)
+        for info, label in ((userjs_info, "user.js"), (userchrome_info, "userChrome.css")):
+            if info is not None and not stat.S_ISREG(info.st_mode):
+                raise OSError(f"refusing {profile}: its {label} is not a regular file")
+        captured = manifest.setdefault("browsers", {}).setdefault("firefox", {})
+        if str(profile) not in captured:
+            captured[str(profile)] = {
+                "stylesheetsPref": stylesheets_pref_on(read_at(descriptor, "prefs.js")),
+                "existed": {"chrome": chrome_info is not None,
+                            "userChrome": userchrome_info is not None,
+                            "userJs": userjs_info is not None},
+            }
+        chrome = open_child(descriptor, "chrome", create=True)
+        try:
+            if read_at(chrome, BROWSER_STYLESHEET) != stylesheet:
+                atomic_write_at(chrome, BROWSER_STYLESHEET, stylesheet, 0o644)
+            prepend_line(chrome, "userChrome.css", USERCHROME_IMPORT)
+        finally:
+            os.close(chrome)
+        prepend_line(descriptor, "user.js", USERJS_PREF)
+    finally:
+        os.close(descriptor)
 
 
 def revert_firefox_profile(profile, manifest):
@@ -1079,33 +1270,43 @@ def revert_firefox_profile(profile, manifest):
     captured = manifest.get("browsers", {}).get("firefox", {})
     record = captured.get(str(profile))
     existed = record.get("existed", {}) if isinstance(record, dict) else {}
-    safe_unlink(profile / "chrome" / BROWSER_STYLESHEET)
-    strip_line(profile / "chrome" / "userChrome.css", USERCHROME_IMPORT,
-               keep_empty=existed.get("userChrome") is True)
-    strip_line(profile / "user.js", USERJS_PREF, keep_empty=existed.get("userJs") is True)
-    # The chrome folder too, if this is what put it there and nothing is left.
-    if existed.get("chrome") is not True:
+    descriptor = profile.open()
+    try:
         try:
-            descriptor = open_dir(profile)
+            chrome = open_child(descriptor, "chrome")
+        except OSError:
+            chrome = None  # absent, or a link this never wrote through
+        if chrome is not None:
+            try:
+                info = lstat_at(chrome, BROWSER_STYLESHEET)
+                if info is not None and not stat.S_ISDIR(info.st_mode):
+                    os.unlink(BROWSER_STYLESHEET, dir_fd=chrome)
+                strip_line(chrome, "userChrome.css", USERCHROME_IMPORT,
+                           keep_empty=existed.get("userChrome") is True)
+            finally:
+                os.close(chrome)
+        strip_line(descriptor, "user.js", USERJS_PREF, keep_empty=existed.get("userJs") is True)
+        # The chrome folder too, if this is what put it there and nothing is left.
+        if existed.get("chrome") is not True:
             try:
                 os.rmdir("chrome", dir_fd=descriptor)
-            finally:
-                os.close(descriptor)
-        except OSError:
-            pass
-    if not isinstance(record, dict):
-        return []  # never themed by this, so the preference is the user's own
-    if not record.get("stylesheetsPref") and stylesheets_pref_on(profile):
-        # The browser writes prefs.js out whole from memory when it exits, so an
-        # edit made while it runs is undone; it waits for the browser to close.
-        holders = profile_holders(profile)
-        if holders:
-            return holders
-        text = None if (profile / "prefs.js").is_symlink() else read_capped(profile / "prefs.js")
-        if text is not None:
-            kept = [line for line in text.splitlines(keepends=True)
-                    if not STYLESHEETS_PREF.fullmatch(line)]
-            atomic_write(profile / "prefs.js", "".join(kept))
+            except OSError:
+                pass
+        if not isinstance(record, dict):
+            return []  # never themed by this, so the preference is the user's own
+        text = read_at(descriptor, "prefs.js")
+        if not record.get("stylesheetsPref") and stylesheets_pref_on(text):
+            # The browser writes prefs.js out whole from memory when it exits, so
+            # an edit made while it runs is undone; it waits for the browser.
+            holders = profile_holders(profile)
+            if holders:
+                return holders
+            info = lstat_at(descriptor, "prefs.js")
+            kept = "".join(line for line in text.splitlines(keepends=True)
+                           if not STYLESHEETS_PREF.fullmatch(line))
+            atomic_write_at(descriptor, "prefs.js", kept, stat.S_IMODE(info.st_mode))
+    finally:
+        os.close(descriptor)
     captured.pop(str(profile), None)
     return []
 
@@ -1145,25 +1346,41 @@ def pref_delete(prefs, keys):
 
 
 def load_vivaldi_prefs(profile):
-    if (profile / "Preferences").is_symlink():
-        return None  # rewritten in place, it would stop being the user's link
-    text = read_capped(profile / "Preferences")
+    try:
+        descriptor = profile.open()
+    except OSError:
+        return None
+    try:
+        info = lstat_at(descriptor, "Preferences")
+        # A linked Preferences is refused: rewritten in place, it would stop
+        # being the user's link.
+        if info is None or not stat.S_ISREG(info.st_mode):
+            return None
+        text = read_at(descriptor, "Preferences")
+    finally:
+        os.close(descriptor)
     try:
         prefs = json.loads(text) if text is not None else None
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return prefs if isinstance(prefs, dict) else None
 
 
 def write_vivaldi_prefs(profile, prefs):
-    path = profile / "Preferences"
     text = json.dumps(prefs, separators=(",", ":"), ensure_ascii=False)
     # Escaped as Chromium's own writer escapes them ("<" can only occur inside
     # a string), to stay close to what Vivaldi writes. What a revert guarantees
     # is the values, types included: Vivaldi rewrites this file in its own
     # formatting every time it runs, down to how it prints a large double.
     text = text.replace("<", "\\u003C").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
-    atomic_write(path, text, stat.S_IMODE(path.stat().st_mode))
+    descriptor = profile.open()
+    try:
+        info = lstat_at(descriptor, "Preferences")
+        if info is None or not stat.S_ISREG(info.st_mode):
+            raise OSError(f"refusing {profile}: its Preferences is not a regular file")
+        atomic_write_at(descriptor, "Preferences", text, stat.S_IMODE(info.st_mode))
+    finally:
+        os.close(descriptor)
 
 
 def vivaldi_theme(palette):
@@ -1284,7 +1501,7 @@ def sync_browsers(state_dir, data_dir, revert=False, spawn=True):
     a running Vivaldi is left for a background wait rather than written under
     it, and so is the one prefs.js line a Firefox-family revert takes out."""
     detected = detected_browsers()
-    if not detected:
+    if not detected and not revert:
         return "not-installed", "no supported browser found", []
     palette = None if revert else browser_palette(data_dir)
     if not revert and palette is None:
@@ -1293,9 +1510,10 @@ def sync_browsers(state_dir, data_dir, revert=False, spawn=True):
     manifest = read_json(manifest_path)
     captured_before = json.dumps(manifest, sort_keys=True)
     stylesheet = firefox_stylesheet(palette) if palette else None
-    done, pending, waits, skipped = [], [], [], set()
+    done, pending, waits, skipped, abandoned = [], [], [], set(), set()
     for name, family, profiles in detected:
         held = vivaldi_pids() if family == "vivaldi" else []
+        changed = failed = False
         if not held:
             for profile in profiles:
                 try:
@@ -1307,19 +1525,34 @@ def sync_browsers(state_dir, data_dir, revert=False, spawn=True):
                     elif revert:
                         revert_vivaldi_profile(profile, manifest)
                     elif not sync_vivaldi_profile(profile, palette, manifest):
-                        skipped.add(name)
-                except OSError:
+                        raise OSError(f"unusable preferences in {profile}")
+                    changed = True
+                except (OSError, ValueError, RecursionError):
                     # One profile this will not write into -- a linked user.js,
-                    # a folder that fails the ownership checks -- is no reason
-                    # to leave every other browser as it was.
+                    # a folder that fails the ownership checks, a file the
+                    # browser left unparseable -- is no reason to leave every
+                    # other browser as it was.
+                    failed = True
                     skipped.add(name)
+                    abandoned.add(str(profile))
         if held:
             pending.append(name)
             waits.extend(held)
-        else:
+        elif changed or not failed:
+            # Named as done only if something of it was; a browser whose only
+            # profile was refused is reported as refused, not as both.
             done.append(name)
-    # Records emptied by a revert go too, rather than lingering as {}.
     captured = manifest.get("browsers")
+    if revert and isinstance(captured, dict):
+        # A revert that cannot be finished -- the profile is gone, or can no
+        # longer be changed safely -- is dropped rather than kept outstanding:
+        # an outstanding capture is retried on every window event, forever.
+        present = {str(profile) for _, _, profiles in detected for profile in profiles}
+        for records in captured.values():
+            if isinstance(records, dict):
+                for key in [key for key in records if key not in present or key in abandoned]:
+                    records.pop(key)
+    # Records emptied by a revert go too, rather than lingering as {}.
     if isinstance(captured, dict):
         for family in [key for key, value in captured.items() if not value]:
             captured.pop(family)
@@ -1327,6 +1560,8 @@ def sync_browsers(state_dir, data_dir, revert=False, spawn=True):
             manifest.pop("browsers")
     if json.dumps(manifest, sort_keys=True) != captured_before:
         write_json(manifest_path, manifest)
+    if not detected:
+        return "not-installed", "no supported browser found", []
     if pending and spawn:
         spawn_browsers_waiter(state_dir, data_dir)
     summary = ", ".join(done)
@@ -1520,10 +1755,25 @@ def write_lines(path, lines):
 MAX_FOREIGN_FILE = 8 * 1024 * 1024
 
 
+def open_regular(path, mode="r"):
+    """Open path for reading, as a regular file only and without blocking. This
+    runs unattended on every window event, and a fifo planted where a file is
+    expected would otherwise block it -- and every sync queued behind it --
+    indefinitely."""
+    opened = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(opened).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        return os.fdopen(opened, mode)
+    except BaseException:
+        os.close(opened)
+        raise
+
+
 def read_capped_bytes(path, limit=MAX_FOREIGN_FILE):
     """read_capped for content that is copied rather than parsed."""
     try:
-        with path.open("rb") as handle:
+        with open_regular(path, "rb") as handle:
             data = handle.read(limit + 1)
     except OSError:
         return None
@@ -1556,7 +1806,7 @@ def read_capped(path, limit=MAX_FOREIGN_FILE):
     Undecodable content returns None too, so the caller skips it rather than
     rewriting a file through replacement characters."""
     try:
-        with path.open("r") as handle:
+        with open_regular(path) as handle:
             data = handle.read(limit + 1)
     except (OSError, UnicodeDecodeError):
         return None
@@ -2492,9 +2742,9 @@ def rewrite_pear_themes(chosen):
         return
     try:
         config = json.loads(read_capped(path) or "")
-    except ValueError:
+    except (ValueError, RecursionError):
         return
-    options = config.get("options")
+    options = config.get("options") if isinstance(config, dict) else None
     if not isinstance(options, dict):
         return
     current = options.get("themes")
@@ -2513,9 +2763,10 @@ def captured_pear_themes(snapshot_dir, manifest):
         return []
     try:
         backup = json.loads((snapshot_dir / entry["backup"]).read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
-    themes = backup.get("options", {}).get("themes")
+    options = backup.get("options") if isinstance(backup, dict) else None
+    themes = options.get("themes") if isinstance(options, dict) else None
     return themes if isinstance(themes, list) else []
 
 

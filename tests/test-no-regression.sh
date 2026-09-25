@@ -24,7 +24,15 @@ chk "PATH validated in both python helpers" \
 
 chk "no predictable .tmp writers remain" \
   "$(count 'with_suffix\("\.tmp"\)|hyprchroma-tmp' lib/hyprchroma-state lib/hyprchroma-dark-reader bin/hyprchroma lib/sync-qt-kde-theme)" "0"
-chk "atomic_write is the writer" "$(count 'def atomic_write' lib/hyprchroma-state lib/hyprchroma-dark-reader)" "2"
+# One writer per helper: atomic_write_at does the work, and atomic_write, for a
+# path, only opens the verified parent and hands it over. One rename apiece
+# means no second writer has grown up beside it.
+chk "atomic_write_at is the writer, once per helper" \
+  "$(count 'def atomic_write_at\(' lib/hyprchroma-state lib/hyprchroma-dark-reader)" "2"
+chk "...atomic_write only delegates to it" \
+  "$(count 'def atomic_write\(' lib/hyprchroma-state lib/hyprchroma-dark-reader)" "2"
+chk "...and it holds the only rename in either helper" \
+  "$(count 'os\.replace\(' lib/hyprchroma-state lib/hyprchroma-dark-reader)" "2"
 # Shell no longer creates temporaries of its own at all: every write it makes
 # goes through the state helper, which does it under a verified descriptor.
 chk "no shell script creates its own temporary" \

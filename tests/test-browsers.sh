@@ -235,7 +235,7 @@ chk("reverting with Firefox open: its prefs.js line waits for it",
 chk("...while everything else of it is already reverted",
     ((G / "chrome").exists(), (G / "user.js").exists()), (False, False))
 chk("...prefs.js is left for the browser to finish with",
-    st.stylesheets_pref_on(G), True)
+    st.stylesheets_pref_on((G / "prefs.js").read_text()), True)
 chk("...and its capture is kept until that is done", list(manifest()["browsers"]["firefox"]), [str(G)])
 
 chk("reverted: userChrome.css is byte for byte what the user had",
@@ -250,7 +250,7 @@ chk("the preference already on beforehand stays on", (C / "prefs.js").read_text(
 chk("files that existed empty stay, empty",
     ((Dp / "chrome/userChrome.css").read_text(), (Dp / "user.js").read_text(), (Dp / "chrome").is_dir()),
     ("", "", True))
-chk("a crash's stale lock does not hold up the revert", st.stylesheets_pref_on(ff / "h.stale"), False)
+chk("a crash's stale lock does not hold up the revert", st.stylesheets_pref_on((ff / "h.stale/prefs.js").read_text()), False)
 chk("the planted link's target was never touched", (root / "victim.txt").read_text(), "keep me\n")
 chk("the refused profiles are still exactly as they were", (tree(E_), tree(I)), (before[E_], before[I]))
 

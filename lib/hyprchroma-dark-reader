@@ -87,49 +87,57 @@ def open_dir(path, create: bool = False) -> int:
 def atomic_write(path, data, mode: int | None = None) -> None:
     """Replace path with data, through a temporary in a verified directory."""
     path = Path(path)
-    if isinstance(data, str):
-        data = data.encode()
     descriptor = open_dir(path.parent, create=True)
     try:
-        if mode is None:
-            try:
-                mode = stat.S_IMODE(
-                    os.stat(path.name, dir_fd=descriptor, follow_symlinks=False).st_mode)
-            except (FileNotFoundError, OSError):
-                mode = 0o644
-        temporary = None
-        for _ in range(_TEMPORARY_ATTEMPTS):
-            candidate = f".{path.name}.{secrets.token_hex(8)}.tmp"
-            try:
-                opened = os.open(
-                    candidate,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    0o600,
-                    dir_fd=descriptor,
-                )
-            except FileExistsError:
-                continue
-            temporary = candidate
-            break
-        if temporary is None:
-            raise OSError(f"could not create a temporary beside {path}")
-        try:
-            with os.fdopen(opened, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-                os.fchmod(handle.fileno(), mode)
-            os.replace(temporary, path.name,
-                       src_dir_fd=descriptor, dst_dir_fd=descriptor)
-            os.fsync(descriptor)
-        except BaseException:
-            try:
-                os.unlink(temporary, dir_fd=descriptor)
-            except FileNotFoundError:
-                pass
-            raise
+        atomic_write_at(descriptor, path.name, data, mode)
     finally:
         os.close(descriptor)
+
+
+def atomic_write_at(descriptor: int, name: str, data, mode: int | None = None) -> None:
+    """atomic_write for a name in a directory already open and verified, so a
+    caller that walked there itself, following no link, keeps that walk."""
+    if name in ("", ".", "..") or "/" in name:
+        raise OSError(f"refusing to write {name!r}: not a plain file name")
+    if isinstance(data, str):
+        data = data.encode()
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(
+                os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+        except (FileNotFoundError, OSError):
+            mode = 0o644
+    temporary = None
+    for _ in range(_TEMPORARY_ATTEMPTS):
+        candidate = f".{name}.{secrets.token_hex(8)}.tmp"
+        try:
+            opened = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=descriptor,
+            )
+        except FileExistsError:
+            continue
+        temporary = candidate
+        break
+    if temporary is None:
+        raise OSError(f"could not create a temporary beside {name}")
+    try:
+        with os.fdopen(opened, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, name,
+                   src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        os.fsync(descriptor)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def safe_read(path, limit: int) -> str | None:
@@ -143,11 +151,21 @@ def safe_read(path, limit: int) -> str | None:
     except OSError:
         return None
     try:
-        opened = os.open(path.name, os.O_RDONLY | os.O_CLOEXEC, dir_fd=descriptor)
+        # O_NONBLOCK, and nothing but a regular file: a fifo planted at the path
+        # would otherwise block this unattended service indefinitely.
+        opened = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=descriptor)
     except OSError:
         return None
     finally:
         os.close(descriptor)
+    try:
+        regular = stat.S_ISREG(os.fstat(opened).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(opened)
+        return None
     try:
         with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
             content = handle.read(limit + 1)
@@ -423,6 +441,21 @@ def valid_extension_id(value: object) -> bool:
 MAX_FOREIGN_FILE = 8 * 1024 * 1024
 
 
+def open_regular(path, mode="r"):
+    """Open path for reading, as a regular file only and without blocking. This
+    runs unattended on every window event, and a fifo planted where a file is
+    expected would otherwise block it -- and every sync queued behind it --
+    indefinitely."""
+    opened = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        if not stat.S_ISREG(os.fstat(opened).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        return os.fdopen(opened, mode)
+    except BaseException:
+        os.close(opened)
+        raise
+
+
 def read_capped(path: Path, limit: int = MAX_FOREIGN_FILE) -> str | None:
     """Read a file another program owns, or None if it cannot be trusted to fit.
 
@@ -433,7 +466,7 @@ def read_capped(path: Path, limit: int = MAX_FOREIGN_FILE) -> str | None:
     read. Undecodable content also returns None, so the caller skips rather than
     processing replacement characters."""
     try:
-        with path.open("r") as handle:
+        with open_regular(path) as handle:
             data = handle.read(limit + 1)
     except (OSError, UnicodeDecodeError):
         return None
@@ -447,7 +480,7 @@ def read_capped_json(path: Path):
         return {}
     try:
         parsed = json.loads(data)
-    except ValueError:
+    except (ValueError, RecursionError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
