@@ -32,6 +32,7 @@ Panel {
   readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
   readonly property string settingsPath: stateDir + "/settings.json"
+  readonly property string statusPath: stateDir + "/status.json"
 
   // hyprchroma is a separate package and does all the actual work; this panel
   // only drives it. Without it every toggle would fail quietly and the panel
@@ -421,6 +422,28 @@ Panel {
       }
     }
     onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+    onFileChanged: reload()
+  }
+
+  // The applications still showing the previous theme, as the service keeps
+  // them: after each sync, and each time a window opens or closes. Watched
+  // rather than asked for, so the bar icon's count follows an application
+  // being closed without anything here polling.
+  FileView {
+    id: statusFile
+    path: root.statusPath
+    printErrors: false
+    watchChanges: true
+    onLoaded: {
+      try {
+        var names = JSON.parse(text()).staleApps
+        if (Array.isArray(names))
+          root.staleApps = names.filter(function(name) { return typeof name === "string" && name !== "" })
+      } catch (error) {
+        // A partly written or foreign file: keep the last list rather than
+        // flicker the count to zero.
+      }
+    }
     onFileChanged: reload()
   }
 

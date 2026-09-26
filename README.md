@@ -70,6 +70,8 @@ With the bar widget:
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
 
+* While applications are still showing the previous theme, the icon takes your
+  theme's alert color with a small count of how many to close; `/` lists them.
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely (press `/` and its number to restore).
 * GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and

@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
 import qs.Ui
 
 BarWidget {
@@ -10,6 +11,12 @@ BarWidget {
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
   readonly property bool popoutSwitchClosing: panelLoader.item
     ? panelLoader.item.popoutSwitchClosing === true : false
+
+  // Applications still showing the previous theme: the ones to close. The icon
+  // takes the theme's urgent color, as Omarchy's agents widget does when a
+  // limit is near, and a small raised count says how many.
+  readonly property int staleCount: panelLoader.item && panelLoader.item.staleApps
+    ? panelLoader.item.staleApps.length : 0
 
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
@@ -89,9 +96,28 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\udb80\udfd8"
-    tooltipText: root.opened ? "Close Omarchroma" : "Open Omarchroma"
+    active: root.staleCount > 0
+    tooltipText: root.opened ? "Close Omarchroma"
+      : root.staleCount === 1 ? "Open Omarchroma: 1 app to close for the new theme"
+      : root.staleCount > 1 ? "Open Omarchroma: " + root.staleCount + " apps to close for the new theme"
+      : "Open Omarchroma"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.togglePanel()
     }
+  }
+
+  // Raised to the icon's top right, like an exponent, in the same urgent color.
+  Text {
+    id: staleBadge
+    visible: root.staleCount > 0
+    text: root.staleCount > 9 ? "9+" : String(root.staleCount)
+    color: button.activeColor
+    font.family: button.fontFamily
+    font.pixelSize: Math.max(7, Math.round(Style.bar.iconFont * 0.62))
+    font.bold: true
+    renderType: Text.NativeRendering  // as the shell draws the glyph beside it
+    x: Math.round(button.x + (button.width + Style.bar.iconCanvas) / 2 - implicitWidth * 0.3)
+    y: Math.round(button.y + (button.height - Style.bar.iconCanvas) / 2 - implicitHeight * 0.35)
+    z: 2
   }
 }

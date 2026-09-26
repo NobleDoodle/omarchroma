@@ -1905,6 +1905,18 @@ def running_executables():
     return names
 
 
+def record_stale_apps(state_dir, names):
+    """Keep the applications still showing the previous theme in status.json,
+    where the bar widget reads how many there are to close. Rewritten only when
+    the list changes, and never to create a status file just to say "none"."""
+    path = state_dir / "status.json"
+    status = read_json(path)
+    names = sorted(names)
+    if status.get("staleApps") != names and (status or names):
+        status["staleApps"] = names
+        write_json(path, status)
+
+
 def last_sync_at(state_dir):
     """When Hyprchroma last wrote the palette, as epoch seconds.
 
@@ -2794,6 +2806,14 @@ def event_work(state_dir, data_dir, memory):
     if framework_enabled(frameworks, "qtKde"):
         clear_app_color_schemes(state_dir)
     refresh_idle_apps()
+    # The window that opened or closed may be one still on the previous theme:
+    # the count the bar widget shows follows it here, within the same pass.
+    # Display only: failing it must not cost a whole sync, as a failed pass does.
+    try:
+        record_stale_apps(state_dir, stale_open_apps(last_sync_at(state_dir)))
+    except Exception as error:  # noqa: BLE001 -- reported; the count waits for the next event
+        print(f"Hyprchroma: could not update the stale application count: {error}",
+              file=sys.stderr, flush=True)
 
     trigger = event_trigger(state_dir)
     if (trigger != memory.get("trigger")
@@ -3161,6 +3181,8 @@ def main():
                        help="the palette was just written, so judge staleness against now")
     stale.add_argument("--since-last-sync", action="store_true",
                        help="judge staleness against the last recorded sync, for a standing display")
+    stale.add_argument("--record", action="store_true",
+                       help="also keep the list in status.json, for the bar widget's count")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -3235,7 +3257,10 @@ def main():
             since = last_sync_at(args.state_dir)
         else:
             since = None
-        for name in stale_open_apps(since):
+        names = stale_open_apps(since)
+        if args.record:
+            record_stale_apps(args.state_dir, names)
+        for name in names:
             print(name)
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():

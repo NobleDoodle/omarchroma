@@ -274,7 +274,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.8.1"
+    echo "hyprchroma 2.9.0"
     exit 0
     ;;
 esac
@@ -343,8 +343,10 @@ recycle_idle_apps() {
 # them; say which ones they are so the choice to restart is the user's.
 report_stale_apps() {
   local stale_apps stale_list last_notified
+  # --record keeps the list in status.json too, where the bar widget reads how
+  # many applications are left to close. Only here, under the sync lock.
   stale_apps=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps "$@" 2>/dev/null || true)
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps --record "$@" 2>/dev/null || true)
   if [[ -z $stale_apps ]]; then
     # Nothing stale now, so the next time something is, it is worth saying
     # again rather than mistaken for the same staleness already reported.

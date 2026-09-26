@@ -50,6 +50,7 @@ def run(command, check=False):
 st.subprocess = types.SimpleNamespace(
     run=run, Popen=lambda command, **k: spawned.append(command[-1]), DEVNULL=None, PIPE=None)
 st.kde_color_client_pids = lambda: []
+st.stale_open_apps = lambda since=None: []
 
 memory = {}
 def event():
