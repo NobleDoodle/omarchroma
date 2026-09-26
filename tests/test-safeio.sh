@@ -128,20 +128,22 @@ PY
 # --- 6. the instances the first pass missed --------------------------------
 chk "no lock is opened for writing anywhere" \
   "$(countcode 'open\([^)]*\.lock", "w"\)' lib/hyprchroma-state)" "0"
-# Seven: the definition, the subcommand that exposes it, the four watcher
-# locks that now go through it, and the sync lock a browsers waiter takes.
+# Eight: the definition, the subcommand that exposes it, the four watcher
+# locks that now go through it, the sync lock a browsers waiter takes, and
+# try_lock, through which the daemon takes the sync lock and asks whether a
+# waiter is alive.
 chk "every watcher lock is prepared first" \
-  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "7"
+  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "8"
 # Scoped to bin/ only before, which is why a fifth copy sat in the Qt/KDE
 # generator writing kdeglobals by pathname and went unnoticed for a release.
 chk "no generator embeds a writer of its own" \
   "$(countcode 'tempfile\.mkstemp\(|os\.replace\(temporary' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "0"
-# Fourteen: ten in bin/hyprchroma (five embedded Python writers, the theme
+# Thirteen: ten in bin/hyprchroma (five embedded Python writers, the theme
 # hook, a captured palette, the Pear stylesheet, the browsers' palette, and the
-# last-stale-notify record), two GTK stylesheets, and the Qt/KDE color scheme
-# plus kdeglobals.
+# last-stale-notify record), one in the GTK generator that writes both its
+# stylesheets when they change, and the Qt/KDE color scheme plus kdeglobals.
 chk "every generator write goes through the helper" \
-  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "14"
+  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "13"
 # Five: settings on a toggle, status, the Dark Reader theme, the Pear config,
 # and the removed-framework list.
 chk "sync's embedded writers call the helper" \

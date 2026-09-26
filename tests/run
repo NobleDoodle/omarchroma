@@ -10,6 +10,12 @@ sandbox=$(mktemp -d)
 trap 'rm -rf "$sandbox"' EXIT
 export HOME=$sandbox/home XDG_RUNTIME_DIR=$sandbox/run
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+# Nor the real session bus: recycling asks it which applications are idle and
+# can end them, so a suite that reached it could act on real ones. The one
+# suite that runs the packaged daemon under the user manager gets the address
+# under a name of its own, and uses it for that one call.
+export HYPRCHROMA_TEST_SESSION_BUS=${DBUS_SESSION_BUS_ADDRESS:-}
+unset DBUS_SESSION_BUS_ADDRESS
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 total=0; failed=0
 for suite in tests/test-*.sh; do

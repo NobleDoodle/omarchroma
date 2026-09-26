@@ -64,6 +64,10 @@ if ./$P --source 2>/dev/null | grep -q omarchy; then
     "$(XDG_CONFIG_HOME=$T ./$P selection_foreground | grep -c '^#')" "1"
   chk "what capture wrote reads back without Omarchy" \
     "$(XDG_CONFIG_HOME=$T ./$P --all | wc -l)" "21"
+  # The sync's single run: the whole palette and what identifies it.
+  chk "--for-sync is --all, line for line, and the source id after it" \
+    "$(diff <(./$P --all) <(./$P --for-sync | grep -v '^source_id') && ./$P --for-sync | sed -n 's/^source_id\t//p')" \
+    "$(./$P --source-id)"
 else
   echo "  SKIP capture checks (no Omarchy on this machine)"
 fi

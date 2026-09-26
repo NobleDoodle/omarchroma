@@ -45,9 +45,16 @@ PALETTE_LOADED=0
 
 load_palette() {
   local key value
+  # The sync hands over the palette it has just resolved; this resolves its
+  # own only when run on its own. Every value is checked as #rrggbb by color()
+  # either way, so what arrives here can choose colors and nothing else.
   while IFS=$'\t' read -r key value; do
     [[ -n $key ]] && PALETTE[$key]=$value
-  done < <("$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1)
+  done < <(if [[ -n ${HYPRCHROMA_PALETTE_TSV:-} ]]; then
+             printf '%s\n' "$HYPRCHROMA_PALETTE_TSV"
+           else
+             "$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1
+           fi)
   if [[ -z ${PALETTE[background]:-} ]]; then
     echo "sync-qt-kde-theme: no palette available; see 'hyprchroma palette --template'" >&2
     exit 1
@@ -250,7 +257,8 @@ EOF
 })
 
 scheme_changed=1
-if [[ $scheme_content == "$(cat "$scheme_file" 2>/dev/null)" ]]; then
+# Read only when a regular file: a fifo planted in its place would block it.
+if [[ -f $scheme_file && ! -L $scheme_file && $scheme_content == "$(cat -- "$scheme_file" 2>/dev/null)" ]]; then
   scheme_changed=0
 else
   printf '%s\n' "$scheme_content" |

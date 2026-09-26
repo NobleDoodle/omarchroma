@@ -5,11 +5,9 @@ import configparser
 import json
 import os
 import re
-import secrets
 import sqlite3
 import stat
 import sys
-import tempfile
 from collections import namedtuple
 from pathlib import Path
 
@@ -109,7 +107,7 @@ def atomic_write_at(descriptor: int, name: str, data, mode: int | None = None) -
             mode = 0o644
     temporary = None
     for _ in range(_TEMPORARY_ATTEMPTS):
-        candidate = f".{name}.{secrets.token_hex(8)}.tmp"
+        candidate = f".{name}.{os.urandom(8).hex()}.tmp"
         try:
             opened = os.open(
                 candidate,
@@ -631,10 +629,66 @@ def running_executable(pid: str) -> str | None:
     return executable.removesuffix(" (deleted)")
 
 
+# What is running, read once per run of this helper however many profiles it
+# checks: checking each profile against /proc on its own read the whole process
+# table -- and every open file of every process -- once per profile.
+_EXECUTABLES = None
+
+
+def executable_index() -> dict:
+    """{executable name: [pids]} for every process this account can see."""
+    global _EXECUTABLES
+    if _EXECUTABLES is None:
+        index = {}
+        for entry in Path("/proc").iterdir():
+            if entry.name.isdigit():
+                executable = running_executable(entry.name)
+                if executable:
+                    index.setdefault(executable, []).append(int(entry.name))
+        _EXECUTABLES = index
+    return _EXECUTABLES
+
+
 def pids_running(executables) -> list[int]:
-    expected = set(executables)
-    return [int(entry.name) for entry in Path("/proc").iterdir()
-            if entry.name.isdigit() and running_executable(entry.name) in expected]
+    index = executable_index()
+    return sorted({pid for executable in set(executables) for pid in index.get(executable, [])})
+
+
+LOCK_DEVICE_INODE = re.compile(r"\A[0-9a-f]+:[0-9a-f]+:(\d+)\Z")
+
+
+def posix_lock_holders() -> dict | None:
+    """{inode: {pids}} for every POSIX lock on the system, from /proc/locks, or
+    None if it cannot be read. One small read, where finding a lock by its open
+    file meant reading every descriptor of every process."""
+    try:
+        with open("/proc/locks") as handle:
+            lines = handle.read(1 << 20).splitlines()
+    except OSError:
+        return None
+    holders = {}
+    for line in lines:
+        fields = line.split()
+        for index, field in enumerate(fields):
+            found = LOCK_DEVICE_INODE.match(field)
+            if found and index > 0 and fields[index - 1].isdigit():
+                holders.setdefault(int(found.group(1)), set()).add(int(fields[index - 1]))
+                break
+    return holders
+
+
+def holds_open(pid: int, path: str) -> bool:
+    try:
+        descriptors = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        return False
+    for descriptor in descriptors:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{descriptor}") == path:
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def profile_holders(profile: Path) -> list[int]:
@@ -642,24 +696,19 @@ def profile_holders(profile: Path) -> list[int]:
 
     Exact where a process name is not -- Zen runs as zen-bin, say -- and the
     lock symlink beside it, left by a crash or a kill, says nothing about
-    whether anything is running."""
+    whether anything is running. The browser holds a POSIX lock on the file, so
+    /proc/locks names the candidates by inode; each is then confirmed to have
+    this very file open, since an inode number alone can repeat across
+    filesystems. Without /proc/locks, every process's files are read."""
     lock = os.path.join(os.path.realpath(profile), ".parentlock")
-    holders = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            descriptors = os.listdir(entry / "fd")
-        except OSError:
-            continue
-        for descriptor in descriptors:
-            try:
-                if os.readlink(entry / "fd" / descriptor) == lock:
-                    holders.append(int(entry.name))
-                    break
-            except OSError:
-                continue
-    return holders
+    try:
+        inode = os.stat(lock).st_ino
+    except OSError:
+        return []  # no lock file, so nothing holds it
+    locks = posix_lock_holders()
+    candidates = (locks.get(inode, set()) if locks is not None
+                  else {int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()})
+    return sorted(pid for pid in candidates if holds_open(pid, lock))
 
 
 def target_pids(target) -> list[int]:
@@ -671,23 +720,32 @@ def target_pids(target) -> list[int]:
     return pids_running(BROWSERS[target.browser]["executables"])
 
 
-def browser_info() -> dict:
-    """Where Dark Reader is, and which of those browsers are open now."""
+def targets_signature(targets) -> str:
+    """Changes when Dark Reader appears in, or goes from, any profile, so a sync
+    that would otherwise find nothing changed themes it at once."""
+    return ";".join(f"{target.browser}:{target.profile}" for target in targets)
+
+
+def browser_info(running: bool = False) -> dict:
+    """Where Dark Reader is -- and, when asked, which of those browsers are open
+    now. The sync asks only where: reading the process table as well cost more
+    than the rest of the answer, on every sync, and nothing there used it."""
     targets = dark_reader_targets()
-    running = {}
-    for target in targets:
-        pids = target_pids(target)
-        if pids:
-            running.setdefault(target.name, set()).update(pids)
-    return {
+    info = {
         "installed": bool(targets),
         "browsers": sorted({target.name for target in targets}),
         "profiles": [str(target.profile) for target in targets],
-        # Changes when Dark Reader appears in, or goes from, any profile, so a
-        # sync that would otherwise find nothing changed themes it at once.
-        "signature": ";".join(f"{target.browser}:{target.profile}" for target in targets),
-        "running": [{"name": name, "pids": sorted(pids)} for name, pids in sorted(running.items())],
+        "signature": targets_signature(targets),
     }
+    if running:
+        groups = {}
+        for target in targets:
+            pids = target_pids(target)
+            if pids:
+                groups.setdefault(target.name, set()).update(pids)
+        info["running"] = [{"name": name, "pids": sorted(pids)}
+                           for name, pids in sorted(groups.items())]
+    return info
 
 
 # -- captures -------------------------------------------------------------------
@@ -1025,6 +1083,8 @@ def reset_theme(status_file: Path | None) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--info", action="store_true")
+    parser.add_argument("--running", action="store_true",
+                        help="with --info, also which of those browsers are open")
     parser.add_argument("--theme", type=Path)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--status", type=Path)
@@ -1033,7 +1093,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.info:
-        print(json.dumps(browser_info()))
+        print(json.dumps(browser_info(running=args.running)))
         return 0
     if args.restore:
         if args.mode == "stock":

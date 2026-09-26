@@ -60,6 +60,9 @@ export HYPRCHROMA_LIB HYPRCHROMA_SHARE
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/hyprchroma"
 STATUS_FILE="$STATE_DIR/status.json"
+# The palette this run resolved, handed to the generators it starts. Never an
+# inherited value: only what this script set itself is passed down.
+unset HYPRCHROMA_PALETTE_TSV
 SETTINGS_FILE="$STATE_DIR/settings.json"
 # Lock in the per-user runtime dir when available, otherwise the user-owned
 # state dir. Never /tmp: a fixed name there is a symlink/squatting target on a
@@ -271,7 +274,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.8.0"
+    echo "hyprchroma 2.8.1"
     exit 0
     ;;
 esac
@@ -324,7 +327,10 @@ log() {
 notify_user() {
   (( notify )) || return 0
   command -v notify-send >/dev/null || return 0
-  notify-send -a Hyprchroma "Hyprchroma" "$*"
+  # A notification that cannot be shown -- the notification daemon restarting,
+  # no session bus -- must not end the sync that wanted to show it: under
+  # set -e it did, partway through a theme change.
+  notify-send -a Hyprchroma "Hyprchroma" "$*" 2>/dev/null || true
 }
 
 
@@ -371,13 +377,20 @@ PALETTE_LOADED=0
 
 load_palette() {
   local key value
+  # The palette and what identifies it, in one run of the resolver: separate
+  # runs for each, and a third to check a palette existed at all, each paid
+  # for a start of the resolver and of Omarchy's own.
   while IFS=$'\t' read -r key value; do
     [[ -n $key ]] && PALETTE[$key]=$value
-  done < <("$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1)
-  if [[ -z ${PALETTE[background]:-} ]]; then
-    echo "hyprchroma: no palette available; see 'hyprchroma palette --template'" >&2
-    exit 1
-  fi
+  done < <("$HYPRCHROMA_LIB/hyprchroma-palette" --for-sync 2>&1)
+  [[ -n ${PALETTE[background]:-} ]] ||
+    fail "no palette available; see 'hyprchroma palette --template'"
+  # For the GTK and Qt/KDE generators, which otherwise each resolve it again.
+  # They validate every value as #rrggbb where they read it, as this does.
+  HYPRCHROMA_PALETTE_TSV=$(for key in "${!PALETTE[@]}"; do
+    [[ $key == source_id ]] || printf '%s\t%s\n' "$key" "${PALETTE[$key]}"
+  done)
+  export HYPRCHROMA_PALETTE_TSV
   PALETTE_LOADED=1
 }
 
@@ -398,9 +411,9 @@ palette_mode() {
 }
 
 # Omarchy is one palette source, not a requirement: the resolver decides, and
-# says so itself when nothing can provide a palette.
-"$HYPRCHROMA_LIB/hyprchroma-palette" background >/dev/null 2>&1 ||
-  fail "no palette available; see 'hyprchroma palette --template'"
+# load_palette says so when nothing can provide one. Not checked up front any
+# more: that was a whole run of the resolver on every sync, and a revert needs
+# no palette at all.
 # Checked rather than assumed: jq gates every framework through target_enabled,
 # whose "|| echo true" fallback would silently report each one enabled if jq
 # were missing, and python3 writes the settings and status files. Both ship with
@@ -412,8 +425,6 @@ command -v python3 >/dev/null || fail "python3 is not available"
 [[ -f "$HYPRCHROMA_SHARE/pear-theme.css.template" ]] || fail "Pear CSS template is missing"
 [[ -x "$HYPRCHROMA_LIB/hyprchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
 [[ -x "$HYPRCHROMA_LIB/hyprchroma-state" ]] || fail "state helper is missing"
-
-mkdir -p "$STATE_DIR" "$DATA_DIR"
 
 
 target_enabled() {
@@ -482,13 +493,40 @@ fi
 # planted at it, on every unattended sync; flock(2) needs no write access at
 # all, so opening read-only means nothing on this path can be truncated or
 # written through even if the entry were swapped between the two steps.
-"$HYPRCHROMA_LIB/hyprchroma-state" prepare-lock --path "$LOCK_FILE" ||
-  fail "cannot prepare the lock file $LOCK_FILE"
-[[ -f $LOCK_FILE ]] || fail "lock file $LOCK_FILE was not created"
+# Once it exists as this user's own regular file -- every run after the first --
+# it is used as it is. The directory is this user's alone (the runtime dir, or
+# the state dir), so nobody else can have placed or swapped it, and a planted
+# symlink or fifo fails the check and goes to the helper to be replaced.
+prepare_lock_file() {
+  if [[ -L $1 || ! -f $1 || ! -O $1 ]]; then
+    "$HYPRCHROMA_LIB/hyprchroma-state" prepare-lock --path "$1" ||
+      fail "cannot prepare the lock file $1"
+    [[ -f $1 ]] || fail "lock file $1 was not created"
+  fi
+}
+prepare_lock_file "$LOCK_FILE"
 exec 9<"$LOCK_FILE"
+# Waited for, not skipped. A run that found another holding the lock used to
+# leave, and the one running may have started too early to see what this one
+# was started for -- a waiter's write, or the window that just closed -- so it
+# sat undone until some later event happened along. A plain quiet run, the
+# kind the daemon and a person at a terminal start, queues at most one behind
+# it: each compares everything afresh, so one waiting covers any number more.
+# Anything more specific -- a target, a toggle, a forced run -- always waits.
+LOCK_WAIT_SECONDS=120
 if ! flock -n 9; then
-  log "another synchronization is already running"
-  exit 0
+  if [[ $target == all && $force == 0 && -z $set_enabled ]]; then
+    queue_lock="${LOCK_FILE%.lock}-queue.lock"
+    prepare_lock_file "$queue_lock"
+    exec 8<"$queue_lock"
+    if ! flock -n 8; then
+      log "a synchronization is already waiting to run"
+      exit 0
+    fi
+  fi
+  flock -w "$LOCK_WAIT_SECONDS" 9 ||
+    fail "another synchronization held the lock for ${LOCK_WAIT_SECONDS}s"
+  exec 8<&-  # in the lock now; the next quiet run may queue behind this one
 fi
 
 # Switching a framework off reverts it, rather than only stopping future syncs:
@@ -552,7 +590,10 @@ fi
 # Identifies the palette for change detection: Omarchy's theme name when
 # Omarchy is the source, the file's own content when it is not.
 load_palette
-theme_name=$("$HYPRCHROMA_LIB/hyprchroma-palette" --source-id 2>/dev/null || echo unknown)
+# Only once there is a palette, so a machine with none is left exactly as it
+# was. Everything that writes before this point creates what it needs itself.
+mkdir -p "$STATE_DIR" "$DATA_DIR"
+theme_name=${PALETTE[source_id]:-unknown}
 background=$(color background)
 dark_background=$(color dark_background)
 darker_background=$(color darker_background)
@@ -600,33 +641,43 @@ fingerprint=$(
     sha256sum | cut -d' ' -f1
 )
 
-previous_fingerprint=""
-dark_reader_state=""
+previous_fingerprint="" dark_reader_state="" qt_kde_state="" browsers_previous=""
 if [[ -f "$STATUS_FILE" ]]; then
-  previous_fingerprint=$(jq -r '.fingerprint // ""' "$STATUS_FILE" 2>/dev/null || true)
-  dark_reader_state=$(jq -r '.darkReader // ""' "$STATUS_FILE" 2>/dev/null || true)
-  qt_kde_state=$(jq -r '.qtKde // ""' "$STATUS_FILE" 2>/dev/null || true)
-  browsers_previous=$(jq -r '.browsers // ""' "$STATUS_FILE" 2>/dev/null || true)
+  # One read of the status, not one per field. Joined on the unit separator,
+  # not a tab: a tab is whitespace to read, which runs empty fields together
+  # and shifts every later value into the wrong variable. Each value is
+  # stripped of the separator first, so none can spill into the next.
+  IFS=$'\x1f' read -r previous_fingerprint dark_reader_state qt_kde_state browsers_previous < <(
+    jq -r '[.fingerprint, .darkReader, .qtKde, .browsers]
+           | map(. // "" | tostring | gsub("\u001f"; " ")) | join("\u001f")' \
+      "$STATUS_FILE" 2>/dev/null) || true
 fi
-qt_kde_state=${qt_kde_state:-}
 
+# Both before the unchanged-state short-circuit, and in one run of the helper
+# rather than one each.
+#
 # A per-application color scheme overrides the one kdeglobals sets for every
 # app, so an app that writes one back drops out of theming until something
-# changes. Clear pins before the unchanged-state short-circuit, so this is
-# enforced on every run rather than only when the palette moves.
+# changes. Clearing pins here enforces that on every run rather than only when
+# the palette moves.
+#
+# An application with a window open is skipped by recycling, so the run that
+# closes it is the one that has to recycle it -- and that run is usually a
+# no-op for the palette; skipping it here would leave an application that was
+# open during the theme change never recycled at all. A forced run never
+# short-circuits, so it recycles after writing instead: see below.
+event_flags=()
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
-  "$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" clear-app-color-schemes
+  event_flags+=(--clear-app-color-schemes)
 fi
-
-# An application with a window open is skipped here, so the run that closes it
-# is the one that has to recycle it -- and that run is usually a no-op for the
-# palette. Do this before the unchanged-state short-circuit, or an application
-# that was open during the theme change never gets recycled at all. A forced run
-# never short-circuits, so it recycles after writing instead: see below.
-if (( ! force )); then
+# Recycling is for GTK applications; a run for Qt/KDE alone -- the one a KDE
+# application closing sets off -- has none to recycle.
+if (( ! force )) && [[ $target == "all" || $target == "gtk" ]]; then
+  event_flags+=(--refresh-idle-apps)
+fi
+if (( ${#event_flags[@]} )); then
   "$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps || true
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" event-pass "${event_flags[@]}"
 fi
 
 # Browser work that had to wait for a browser to close can outlive the waiter
@@ -871,7 +922,16 @@ theme = {
     "textStroke": 0,
     "useFont": False,
 }
-atomic_write(path, json.dumps(theme, indent=2) + "\n")
+content = json.dumps(theme, indent=2) + "\n"
+# Unchanged, it is not rewritten: that was a start of the state helper on every
+# sync. Read only when a regular file, and never more than it could be.
+try:
+    unchanged = (path.is_file() and not path.is_symlink()
+                 and path.open(encoding="utf-8").read(1 << 20) == content)
+except (OSError, UnicodeDecodeError):
+    unchanged = False
+if not unchanged:
+    atomic_write(path, content)
 PY
 
   "$HYPRCHROMA_LIB/hyprchroma-dark-reader" \
@@ -994,8 +1054,9 @@ else
 fi
 log "$message"
 if (( notify )); then
+  # As in notify_user: a notification that cannot be shown ends nothing.
   command -v notify-send >/dev/null && \
-    notify-send -a Hyprchroma "Colors synchronized" "$message"
+    notify-send -a Hyprchroma "Colors synchronized" "$message" 2>/dev/null || true
 fi
 
 # Everything is written to disk by this point, so anything started from now on

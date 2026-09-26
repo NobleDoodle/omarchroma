@@ -85,6 +85,10 @@ info = json.loads(out.stdout)
 chk("--info names every browser it is in", (info["installed"], info["browsers"]),
     (True, ["Chromium", "Firefox", "Helium", "Zen Browser"]))
 chk("...and a signature that changes with them", info["signature"].count(";"), 3)
+chk("...without reading the process table, which only the waiter needs", "running" in info, False)
+out = subprocess.run([helper, "--info", "--running"], capture_output=True, text=True,
+                     env=dict(os.environ, HOME=str(home)))
+chk("--info --running adds which of them are open", "running" in json.loads(out.stdout), True)
 
 # Firefox's own settings for Dark Reader, there before Hyprchroma ever ran.
 dr.write_firefox_storage_data(firefox / "storage-sync-v2.sqlite", {"enabled": False, "mine": 1})
@@ -198,8 +202,10 @@ chk("...and the status says so", json.loads(status.read_text())["darkReader"], "
 # -- knowing a browser is open ---------------------------------------------------
 dr.target_pids = real_target_pids
 profile = firefox_profile(".mozilla/firefox", "held.default", True)
+# As Firefox holds it: open, with a POSIX lock on it.
 holder = subprocess.Popen([sys.executable, "-c",
-    "import sys, time; f = open(sys.argv[1], 'a'); print('held', flush=True); time.sleep(30)",
+    "import fcntl, sys, time; f = open(sys.argv[1], 'a'); fcntl.lockf(f, fcntl.LOCK_EX);"
+    " print('held', flush=True); time.sleep(30)",
     str(profile / ".parentlock")], stdout=subprocess.PIPE, text=True)
 holder.stdout.readline()
 target = dr.Target("zen", "Zen Browser", "firefox", profile)

@@ -77,7 +77,7 @@ holdout = subprocess.Popen(["sleep", "100"])
 st.connection_pid = lambda name: {"test.Stale": gone.pid, "test.Kept": holdout.pid}[name]
 st.process_started_at = lambda pid: 0
 st.open_windows = lambda: []
-st.has_quit_action = lambda name, path: True
+st.has_quit_action = lambda name, path, pid=None: True
 # The real escalation is exercised above; this only has to prove that
 # refresh_idle_apps' own message depends on quit_application's answer, not on
 # whether it tried. Faking a target that survives every signal -- a D-state

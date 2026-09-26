@@ -4,16 +4,13 @@ import fcntl
 import json
 import os
 import re
-import secrets
 import select
 import shlex
 import signal
 import shutil
-import socket
 import stat
 import sys
 import subprocess
-import tempfile
 import time
 from collections import namedtuple
 from datetime import datetime
@@ -229,7 +226,7 @@ def atomic_write_at(descriptor: int, name: str, data, mode: int | None = None) -
             mode = 0o644
     temporary = None
     for _ in range(_TEMPORARY_ATTEMPTS):
-        candidate = f".{name}.{secrets.token_hex(8)}.tmp"
+        candidate = f".{name}.{os.urandom(8).hex()}.tmp"
         try:
             opened = os.open(
                 candidate,
@@ -1677,6 +1674,7 @@ def snapshot(state_dir, data_dir, target):
     snapshot_dir = state_dir / "original"
     manifest_path = snapshot_dir / "manifest.json"
     manifest = read_json(manifest_path)
+    before = json.dumps(manifest, sort_keys=True)
     home = Path.home()
 
     if target == "gtk":
@@ -1708,7 +1706,11 @@ def snapshot(state_dir, data_dir, target):
     else:
         raise SystemExit(f"unknown target: {target}")
 
-    write_json(manifest_path, manifest)
+    # Every capture above is taken once, so after the first sync this is almost
+    # always unchanged -- and rewriting it, fsync and all, on every sync of
+    # every framework was pure cost.
+    if json.dumps(manifest, sort_keys=True) != before:
+        write_json(manifest_path, manifest)
 
 
 def restore_file(snapshot_dir, entry):
@@ -1831,6 +1833,7 @@ def clear_app_color_schemes(state_dir):
     uninstaller puts the original back."""
     manifest_path = state_dir / "original/manifest.json"
     manifest = read_json(manifest_path)
+    before = json.dumps(manifest, sort_keys=True)
     recorded = manifest.setdefault("appColorSchemes", {})
     running = running_executables()
 
@@ -1852,7 +1855,10 @@ def clear_app_color_schemes(state_dir):
         write_lines(path, lines)
         print(f"Hyprchroma: cleared the {value} color scheme pinned in {path.name}")
 
-    write_json(manifest_path, manifest)
+    # Only when something was recorded: this runs on every window event, and
+    # rewriting -- and fsyncing -- an unchanged manifest each time was all cost.
+    if json.dumps(manifest, sort_keys=True) != before:
+        write_json(manifest_path, manifest)
 
 
 def restore_app_color_schemes(manifest):
@@ -2047,9 +2053,22 @@ WATCH_ROUNDS = 32
 # How long a waiter lingers before leaving it to the recovery service.
 WATCH_TIMEOUT_SECONDS = 900
 
-# A burst of window events -- a workspace of clients opening at login, say --
-# collapses into one sync this many seconds after the last one.
-EVENT_DEBOUNCE_SECONDS = 1.5
+# How long after a window opens or closes before acting on it. What follows is
+# a pass in this process costing tens of milliseconds, so this is short: it is
+# the time between an application closing and its next launch being themed.
+# Long enough still for a burst -- a workspace of clients at login -- to land
+# as one pass, and for a file chooser's portal to have sent the application its
+# answer before the portal is recycled.
+EVENT_DEBOUNCE_SECONDS = 0.3
+# A pass that finds a sync holding the lock is retried this soon, not dropped:
+# that sync may have started too early to see what the event changed.
+EVENT_RETRY_SECONDS = 0.5
+# However closely the inputs of a quiet sync are watched, a whole quiet sync --
+# which compares every value -- still runs on the first window event after
+# this long, so anything the watch misses is caught within it.
+FULL_CHECK_SECONDS = 600
+QUIET_SYNC = ["/usr/bin/hyprchroma", "--quiet"]
+OPT_IN_FRAMEWORKS = ("flatpak", "browsers")
 
 
 def kde_color_clients():
@@ -2143,7 +2162,7 @@ def watch_windows_close(stream, state_dir, data_dir, action):
             return
         try:
             received = stream.recv(4096)
-        except (TimeoutError, socket.timeout):
+        except TimeoutError:
             return  # the recovery service covers anything past this
         if not received:
             return  # Hyprland went away
@@ -2167,13 +2186,61 @@ def bus_call(dest, path, method, *args):
                  "--method", method, *args)
 
 
+# A well-known bus name. Anything else -- a unique ":1.42" name, or text that
+# is not a name at all -- is never looked up, recycled or turned into a path.
+BUS_NAME = re.compile(r"\A[A-Za-z][A-Za-z0-9_.-]+\Z")
+
+# The session bus as one refresh pass sees it: every name with its PID, and
+# which are activatable. Set for the length of a pass by bus_listing(); when it
+# is None each question goes to gdbus on its own, as before.
+_BUS = {"listing": None}
+
+
+def bus_listing():
+    """({name: pid}, {activatable names}) from two busctl calls, or None.
+
+    Asking gdbus once per name started a process for every name on the bus --
+    twenty-one of them, and 130 ms, on each window event -- to learn what one
+    listing already says. busctl reports the same PIDs gdbus does for every name
+    a pass looks at; if it cannot be run or read, None sends each question back
+    to gdbus rather than acting on a partial answer."""
+    def listing(*flags):
+        try:
+            result = subprocess.run(["busctl", "--user", "list", "--json=short", *flags],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    text=True, check=False, timeout=10)
+            entries = json.loads(result.stdout) if result.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError, TypeError):
+            return None  # not run, failed, or not read: each question goes to gdbus
+        return entries if isinstance(entries, list) else None
+    names, activatable = listing(), listing("--activatable")
+    if names is None or activatable is None:
+        return None
+    pids = {}
+    for entry in names:
+        name = entry.get("name") if isinstance(entry, dict) else None
+        pid = entry.get("pid") if isinstance(entry, dict) else None
+        if isinstance(name, str) and BUS_NAME.match(name) and isinstance(pid, int) and pid > 0:
+            pids[name] = pid
+    return pids, {entry.get("name") for entry in activatable
+                  if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                  and BUS_NAME.match(entry["name"])}
+
+
 def bus_names(method):
+    listing = _BUS["listing"]
+    if listing is not None and method in ("ListNames", "ListActivatableNames"):
+        pids, activatable = listing
+        return set(activatable) if method == "ListActivatableNames" else set(pids)
     raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
                    f"org.freedesktop.DBus.{method}")
     return set(re.findall(r"'([A-Za-z][A-Za-z0-9_.-]+)'", raw or ""))
 
 
 def connection_pid(name):
+    listing = _BUS["listing"]
+    if listing is not None and name in listing[0]:
+        return listing[0][name]
     raw = bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
                    "org.freedesktop.DBus.GetConnectionUnixProcessID", name)
     # "(uint32 52840,)" -- match the number only, never the 32 in the type name
@@ -2344,14 +2411,32 @@ def quit_application(pid, name, path):
     return False
 
 
-def has_quit_action(name, path):
+# (name, pid) pairs already asked and found to have no quit action, with when.
+# A process's actions do not change, and a long-lived one -- present on every
+# window event -- was asked again each time; the daemon keeps these. A call
+# that failed outright, which is what a service without GTK's actions
+# interface returns, is asked again after NO_ACTIONS_RECHECK_SECONDS, so one
+# transient failure cannot leave a stale application unrecycled for good.
+_NO_QUIT_ACTION = {}
+NO_ACTIONS_RECHECK_SECONDS = 600
+
+
+def has_quit_action(name, path, pid=None):
     """Whether this is a well-behaved GApplication-style desktop app, which is
     what this is really asking: quit_application no longer activates this
     action itself, but exposing one is still the filter for "a signal to this
     is asking a desktop app to close," not "sending a signal to whatever else
     is D-Bus activatable and idle."""
+    if pid is not None and (name, pid) in _NO_QUIT_ACTION:
+        failed_at = _NO_QUIT_ACTION[(name, pid)]
+        if failed_at is None or time.monotonic() - failed_at < NO_ACTIONS_RECHECK_SECONDS:
+            return False
     raw = bus_call(name, path, "org.gtk.Actions.List")
-    return raw is not None and re.search(r"'quit'", raw) is not None
+    found = raw is not None and re.search(r"'quit'", raw) is not None
+    if not found and pid is not None:
+        # None for an answer that was no, the time for a call that failed.
+        _NO_QUIT_ACTION[(name, pid)] = None if raw is not None else time.monotonic()
+    return found
 
 
 # Long enough that an application the user launched a moment ago, which has not
@@ -2424,6 +2509,14 @@ def refresh_idle_apps(since=None):
     if newer_than is None or windows is None:
         # Without a window list an idle service cannot be told from one in use.
         return
+    _BUS["listing"] = bus_listing()
+    try:
+        _refresh_idle_apps(newer_than, windows)
+    finally:
+        _BUS["listing"] = None
+
+
+def _refresh_idle_apps(newer_than, windows):
     windowed = {klass for _, klass, _ in windows if klass}
     window_pids = {pid for _, _, pid in windows}
     running = bus_names("ListActivatableNames") & bus_names("ListNames")
@@ -2465,7 +2558,7 @@ def refresh_idle_apps(since=None):
         if started is None or started >= newer_than:
             continue
         path = "/" + name.replace(".", "/").replace("-", "_")
-        if not has_quit_action(name, path):
+        if not has_quit_action(name, path, pid):
             continue
         if quit_application(pid, name, path):
             print(f"Hyprchroma: closed idle {name} so its next window is themed")
@@ -2510,7 +2603,7 @@ def browser_client_groups():
     own wait."""
     try:
         result = subprocess.run(
-            [dark_reader_helper(), "--info"],
+            [dark_reader_helper(), "--info", "--running"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False,
         )
         running = json.loads(result.stdout).get("running")
@@ -2607,15 +2700,171 @@ def watch_browser_exit(state_dir, data_dir, action="sync"):
             return
 
 
-def watch_events(state_dir, data_dir):
-    """Run a sync whenever a window opens or closes.
+def framework_enabled(frameworks, key):
+    """As the sync script reads it: only a recorded true turns an opt-in
+    framework on, and only a recorded false turns any other off."""
+    value = frameworks.get(key)
+    return value is True if key in OPT_IN_FRAMEWORKS else value is not False
 
-    After the theme-set hook the changes this service still has to notice -- a
-    changed default browser, a newly installed Pear Desktop, an application
-    closing that a deferred Dark Reader or Qt/KDE write was waiting on -- all
-    surface on Hyprland's event stream as a window opening or closing. Waking on
-    those and letting the sync decide whether anything actually moved replaces
-    polling on a fixed interval.
+
+def file_signature(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_ino, info.st_mtime_ns, info.st_size)
+
+
+_DARK_READER = {"module": None}
+
+
+def dark_reader_module():
+    """The Dark Reader helper's own code, loaded into this process once.
+
+    The daemon asks where Dark Reader is installed on every window event, and
+    starting the helper for that cost more than the answer. Loaded here, the
+    answer comes from the same functions its --info runs, read from the same
+    root-owned directory it would be run from."""
+    if _DARK_READER["module"] is None:
+        # Python's own import machinery, for a file without a .py name. The file
+        # is the sibling of this one that the daemon would otherwise run as a
+        # process, so loading it here trusts nothing that was not trusted.
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+        loader = SourceFileLoader("hyprchroma_dark_reader", dark_reader_helper())
+        module = module_from_spec(spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        _DARK_READER["module"] = module
+    return _DARK_READER["module"]
+
+
+def event_trigger(state_dir):
+    """What a quiet sync compares, in the form it can change without anything
+    else saying so: the palette's source files, the settings, whether Pear
+    Desktop is installed, and where Dark Reader is. A theme or font change runs
+    a sync of its own through Omarchy's hooks; this is for everything else."""
+    home = Path.home()
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    omarchy = home / ".local/state/omarchy/current"
+    files = (config / "hyprchroma/palette.toml", omarchy / "theme/colors.toml",
+             omarchy / "theme.name", state_dir / "settings.json")
+    dark_reader = dark_reader_module()
+    return (
+        tuple(file_signature(path) for path in files),
+        bool(shutil.which("pear-desktop")) or (home / ".config/YouTube Music").is_dir(),
+        dark_reader.targets_signature(dark_reader.dark_reader_targets()),
+    )
+
+
+def runtime_dir(state_dir):
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+
+
+def try_lock(path):
+    """The lock at path if it is free, else None. Closing it releases it."""
+    prepare_lock(path)
+    handle = open(path, "r")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def waiter_running(state_dir, name):
+    """Whether the waiter that holds this lock while it waits is alive."""
+    handle = try_lock(runtime_dir(state_dir) / name)
+    if handle is None:
+        return True
+    handle.close()
+    return False
+
+
+def event_work(state_dir, data_dir, memory):
+    """The in-process part of a window event, run holding the sync lock. Returns
+    (commands, trigger): what to run once the lock is released, each with
+    whether it is a waiter to leave running, and the trigger to remember if a
+    whole quiet sync among them succeeds."""
+    settings = read_json(state_dir / "settings.json")
+    frameworks = settings.get("frameworks") if isinstance(settings, dict) else None
+    frameworks = frameworks if isinstance(frameworks, dict) else {}
+    # What every quiet sync did before deciding whether anything changed, and
+    # the part of an event that is about the application that just closed.
+    if framework_enabled(frameworks, "qtKde"):
+        clear_app_color_schemes(state_dir)
+    refresh_idle_apps()
+
+    trigger = event_trigger(state_dir)
+    if (trigger != memory.get("trigger")
+            or time.monotonic() - memory.get("checked", float("-inf")) > FULL_CHECK_SECONDS):
+        return [(QUIET_SYNC, False)], trigger
+
+    # Nothing a quiet sync compares has changed. What is left is work that had
+    # to wait for an application to close, each finished by a waiter of its
+    # own; restarted here only if that waiter is gone -- the job a quiet sync
+    # did by running every framework on every event while anything waited.
+    status = read_json(state_dir / "status.json")
+    helper = [os.path.realpath(__file__), "--state-dir", str(state_dir), "--data-dir", str(data_dir)]
+    work = []
+    if (framework_enabled(frameworks, "qtKde") and status.get("qtKde") == "deferred"
+            and not waiter_running(state_dir, "hyprchroma-kde-wait.lock")):
+        work.append((helper + ["watch-kde-exit"], True))
+    if (framework_enabled(frameworks, "darkReader")
+            and status.get("darkReader") == "pending-browser-exit"
+            and not waiter_running(state_dir, "hyprchroma-browser-wait.lock")):
+        work.append((helper + ["watch-browser-exit"], True))
+    if not waiter_running(state_dir, "hyprchroma-browsers-wait.lock"):
+        resume_browsers(state_dir, data_dir)  # does nothing unless a revert or theme is outstanding
+    return work, None
+
+
+def event_pass(state_dir, data_dir, memory):
+    """What a window opening or closing asks of this service, done here rather
+    than by starting a whole sync for it.
+
+    A quiet sync cost more than a second on every window event -- a shell, the
+    palette resolved through Omarchy, and several more interpreters -- to find,
+    nearly every time, that nothing had changed. This does the per-event work
+    in the daemon's own process and starts a sync only when something it
+    compares may have changed. Returns False, to be retried, when a sync holds
+    the lock: that sync may have begun too early to see this event."""
+    lock = try_lock(runtime_dir(state_dir) / "hyprchroma-sync.lock")
+    if lock is None:
+        return False
+    try:
+        try:
+            work, trigger = event_work(state_dir, data_dir, memory)
+        except Exception as error:  # noqa: BLE001 -- the daemon outlives one bad pass
+            print(f"Hyprchroma: the window event pass failed ({error}); "
+                  "running a whole sync instead", file=sys.stderr, flush=True)
+            work, trigger = [(QUIET_SYNC, False)], None
+    finally:
+        lock.close()  # released before anything below, which takes it itself
+    for command, detached in work:
+        if detached:
+            subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            continue
+        result = subprocess.run(command, check=False)
+        if command is QUIET_SYNC:
+            if result.returncode == 0 and trigger is not None:
+                memory.update(trigger=trigger, checked=time.monotonic())
+            else:
+                memory.pop("trigger", None)  # compared again at the next event
+    return True
+
+
+def watch_events(state_dir, data_dir):
+    """Act on every window that opens or closes.
+
+    After the theme-set hook the changes this service still has to notice -- an
+    idle application to recycle now that its window is gone, Dark Reader added
+    to a browser, a newly installed Pear Desktop, an application closing that a
+    deferred write was waiting on -- all surface on Hyprland's event stream as a
+    window opening or closing. Waking on those and passing over them here, with a
+    whole sync only when something it compares moved, replaces polling on a
+    fixed interval.
 
     One runs at a time. When the stream closes -- or before it exists, at
     login -- this returns and the unit restarts it. A change in that gap is
@@ -2638,7 +2887,8 @@ def watch_events(state_dir, data_dir):
         # more, so silently carrying on would mean never watching at all.
         return
 
-    sync = ["/usr/bin/hyprchroma", "--quiet"]
+    memory = {}
+    import socket  # here, not at the top: only the daemon and the KDE waiter need it
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         stream.connect(str(stream_path))
         pending = b""
@@ -2650,9 +2900,10 @@ def watch_events(state_dir, data_dir):
                 stream.settimeout(max(0.05, deadline - time.monotonic()))
             try:
                 chunk = stream.recv(4096)
-            except (TimeoutError, socket.timeout):
-                subprocess.run(sync, check=False)
+            except TimeoutError:
                 deadline = None
+                if not event_pass(state_dir, data_dir, memory):
+                    deadline = time.monotonic() + EVENT_RETRY_SECONDS
                 continue
             if not chunk:
                 return  # Hyprland went away
@@ -2685,6 +2936,7 @@ def watch_kde_exit(state_dir, data_dir, action="sync"):
 
     stream_path = hyprland_event_socket()
     if stream_path is not None:
+        import socket  # here, not at the top: only the daemon and this waiter need it
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
             try:
                 stream.connect(str(stream_path))
@@ -2913,6 +3165,11 @@ def main():
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
     sub.add_parser("watch-events")
+    # The two things every quiet sync does before deciding whether anything
+    # changed, in one process instead of one each.
+    event = sub.add_parser("event-pass")
+    event.add_argument("--clear-app-color-schemes", action="store_true")
+    event.add_argument("--refresh-idle-apps", action="store_true")
     idle = sub.add_parser("refresh-idle-apps")
     idle.add_argument("--written-now", action="store_true",
                       help="the palette was just written, so judge staleness against now")
@@ -2987,6 +3244,15 @@ def main():
         watch_kde_exit(args.state_dir, args.data_dir, args.action)
     elif args.command == "watch-events":
         watch_events(args.state_dir, args.data_dir)
+    elif args.command == "event-pass":
+        if args.clear_app_color_schemes:
+            clear_app_color_schemes(args.state_dir)
+        if args.refresh_idle_apps:
+            # Its failure never failed the sync on its own, and does not here.
+            try:
+                refresh_idle_apps()
+            except Exception as error:  # noqa: BLE001 -- reported, not fatal
+                print(f"Hyprchroma: recycling idle applications failed: {error}", file=sys.stderr)
     elif args.command == "refresh-idle-apps":
         refresh_idle_apps(
             int(time.time()) - LAUNCH_GRACE_SECONDS if args.written_now else None)

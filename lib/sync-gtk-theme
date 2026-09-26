@@ -46,9 +46,16 @@ PALETTE_LOADED=0
 
 load_palette() {
   local key value
+  # The sync hands over the palette it has just resolved; this resolves its
+  # own only when run on its own. Every value is checked as #rrggbb by color()
+  # either way, so what arrives here can choose colors and nothing else.
   while IFS=$'\t' read -r key value; do
     [[ -n $key ]] && PALETTE[$key]=$value
-  done < <("$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1)
+  done < <(if [[ -n ${HYPRCHROMA_PALETTE_TSV:-} ]]; then
+             printf '%s\n' "$HYPRCHROMA_PALETTE_TSV"
+           else
+             "$HYPRCHROMA_LIB/hyprchroma-palette" --all 2>&1
+           fi)
   if [[ -z ${PALETTE[background]:-} ]]; then
     echo "sync-gtk-theme: no palette available; see 'hyprchroma palette --template'" >&2
     exit 1
@@ -446,14 +453,26 @@ EOF
 # moment this was installed and were overwritten on every theme change; now
 # they sit below the import and override it, which is the right way round.
 import_line='@import url("hyprchroma.css");'
-printf '%s\n' "$gtk3_css" |
-  "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$gtk3_dir/hyprchroma.css" --mode 644
-printf '%s\n' "$gtk4_css" |
-  "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$gtk4_dir/hyprchroma.css" --mode 644
-"$HYPRCHROMA_LIB/hyprchroma-state" ensure-import \
-  --path "$gtk3_dir/gtk.css" --line "$import_line" >/dev/null
-"$HYPRCHROMA_LIB/hyprchroma-state" ensure-import \
-  --path "$gtk4_dir/gtk.css" --line "$import_line" >/dev/null
+# Each of the four is skipped when it already holds what it should: a sync
+# with the palette unchanged -- a forced one, or one another framework set
+# off -- started the helper four times to rewrite identical files. Read only
+# when a regular file: a fifo planted in its place would block the read.
+write_if_changed() {
+  if [[ -f $1 && ! -L $1 && $2 == "$(cat -- "$1" 2>/dev/null)" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$2" | "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$1" --mode 644
+}
+import_if_missing() {
+  if [[ -f $1 ]] && grep -qF -- "$import_line" "$1" 2>/dev/null; then
+    return 0
+  fi
+  "$HYPRCHROMA_LIB/hyprchroma-state" ensure-import --path "$1" --line "$import_line" >/dev/null
+}
+write_if_changed "$gtk3_dir/hyprchroma.css" "$gtk3_css"
+write_if_changed "$gtk4_dir/hyprchroma.css" "$gtk4_css"
+import_if_missing "$gtk3_dir/gtk.css"
+import_if_missing "$gtk4_dir/gtk.css"
 trap - EXIT
 
 # Setting a theme that is not installed leaves GTK 3 falling back to its

@@ -168,6 +168,16 @@ def source() -> tuple:
         "hyprchroma-palette: 'hyprchroma palette --template' prints a complete one.")
 
 
+def source_id(kind, path) -> str:
+    """Identifies the palette for change detection: the theme name on Omarchy,
+    the file's own content everywhere else."""
+    if kind == "omarchy":
+        result = subprocess.run(["omarchy", "theme", "current"],
+                                capture_output=True, text=True)
+        return result.stdout.strip() or "omarchy"
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
 def resolve() -> dict:
     kind, path = source()
     return from_file(path) if kind == "file" else from_omarchy()
@@ -212,22 +222,23 @@ def main() -> int:
         print("omarchy" if kind == "omarchy" else str(path))
         return 0
     if argument == "--source-id":
-        # Identifies the palette for change detection: the theme name on
-        # Omarchy, the file's own content everywhere else.
-        kind, path = source()
-        if kind == "omarchy":
-            result = subprocess.run(["omarchy", "theme", "current"],
-                                    capture_output=True, text=True)
-            print(result.stdout.strip() or "omarchy")
-        else:
-            print(hashlib.sha256(path.read_bytes()).hexdigest()[:16])
+        print(source_id(*source()))
         return 0
     if argument == "--all":
         for key, value in sorted(resolve().items()):
             print(f"{key}\t{value}")
         return 0
+    if argument == "--for-sync":
+        # --all and --source-id together, for the sync: it asked for them in
+        # separate runs, and checked a palette existed in a third, each paying
+        # for a start of this and of Omarchy's resolver.
+        kind, path = source()
+        for key, value in sorted((from_file(path) if kind == "file" else from_omarchy()).items()):
+            print(f"{key}\t{value}")
+        print(f"source_id\t{source_id(kind, path)}")
+        return 0
     if not argument or argument.startswith("-"):
-        print("Usage: hyprchroma-palette (--all | --source | --source-id | --template | <key>)",
+        print("Usage: hyprchroma-palette (--all | --for-sync | --source | --source-id | --template | <key>)",
               file=sys.stderr)
         return 2
     value = resolve().get(argument)

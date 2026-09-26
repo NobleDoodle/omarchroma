@@ -39,7 +39,7 @@ def scenario(windows, started=BEFORE, binary="/usr/lib/xdg-desktop-portal-gtk",
     st.process_started_at = lambda pid: started if pid == PORTAL_PID else BEFORE
     st.service_file_exec = lambda name: exec_line if name == GTK else None
     st.running_binary = lambda pid: binary if pid == PORTAL_PID else "/usr/bin/other"
-    st.has_quit_action = lambda name, path: False
+    st.has_quit_action = lambda name, path, pid=None: False
     st.quit_application = lambda pid, name, path: quit.append(name) or True
     st.refresh_idle_apps()
     return quit

@@ -33,6 +33,8 @@ done
 for a in "$@"; do
   case $a in
     refresh-idle-apps) echo "IDLE $*" | grep -o 'refresh-idle-apps.*' >> "$HOME/calls.log"; exit 0 ;;
+    # A quiet run recycles in the same helper run that clears color pins.
+    event-pass) [[ " $* " == *" --refresh-idle-apps "* ]] && echo "refresh-idle-apps" >> "$HOME/calls.log"; exit 0 ;;
     kde-color-clients|report-stale-apps|clear-app-color-schemes|snapshot) exit 0 ;;
   esac
 done

@@ -13,7 +13,10 @@ H="$STAGE/home"; mkdir -p "$H/.config" "$H/.local/state" "$H/.local/share"
 
 # No palette readable: whether omarchy is missing entirely or installed with no
 # theme set, there is nothing to follow and nothing should be written.
-out=$(timeout 20 systemd-run --user --collect --wait --pipe \
+# The one suite that needs the real user manager: tests/run keeps the session
+# bus from every suite, and hands its address over for this call alone.
+out=$(DBUS_SESSION_BUS_ADDRESS=${HYPRCHROMA_TEST_SESSION_BUS:-${DBUS_SESSION_BUS_ADDRESS:-}} \
+  timeout 20 systemd-run --user --collect --wait --pipe \
   --property=TemporaryFileSystem=/usr/share/omarchy \
   --property=RestartPreventExitStatus=78 \
   --setenv=HOME="$H" --setenv=XDG_CONFIG_HOME="$H/.config" \
@@ -33,10 +36,22 @@ chk "the refusal happens before any hook directory is made" \
 # The guard asks the resolver for a real color: Omarchy is one source among
 # others now, and a binary that exists but cannot produce a color is not a
 # working source either way.
-# Three: the daemon's guard, the message it prints on failure, and the
-# top-level check the sync path makes.
+# Two: the daemon's guard and the message it prints on failure. The sync path
+# asks load_palette's own single run of the resolver instead, checked below.
 chk "the guard asks the resolver for a color" \
-  "$(countcode 'hyprchroma-palette" background' bin/hyprchroma)" "3"
+  "$(countcode 'hyprchroma-palette" background' bin/hyprchroma)" "2"
+# The same for a sync, run the same way, since it asks a resolver of its own.
+sync_out=$(DBUS_SESSION_BUS_ADDRESS=${HYPRCHROMA_TEST_SESSION_BUS:-${DBUS_SESSION_BUS_ADDRESS:-}} \
+  timeout 20 systemd-run --user --collect --wait --pipe \
+  --property=TemporaryFileSystem=/usr/share/omarchy \
+  --setenv=HOME="$H" --setenv=XDG_CONFIG_HOME="$H/.config" \
+  --setenv=XDG_STATE_HOME="$H/.local/state" --setenv=XDG_DATA_HOME="$H/.local/share" \
+  "$STAGE/root/usr/bin/hyprchroma" --quiet 2>&1)
+chk "a sync with no palette refuses, saying why" \
+  "$(grep -c 'no palette available' <<<"$sync_out")" "1"
+chk "...and writes nothing into the home" \
+  "$(find "$H" -mindepth 1 -newer "$STAGE/root/usr/bin/hyprchroma" -not -path "$H/.config" \
+       -not -path "$H/.local" -not -path "$H/.local/state" -not -path "$H/.local/share" | wc -l)" "0"
 chk "no hard requirement on omarchy remains" \
   "$(countcode 'command -v omarchy .*\|\| fail' bin/hyprchroma)" "0"
 
