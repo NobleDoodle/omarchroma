@@ -228,3 +228,58 @@ chk("a pass that found the lock held is retried EVENT_RETRY_SECONDS later, not d
     passes[3:] and round(passes[3] - passes[2], 1), st.EVENT_RETRY_SECONDS)
 chk("events other than a window opening or closing start nothing", passes[4:], [])
 E
+
+# -- an update on disk: the daemon steps aside so the new version runs -------
+python3 - "$REPO" <<'E'
+import json, os, socket, sys, tempfile, threading, time, types
+from pathlib import Path
+
+REPO = sys.argv[1]
+root = Path(os.path.realpath(tempfile.mkdtemp()))
+os.environ.update(HOME=str(root), XDG_RUNTIME_DIR=str(root / "run"), HYPRLAND_INSTANCE_SIGNATURE="test")
+stream_dir = root / "run/hypr/test"
+stream_dir.mkdir(parents=True)
+os.chmod(root / "run", 0o700)
+helper = REPO + "/lib/hyprchroma-state"
+st = types.ModuleType("st")
+st.__dict__["__file__"] = helper
+exec(compile(open(helper).read(), "st", "exec"), st.__dict__)
+
+def chk(name, got, want):
+    print(f"  {'PASS' if got == want else 'FAIL'} {name}"
+          + ("" if got == want else f": got [{got}] want [{want}]"))
+
+S = root / "state"; S.mkdir()
+(S / "status.json").write_text(json.dumps({"staleApps": ["Code"]}))
+st.stale_open_apps = lambda since=None: []
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(str(stream_dir / ".socket2.sock"))
+server.listen(1)
+def hyprland():
+    connection, _ = server.accept()
+    connection.sendall(b"closewindow>>a\n")
+    time.sleep(1.0)
+    connection.sendall(b"closewindow>>b\n")
+    time.sleep(5.0)
+    connection.close()
+threading.Thread(target=hyprland, daemon=True).start()
+
+passes = []
+real_signature = st.file_signature
+updated = {"now": False}
+def file_signature(path):
+    return ("new",) if updated["now"] and path == os.path.realpath(helper) else real_signature(path)
+st.file_signature = file_signature
+def event_pass(state_dir, data_dir, memory):
+    passes.append(time.monotonic())
+    updated["now"] = True  # the package is upgraded after this first pass
+    return True
+st.event_pass = event_pass
+started = time.monotonic()
+st.watch_events(S, root / "data")
+chk("the list is brought up to date as the daemon starts, not left from the last run",
+    json.loads((S / "status.json").read_text())["staleApps"], [])
+chk("an event before the update is handled", len(passes), 1)
+chk("the one after it is not: the daemon returns, for the unit to restart it on the new version",
+    time.monotonic() - started < 3.0, True)
+E

@@ -335,16 +335,19 @@ else
   hyprchroma framework remove browsers
 fi
 
-systemctl --user enable --now hyprchromad.service ||
+# Restarted, not only started. "enable --now" starts the service only when it
+# is not already running -- on an update it was, so it went on executing the
+# version it had loaded, and pacman does not restart a running service either:
+# every fix on the service's side looked as if it had not happened at all,
+# until the next login. Restarting it is safe: the service is ours, it re-runs
+# one quiet sync on the way up, and nothing waits on it staying up meanwhile.
+systemctl --user enable hyprchromad.service ||
+  note "Could not enable hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
+systemctl --user restart hyprchromad.service ||
   note "Could not start hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
 
-# enable --now above starts the service only if it was not already running --
-# on an update it was, so it keeps executing whatever it had already loaded
-# into memory. pacman does not restart a running service, and the Omarchy
-# shell does not notice a changed plugin file the same way either: this is
-# exactly what made a real fix look like it had not happened at all.
-#
-# Not run automatically. omarchy restart shell was tried here and pulled back:
+# The shell is another matter: it does not notice a changed plugin file, and
+# is not restarted here. omarchy restart shell was tried here and pulled back:
 # live on this project's own test machine, its relaunch step failed silently
 # once, leaving no shell running at all until it was retried by hand -- worse
 # than the stale-code problem it exists to fix. Printing the commands and

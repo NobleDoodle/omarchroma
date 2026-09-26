@@ -102,7 +102,11 @@ chk "it runs in a terminal the user can see" \
 chk "the panel closes before the terminal opens" \
   "$(countcode 'root.close\(\)' Panel.qml)" "2"
 chk "the service is enabled after building" \
-  "$(grep -c 'systemctl --user enable --now hyprchromad.service' bin/hyprchroma-setup)" "1"
+  "$(grep -c '^systemctl --user enable hyprchromad.service' bin/hyprchroma-setup)" "1"
+# Restarted, so an update runs at once: "enable --now" left a running service
+# on the version it had loaded until the next login.
+chk "...and restarted, so an update takes effect now" \
+  "$(grep -c '^systemctl --user restart hyprchromad.service' bin/hyprchroma-setup)" "1"
 
 # --- nothing predictable is written anywhere ------------------------------
 chk "no sentinel files" "$(grep -c 'install.done\|install.failed' Panel.qml)" "0"

@@ -2839,6 +2839,22 @@ def event_work(state_dir, data_dir, memory):
     return work, None
 
 
+def record_stale_now(state_dir):
+    """The stale-application count as the daemon starts, rather than whatever
+    the last run left: until the first window event nothing else updates it.
+    Skipped while a sync holds the lock -- that sync records its own."""
+    lock = try_lock(runtime_dir(state_dir) / "hyprchroma-sync.lock")
+    if lock is None:
+        return
+    try:
+        record_stale_apps(state_dir, stale_open_apps(last_sync_at(state_dir)))
+    except Exception as error:  # noqa: BLE001 -- display only, as in the pass
+        print(f"Hyprchroma: could not update the stale application count: {error}",
+              file=sys.stderr, flush=True)
+    finally:
+        lock.close()
+
+
 def event_pass(state_dir, data_dir, memory):
     """What a window opening or closing asks of this service, done here rather
     than by starting a whole sync for it.
@@ -2908,6 +2924,12 @@ def watch_events(state_dir, data_dir):
         return
 
     memory = {}
+    # This process keeps running the code it started with, however the package
+    # is updated underneath it: pacman does not restart a user service. So it
+    # notes its own file now, and when that changes it steps aside at the next
+    # event, and the unit's Restart=always brings up the new version.
+    own_code = file_signature(os.path.realpath(__file__))
+    record_stale_now(state_dir)
     import socket  # here, not at the top: only the daemon and the KDE waiter need it
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         stream.connect(str(stream_path))
@@ -2922,6 +2944,10 @@ def watch_events(state_dir, data_dir):
                 chunk = stream.recv(4096)
             except TimeoutError:
                 deadline = None
+                if file_signature(os.path.realpath(__file__)) != own_code:
+                    print("Hyprchroma: updated on disk; restarting to run the new version",
+                          flush=True)
+                    return
                 if not event_pass(state_dir, data_dir, memory):
                     deadline = time.monotonic() + EVENT_RETRY_SECONDS
                 continue
