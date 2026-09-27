@@ -11,11 +11,20 @@ set -uo pipefail
 # be root-owned and unwritable by others. /usr/bin/stat is named absolutely
 # because it is the trust root the check is anchored to.
 omarchroma_trusted_path() {
-  local directory owner mode trusted=""
+  local directory owner mode trusted="" unmapped="" overflow inside count
+  # The overflow uid stands in for an owner this namespace does not map --
+  # root's /usr, under systemd's sandboxing. Where it is mapped, as in the host
+  # namespace, it is the nobody account, and trusted with nothing.
+  if [[ -r /proc/self/uid_map ]] && overflow=$(</proc/sys/kernel/overflowuid); then
+    unmapped=$overflow
+    while read -r inside _ count; do
+      (( overflow >= inside && overflow < inside + count )) && unmapped=""
+    done < /proc/self/uid_map
+  fi
   for directory in /usr/bin /usr/share/omarchy/bin; do
     [[ -d $directory ]] || continue
     read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
-    [[ $owner == 0 || $owner == "$(</proc/sys/kernel/overflowuid)" ]] || continue
+    [[ $owner == 0 || ( -n $unmapped && $owner == "$unmapped" ) ]] || continue
     (( (8#$mode & 8#022) == 0 )) || continue
     trusted="${trusted:+$trusted:}$directory"
   done

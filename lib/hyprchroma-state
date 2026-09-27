@@ -25,16 +25,35 @@ from pathlib import Path
 # /usr/sbin are gone too: on a usrmerge system they are symlinks to /usr/bin
 # and contribute nothing. What remains is checked rather than assumed.
 def _overflow_uid() -> int:
-    """The uid the kernel shows for an owner not mapped into this namespace.
+    """The uid the kernel shows for an owner not mapped into this namespace, or
+    -1 where that uid belongs to a real account.
 
-    Under systemd's sandboxing every read-only bind mount -- /, /usr, /home --
-    reports this instead of root, because root is not mapped. Such a directory
-    cannot be written by anyone here at all, so it is trusted like root's; the
-    mode check below still applies to it either way."""
+    Under systemd's sandboxing -- anything needing a mount namespace, in a
+    user's service manager -- only this account is mapped, and every read-only
+    bind mount (/, /usr, /home) reports this uid instead of root. Such a
+    directory cannot be written by anyone here at all, so it is trusted like
+    root's; the mode check below still applies to it either way. The service's
+    own unit no longer sandboxes that way, and outside such a namespace the
+    same number is the nobody account."""
     try:
-        return int(pathlib_read("/proc/sys/kernel/overflowuid"))
+        overflow = int(pathlib_read("/proc/sys/kernel/overflowuid"))
     except (OSError, ValueError):
-        return 65534
+        overflow = 65534
+    # Only an owner outside every range this namespace maps is the "unmapped"
+    # stand-in. Where the uid is mapped -- the host namespace, where it is the
+    # nobody account -- it is a real account and is trusted with nothing.
+    try:
+        mapping = pathlib_read("/proc/self/uid_map")
+    except OSError:
+        return -1
+    for line in mapping.splitlines():
+        try:
+            inside, _, count = (int(field) for field in line.split())
+        except ValueError:
+            return -1
+        if inside <= overflow < inside + count:
+            return -1
+    return overflow
 
 
 def pathlib_read(name: str) -> str:
@@ -1944,9 +1963,18 @@ def theme_changed_at(state_dir):
     if not isinstance(stamp, str):
         return None
     try:
-        return int(datetime.fromisoformat(stamp).timestamp())
-    except ValueError:
+        changed = int(datetime.fromisoformat(stamp).timestamp())
+    except (ValueError, OverflowError, OSError):
         return None
+    # Never later than now. Anything this account runs can write status.json,
+    # and a moment in the future would make everything count as started before
+    # it -- idle applications quit again on every window event, however often
+    # they relaunched. Refused, it falls back to the theme switch itself.
+    return None if changed > time.time() + CLOCK_SKEW_SECONDS else changed
+
+
+# How far ahead of this clock a recorded moment may be before it is refused.
+CLOCK_SKEW_SECONDS = 60
 
 
 def stale_baseline(state_dir):
@@ -2048,9 +2076,12 @@ def omarchy_reloaded_executables():
         sources.update(root.glob("omarchy-restart-*"))
     tokens = set()
     for source in sorted(sources):
-        try:
-            text = source.read_text()
-        except OSError:
+        # OMARCHY_PATH comes from the environment, and a dev-linked Omarchy is
+        # a checkout this account can write: this runs in the service's window
+        # event pass, under the sync lock, so a fifo planted as one of these
+        # would have hung every sync behind it. Regular files only, capped.
+        text = safe_read(source, MAX_FOREIGN_FILE)
+        if text is None:
             continue
         code = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
         tokens |= set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", code))

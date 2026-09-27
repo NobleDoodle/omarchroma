@@ -15,13 +15,22 @@ set -euo pipefail
 # absolutely because it is the trust root the check is anchored to: if it
 # cannot be trusted, nothing here can be.
 hyprchroma_trusted_path() {
-  local directory owner mode trusted=""
+  local directory owner mode trusted="" unmapped="" overflow inside count
+  # The overflow uid stands in for an owner this namespace does not map --
+  # root's /usr, under systemd's sandboxing. Where it is mapped, as in the host
+  # namespace, it is the nobody account, and trusted with nothing.
+  if [[ -r /proc/self/uid_map ]] && overflow=$(</proc/sys/kernel/overflowuid); then
+    unmapped=$overflow
+    while read -r inside _ count; do
+      (( overflow >= inside && overflow < inside + count )) && unmapped=""
+    done < /proc/self/uid_map
+  fi
   for directory in /usr/bin /usr/share/omarchy/bin; do
     [[ -d $directory ]] || continue
     read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
     # Root, or an owner not mapped into this namespace: under systemd's
     # sandboxing /usr reports the overflow uid rather than root.
-    [[ $owner == 0 || $owner == "$(</proc/sys/kernel/overflowuid)" ]] || continue
+    [[ $owner == 0 || ( -n $unmapped && $owner == "$unmapped" ) ]] || continue
     (( (8#$mode & 8#022) == 0 )) || continue
     trusted="${trusted:+$trusted:}$directory"
   done
@@ -274,7 +283,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.9.4"
+    echo "hyprchroma 2.9.5"
     exit 0
     ;;
 esac

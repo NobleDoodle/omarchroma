@@ -118,7 +118,7 @@ chk "...counting windows, not applications" \
 chk "the panel takes each app's windows from status.json, beside the list" \
   "$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'var counts = status.staleWindows')" "1"
 chk "...counting one for an app a service older than the counts lists without them" \
-  "$(grep -c 'count === Math.floor(count)) ? count : 1' Panel.qml)" "1"
+  "$(grep -c 'count <= 999 && count === Math.floor(count))' Panel.qml),$(grep -c '      ? count : 1$' Panel.qml)" "1,1"
 chk "...totals them for the button and the heading" \
   "$(grep -c 'root.windowsPhrase(root.staleWindowCount)' Panel.qml)" "2"
 chk "...and puts each app's count beside it, in words so it is not taken for a key" \

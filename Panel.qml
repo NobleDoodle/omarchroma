@@ -218,7 +218,20 @@ Panel {
 
   function windowsOf(name, counts) {
     var count = (counts || root.staleWindows)[name]
-    return (typeof count === "number" && count >= 1 && count === Math.floor(count)) ? count : 1
+    return (typeof count === "number" && count >= 1 && count <= 999 && count === Math.floor(count))
+      ? count : 1
+  }
+
+  // The service keeps only letters, digits and " .+-_" in a name, but status.json
+  // can be written by anything this account runs -- a Flatpak app granted
+  // ~/.local/state among them -- so what is shown is checked again here, and
+  // drawn as plain text: as rich text, an <img> in a planted name had the shell
+  // fetch whatever address it gave.
+  readonly property int staleListed: 256
+
+  function validStaleName(name) {
+    return typeof name === "string" && name.length > 0 && name.length <= 64
+      && !/[\u0000-\u001f\u007f<>&]/.test(name)
   }
 
   function windowsPhrase(count) {
@@ -385,6 +398,7 @@ Panel {
       if (line === "") continue
       var match = /^(.*\S) \(([0-9]+) windows\)$/.exec(line)
       var name = match ? match[1] : line
+      if (!root.validStaleName(name) || names.length >= root.staleListed) continue
       names.push(name)
       counts[name] = match ? parseInt(match[2], 10) : 1
     }
@@ -467,7 +481,7 @@ Panel {
         if (Array.isArray(names)) {
           var counts = status.staleWindows
           root.staleWindows = (counts && typeof counts === "object" && !Array.isArray(counts)) ? counts : ({})
-          root.staleApps = names.filter(function(name) { return typeof name === "string" && name !== "" })
+          root.staleApps = names.filter(root.validStaleName).slice(0, root.staleListed)
         }
       } catch (error) {
         // A partly written or foreign file: keep the last list rather than
@@ -612,6 +626,7 @@ Panel {
               Text {
                 id: staleName
                 text: "\u2022  " + staleRow.modelData
+                textFormat: Text.PlainText
                 color: root.bar ? root.bar.foreground : Color.popups.text
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
