@@ -341,6 +341,11 @@ fi
 # every fix on the service's side looked as if it had not happened at all,
 # until the next login. Restarting it is safe: the service is ours, it re-runs
 # one quiet sync on the way up, and nothing waits on it staying up meanwhile.
+# Reloaded first, so a changed unit -- its sandboxing, say -- is the one the
+# restart starts. pacman's own hook reloads user managers after the install;
+# this is for when that did not reach this session's.
+systemctl --user daemon-reload ||
+  note "Could not reload the user service manager; the service may start with its previous settings."
 systemctl --user enable hyprchromad.service ||
   note "Could not enable hyprchromad.service; 'systemctl --user status hyprchromad' will say why."
 systemctl --user restart hyprchromad.service ||

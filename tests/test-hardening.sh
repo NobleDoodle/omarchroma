@@ -79,9 +79,9 @@ chk "the shell check accepts it too" \
 
 # --- 6. the unit is hardened, and only in ways that were tested ------------
 unit=packaging/systemd/hyprchromad.service
-for directive in NoNewPrivileges PrivateTmp PrivateDevices ProtectKernelTunables \
-                 ProtectHostname RestrictNamespaces RestrictAddressFamilies \
-                 SystemCallFilter LockPersonality RestrictSUIDSGID; do
+for directive in NoNewPrivileges RestrictSUIDSGID RestrictRealtime RestrictNamespaces \
+                 RestrictAddressFamilies SystemCallArchitectures SystemCallFilter \
+                 LockPersonality; do
   chk "unit sets $directive" "$(grep -c "^$directive=" $unit)" "1"
 done
 # These break it: it writes $HOME, and it reads other processes to know which
@@ -89,6 +89,40 @@ done
 chk "unit does not set ProtectHome" "$(grep -c '^ProtectHome=' $unit)" "0"
 chk "unit does not set ProtectProc" "$(grep -c '^ProtectProc=' $unit)" "0"
 chk "unit does not set ProtectSystem" "$(grep -c '^ProtectSystem=' $unit)" "0"
+# And so does anything that needs a mount namespace. A user's service manager
+# can only make one inside a user namespace of the service's own, and from
+# there no other process's executable or memory map can be read: the daemon
+# counted every window as still on the previous theme, and could not see which
+# browsers were open. PrivateTmp and six others like it shipped that way.
+chk "unit sets nothing that needs a mount namespace" \
+  "$(grep -cE '^(Private(Tmp|Devices|Mounts|Users|IPC|PIDs)|Protect(KernelTunables|KernelModules|KernelLogs|ControlGroups|Hostname|Clock)|ReadOnlyPaths|ReadWritePaths|InaccessiblePaths|ExecPaths|NoExecPaths|TemporaryFileSystem|Bind(ReadOnly)?Paths|MountAPIVFS|RootDirectory|RootImage)=' $unit)" "0"
+# The claim itself, run: a probe under exactly the unit's settings reads a
+# process started outside it, as the daemon must. Needs the real user manager,
+# which tests/run hands over for this alone.
+bus=${HYPRCHROMA_TEST_SESSION_BUS:-${DBUS_SESSION_BUS_ADDRESS:-}}
+if [[ -n $bus ]] && command -v systemd-run >/dev/null; then
+  props=()
+  while IFS= read -r line; do props+=(--property="$line"); done < <(
+    sed -n '/^\[Service\]/,/^\[/p' $unit |
+      grep -E '^[A-Za-z]+=' | grep -vE '^(Type|ExecStart|Restart|RestartSec|RestartPreventExitStatus)=')
+  sleep 30 & outside=$!
+  # Until it has exec'd, the child is still this shell.
+  for _ in {1..40}; do
+    program=$(readlink /proc/$outside/exe); [[ $program == */sleep ]] && break; sleep 0.05
+  done
+  probe=$(DBUS_SESSION_BUS_ADDRESS=$bus timeout 20 systemd-run --user --collect --wait --pipe --quiet \
+    "${props[@]}" /usr/bin/bash -c \
+    "readlink /proc/self/ns/user; readlink /proc/$outside/exe; head -c1 /proc/$outside/maps >/dev/null && echo maps" 2>&1)
+  kill "$outside" 2>/dev/null; wait "$outside" 2>/dev/null
+  chk "under the unit's settings the daemon shares the session's user namespace" \
+    "$(sed -n 1p <<<"$probe")" "$(readlink /proc/self/ns/user)"
+  chk "...reads which program another of the user's processes runs" \
+    "$(sed -n 2p <<<"$probe")" "$program"
+  chk "...and its memory map, which is how KDE applications are recognized" \
+    "$(sed -n 3p <<<"$probe")" "maps"
+else
+  echo "  SKIP the unit probe: no user service manager to run it under"
+fi
 
 # --- 7. the daemon does what its comment claims ----------------------------
 chk "the daemon syncs before it watches" \

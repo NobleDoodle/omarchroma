@@ -17,19 +17,18 @@ RestartSec=2
 RestartPreventExitStatus=78
 
 # The daemon rewrites the user's own theme configuration and nothing else. It
-# needs no new privilege, no device, no network, and no kernel surface, so it
-# is given none. Every directive below was checked against a real run rather
-# than added because it looked prudent: ProtectHome and ProtectSystem are
-# absent because it writes $HOME, and ProtectProc is absent because reading
-# other processes is how it knows which applications still hold the old theme.
+# needs no new privilege and no network, so it is given none. Every directive
+# below was checked against a real run rather than added because it looked
+# prudent. ProtectHome and ProtectSystem are absent because it writes $HOME,
+# and ProtectProc because reading other processes is how it knows which
+# applications still hold the old theme. So are PrivateTmp, PrivateDevices,
+# ProtectKernelTunables, ProtectKernelModules, ProtectControlGroups,
+# ProtectHostname and ProtectClock: in a user's service manager each of them
+# needs a mount namespace, which systemd can only make inside a user namespace
+# of the service's own -- and from there no other process's executable, memory
+# map or open file can be read. The daemon then took every window for stale,
+# and wrote beneath browsers it could not see were running.
 NoNewPrivileges=yes
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
-ProtectHostname=yes
-ProtectClock=yes
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
