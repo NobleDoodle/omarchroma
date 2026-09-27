@@ -274,7 +274,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.9.1"
+    echo "hyprchroma 2.9.2"
     exit 0
     ;;
 esac
@@ -334,9 +334,25 @@ notify_user() {
 }
 
 
+# Both measure against one stored moment: when what this applies last actually
+# changed (see theme_changed_at in the state helper).
 recycle_idle_apps() {
   "$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --written-now || true
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" refresh-idle-apps --since-theme-change || true
+}
+
+# What the generators write, as it stands. Compared before and after the
+# frameworks run: a sync that rewrote nothing -- a Dark Reader retry, a Qt/KDE
+# write already current, a refresh over an unchanged palette -- is not a theme
+# change, and must not make every open window count as stale. Every write is a
+# rename, so a rewritten file has a new inode even within the same second.
+theme_outputs() {
+  stat -c '%n %i %Y %s' -- \
+    "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" \
+    "$HOME/.config/gtk-3.0/gtk.css" "$HOME/.config/gtk-4.0/gtk.css" \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/color-schemes/Hyprchroma.colors" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/kdeglobals" \
+    "$HOME/.config/YouTube Music/hyprchroma.css" 2>/dev/null || true
 }
 
 # Windows already open cannot be restyled in place, and nothing here touches
@@ -346,7 +362,7 @@ report_stale_apps() {
   # --record keeps the list in status.json too, where the bar widget reads how
   # many applications are left to close. Only here, under the sync lock.
   stale_apps=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps --record "$@" 2>/dev/null || true)
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps --record 2>/dev/null || true)
   if [[ -z $stale_apps ]]; then
     # Nothing stale now, so the next time something is, it is worth saying
     # again rather than mistaken for the same staleness already reported.
@@ -581,11 +597,14 @@ if [[ $set_enabled == "false" ]]; then
   fi
   # A revert rewrites the palette exactly as a sync does, so it needs the same
   # two follow-ups. Without them the files revert and every running application
-  # keeps the colors Hyprchroma gave it, with nothing said about why.
+  # keeps the colors Hyprchroma gave it, with nothing said about why. It is a
+  # change of theme as far as a running application is concerned.
+  "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+    mark-theme-changed || true
   recycle_idle_apps
   log "$target disabled and reverted to its captured state"
   notify_user "$target disabled and reverted"
-  report_stale_apps --written-now
+  report_stale_apps
   exit 0
 fi
 
@@ -709,6 +728,7 @@ if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
   exit 0
 fi
 
+outputs_before=$(theme_outputs)
 if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   log "synchronizing GTK"
   "$HYPRCHROMA_LIB/hyprchroma-state" \
@@ -770,8 +790,12 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
     -e "s/^  --om-red: .*;/  --om-red: $red;/" \
     -e "s/^  --om-green: .*;/  --om-green: $green;/" \
     "$HYPRCHROMA_SHARE/pear-theme.css.template")
-  printf '%s\n' "$pear_content" |
-    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$pear_css" --mode 644
+  # Unchanged, not rewritten: a rewrite is a theme change to everything that
+  # compares these files. Read only when a regular file, as a fifo would block.
+  if ! [[ -f $pear_css && ! -L $pear_css && $pear_content == "$(cat -- "$pear_css" 2>/dev/null)" ]]; then
+    printf '%s\n' "$pear_content" |
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$pear_css" --mode 644
+  fi
 
   python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$pear_dir/config.json" "$pear_css" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
@@ -953,7 +977,14 @@ PY
   fi
 fi
 
-python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" <<'PY'
+# A change of theme for what is running: the palette or the frameworks moved,
+# or a generator actually rewrote one of its files.
+theme_changed=0
+if [[ $fingerprint != "$previous_fingerprint" || $outputs_before != "$(theme_outputs)" ]]; then
+  theme_changed=1
+fi
+
+python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$theme_changed" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -985,7 +1016,11 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state = sys.argv[4:]
+pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state, theme_changed = sys.argv[4:]
+# The baseline every stale-application question measures against; moved only
+# by a real change, never by a sync that found everything already current.
+if theme_changed == "1" or "themeChangedAt" not in state:
+    state["themeChangedAt"] = state["lastSync"]
 if target in {"all", "gtk"}:
     state["gtk"] = "synchronized"
 if target in {"all", "qt-kde"}:
@@ -1065,14 +1100,14 @@ fi
 # picks up the new theme -- which is what makes this the right moment to recycle
 # idle services, rather than before the write as an event-driven run must.
 #
-# Judging staleness against the theme switch is wrong here. Toggling a framework
-# on, or pressing refresh, writes a new palette without changing the theme, so
-# every application started since the last switch looked current and nothing was
-# recycled: the files changed and nothing picked them up until the next theme
-# switch. A forced run has just written the palette, so now is the baseline.
-if (( force )); then
+# Judged against when what this applies last changed -- stored in status.json,
+# and moved just now if this run changed anything. Not against the Omarchy
+# theme switch, which a toggle or a palette file changes without; and not
+# against this run, which may have changed nothing at all: that made every
+# window open at the time count as stale, and the count on the bar icon
+# changed as unrelated windows came and went. Idle services are recycled only
+# when there is something new for their next launch to read.
+if (( theme_changed )); then
   recycle_idle_apps
-  report_stale_apps --written-now
-else
-  report_stale_apps
 fi
+report_stale_apps

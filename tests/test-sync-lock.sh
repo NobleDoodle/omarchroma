@@ -107,4 +107,16 @@ bad=$(HYPRCHROMA_PALETTE_TSV=$(printf 'background\tred; } * { color: red\nmode\t
   bash "$ROOT/lib/sync-gtk-theme" 2>&1 >/dev/null; echo "exit=$?")
 chk "a generator refuses a handed-over value that is not a color" \
   "$(grep -c 'invalid palette color' <<<"$bad"),$(grep -o 'exit=[0-9]*' <<<"$bad")" "1,exit=1"
+# -- the baseline moves only with a real change ----------------------------------
+changed_at() { jq -r '.themeChangedAt // ""' "$XDG_STATE_HOME/hyprchroma/status.json"; }
+sync --force --quiet
+first=$(changed_at)
+sleep 1.1
+sync --force --quiet
+chk "a forced run over an unchanged palette leaves the theme-change moment alone" "$(changed_at)" "$first"
+sync --quiet
+chk "...and so does a quiet one" "$(changed_at)" "$first"
+sed -i 's/^background = .*/background = "#224466"/' "$HOME/.local/state/omarchy/current/theme/colors.toml"
+sync --force --quiet
+chk "a palette that changed moves it" "$( [[ $(changed_at) != "$first" && -n $(changed_at) ]] && echo moved)" "moved"
 rm -rf "$ROOT"

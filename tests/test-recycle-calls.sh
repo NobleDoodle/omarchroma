@@ -48,9 +48,14 @@ mkdir -p "$XDG_STATE_HOME/hyprchroma"
 run() { : > "$HOME/calls.log"; bash "$ROOT/bin/hyprchroma" "$@" >/dev/null 2>&1; cat "$HOME/calls.log"; }
 chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$3]"; }
 
-chk "forced run uses --written-now" "$(run --force --quiet)" "refresh-idle-apps --written-now"
-chk "forced run calls it once"      "$(run --force --quiet | wc -l)" "1"
-chk "event run uses theme baseline" "$(run --quiet)" "refresh-idle-apps"
+# Recycled after a run that changed what is applied, and measured against the
+# stored moment of that change -- never against the run itself, which may have
+# changed nothing: that made every open window count as stale.
+chk "a first forced run changes the theme, and recycles once, against the change" \
+  "$(run --force --quiet)" "refresh-idle-apps --since-theme-change"
+chk "a forced run over an unchanged palette recycles nothing" "$(run --force --quiet)" ""
+chk "event run recycles, against the stored baseline" "$(run --quiet)" "refresh-idle-apps"
 chk "event run calls it once"       "$(run --quiet | wc -l)" "1"
-chk "toggle on uses --written-now"  "$(run --target=gtk --set-enabled=true --quiet)" "refresh-idle-apps --written-now"
+chk "switching a framework on is a change, and recycles against it" \
+  "$(run --target=gtk --set-enabled=true --quiet)" "refresh-idle-apps --since-theme-change"
 rm -rf "$ROOT"
