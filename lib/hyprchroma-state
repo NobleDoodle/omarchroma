@@ -1905,16 +1905,26 @@ def running_executables():
     return names
 
 
-def record_stale_apps(state_dir, names):
+def record_stale_apps(state_dir, windows):
     """Keep the applications still showing the previous theme in status.json,
-    where the bar widget reads how many there are to close. Rewritten only when
-    the list changes, and never to create a status file just to say "none"."""
+    with how many windows each has open, where the bar widget reads how many
+    there are to close. staleApps stays the plain list, for a panel older than
+    the counts. Rewritten only when either changes, and never to create a
+    status file just to say "none"."""
     path = state_dir / "status.json"
     status = read_json(path)
-    names = sorted(names)
-    if status.get("staleApps") != names and (status or names):
+    names = sorted(windows)
+    counts = {name: windows[name] for name in names}
+    if ((status.get("staleApps") != names or status.get("staleWindows") != counts)
+            and (status or names)):
         status["staleApps"] = names
+        status["staleWindows"] = counts
         write_json(path, status)
+
+
+def stale_line(name, count):
+    """How the list reads, in the notification and at the command line."""
+    return name if count == 1 else f"{name} ({count} windows)"
 
 
 def theme_changed_at(state_dir):
@@ -2054,9 +2064,11 @@ def window_executable(pid):
         return None
 
 
-def stale_open_apps(since=None):
-    """Names of apps with a window open that started before the current theme
-    was selected, so they are still drawing the previous one.
+def stale_open_windows(since=None):
+    """{name: windows open} for apps whose process started before the current
+    theme was selected, so they are still drawing the previous one. Counted
+    by window because that is what there is to close: two Vivaldi windows
+    are two closes, and the app takes the theme only after the last of them.
 
     Applications Omarchy re-themes on its own are left out, so the list is only
     what genuinely will not change until it is restarted.
@@ -2071,10 +2083,10 @@ def stale_open_apps(since=None):
         since = theme_switched_at()
     windows = open_windows()
     if since is None or not windows:
-        return []
+        return {}
     reloaded = omarchy_reloaded_executables()
     portals = gtk_portal_pids()
-    names = set()
+    counts = {}
     for title, klass, pid in windows:
         started = process_started_at(pid)
         if started is None or started >= since:
@@ -2088,8 +2100,9 @@ def stale_open_apps(since=None):
         if pid in portals:
             continue
         name = window_display_name(title, klass)
-        names.add(name[:1].upper() + name[1:])
-    return sorted(names)
+        name = name[:1].upper() + name[1:]
+        counts[name] = counts.get(name, 0) + 1
+    return counts
 
 
 # Any process with KColorScheme mapped reads the colors in kdeglobals and
@@ -2849,7 +2862,7 @@ def event_work(state_dir, data_dir, memory):
     # the count the bar widget shows follows it here, within the same pass.
     # Display only: failing it must not cost a whole sync, as a failed pass does.
     try:
-        record_stale_apps(state_dir, stale_open_apps(stale_baseline(state_dir)))
+        record_stale_apps(state_dir, stale_open_windows(stale_baseline(state_dir)))
     except Exception as error:  # noqa: BLE001 -- reported; the count waits for the next event
         print(f"Hyprchroma: could not update the stale application count: {error}",
               file=sys.stderr, flush=True)
@@ -2886,7 +2899,7 @@ def record_stale_now(state_dir):
     if lock is None:
         return
     try:
-        record_stale_apps(state_dir, stale_open_apps(stale_baseline(state_dir)))
+        record_stale_apps(state_dir, stale_open_windows(stale_baseline(state_dir)))
     except Exception as error:  # noqa: BLE001 -- display only, as in the pass
         print(f"Hyprchroma: could not update the stale application count: {error}",
               file=sys.stderr, flush=True)
@@ -3324,11 +3337,11 @@ def main():
             since = int(time.time()) - LAUNCH_GRACE_SECONDS
         else:
             since = stale_baseline(args.state_dir)
-        names = stale_open_apps(since)
+        windows = stale_open_windows(since)
         if args.record:
-            record_stale_apps(args.state_dir, names)
-        for name in names:
-            print(name)
+            record_stale_apps(args.state_dir, windows)
+        for name in sorted(windows):
+            print(stale_line(name, windows[name]))
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
             print(name)

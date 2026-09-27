@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The bar icon says when applications are still showing the previous theme:
+# The bar icon says how many windows are still showing the previous theme:
 # it takes the theme's urgent color, as Omarchy's agents widget does when a
 # limit is near, with a small raised count. The service keeps the list in
 # status.json -- after each sync, and on every window event -- and the panel
@@ -30,19 +30,28 @@ status = S / "status.json"
 def recorded():
     return json.loads(status.read_text()).get("staleApps") if status.exists() else None
 
-st.record_stale_apps(S, [])
+def windows():
+    return json.loads(status.read_text()).get("staleWindows")
+
+st.record_stale_apps(S, {})
 chk("nothing stale and no status yet: no status file is made just to say so", status.exists(), False)
 status.write_text(json.dumps({"theme": "x", "darkReader": "synchronized"}))
-st.record_stale_apps(S, ["Signal", "Nautilus"])
+st.record_stale_apps(S, {"Signal": 1, "Nautilus": 1})
 chk("the list is kept in status.json, in order", recorded(), ["Nautilus", "Signal"])
 chk("...beside what was there", json.loads(status.read_text())["darkReader"], "synchronized")
+chk("...with each app's window count", windows(), {"Nautilus": 1, "Signal": 1})
 inode = status.stat().st_ino
-st.record_stale_apps(S, ["Nautilus", "Signal"])
+st.record_stale_apps(S, {"Nautilus": 1, "Signal": 1})
 chk("the same list again does not rewrite the file", status.stat().st_ino, inode)
-st.record_stale_apps(S, ["Nautilus"])
+st.record_stale_apps(S, {"Nautilus": 1})
 chk("one closed: the list shrinks", recorded(), ["Nautilus"])
-st.record_stale_apps(S, [])
-chk("all closed: it empties rather than disappearing", recorded(), [])
+st.record_stale_apps(S, {"Nautilus": 1, "Vivaldi": 2})
+chk("an app with two windows open counts both", windows(), {"Nautilus": 1, "Vivaldi": 2})
+st.record_stale_apps(S, {"Nautilus": 1, "Vivaldi": 1})
+chk("closing one of them is recorded, though the list of apps is the same",
+    (recorded(), windows()), (["Nautilus", "Vivaldi"], {"Nautilus": 1, "Vivaldi": 1}))
+st.record_stale_apps(S, {})
+chk("all closed: it empties rather than disappearing", (recorded(), windows()), ([], {}))
 
 # The daemon's pass keeps it current on every window event.
 calls = []
@@ -50,33 +59,50 @@ st.refresh_idle_apps = lambda since=None: None
 st.clear_app_color_schemes = lambda state_dir: None
 st.resume_browsers = lambda *a: None
 st.event_trigger = lambda state_dir: ("same",)
-stale = ["Vivaldi"]
-st.stale_open_apps = lambda since=None: list(stale)
+stale = {"Vivaldi": 2}
+st.stale_open_windows = lambda since=None: dict(stale)
 memory = {"trigger": ("same",), "checked": 10**12}
 st.event_work(S, S, memory)
-chk("a window event records who is still on the previous theme", recorded(), ["Vivaldi"])
+chk("a window event records who is still on the previous theme", (recorded(), windows()),
+    (["Vivaldi"], {"Vivaldi": 2}))
+stale["Vivaldi"] = 1
+st.event_work(S, S, memory)
+chk("...one of its windows closing takes the count down", windows(), {"Vivaldi": 1})
 stale.clear()
 st.event_work(S, S, memory)
-chk("...and the one after it is closed drops it", recorded(), [])
+chk("...and the last closing drops it", recorded(), [])
 def broken(since=None):
     raise RuntimeError("no window list")
-st.stale_open_apps = broken
+st.stale_open_windows = broken
 work, trigger = st.event_work(S, S, memory)
 chk("a count that cannot be worked out costs no whole sync: it is display only",
     (work, trigger), ([], None))
-st.stale_open_apps = lambda since=None: list(stale)
+st.stale_open_windows = lambda since=None: dict(stale)
 
 # A sync records the list it reports, under its lock; asking for the list
 # alone, as the panel does, records nothing.
-stale[:] = ["Helium"]
+stale.update({"Helium": 1, "Vivaldi": 3})
 out = []
 st.print = lambda *a, **k: out.append(a)
 sys.argv = ["hyprchroma-state", "--state-dir", str(S), "--data-dir", str(S), "report-stale-apps", "--since-last-sync"]
 st.main()
 chk("asking for the list does not write it", recorded(), [])
+chk("it reads one app a line, with its windows where there is more than one",
+    [line for (line,) in out], ["Helium", "Vivaldi (3 windows)"])
 sys.argv += ["--record"]
 st.main()
-chk("the sync's --record does", recorded(), ["Helium"])
+chk("the sync's --record does", (recorded(), windows()), (["Helium", "Vivaldi"], {"Helium": 1, "Vivaldi": 3}))
+
+# The panel reads that line back when it asks the service itself: the pattern
+# it matches, taken from Panel.qml, against what the helper prints.
+import re
+qml = open(REPO + "/Panel.qml").read()
+pattern = re.search(r"var match = /(.*?)/\.exec\(line\)", qml).group(1)
+parsed = [re.match(pattern, st.stale_line(name, count)) for name, count in
+          [("Vivaldi", 3), ("Helium", 1), ("Visual Studio Code (Insiders)", 2)]]
+chk("the panel's pattern reads back what the helper prints",
+    [(m.group(1), m.group(2)) if m else None for m in parsed],
+    [("Vivaldi", "3"), None, ("Visual Studio Code (Insiders)", "2")])
 E
 
 cd -- "$REPO" || exit 1
@@ -87,6 +113,18 @@ chk "the panel watches status.json for it, rather than polling" \
   "$(grep -c 'path: root.statusPath' Panel.qml),$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'watchChanges: true')" "1,1"
 chk "the icon turns the theme's urgent color while any are left" \
   "$(grep -c 'active: root.staleCount > 0' BarWidget.qml)" "1"
+chk "...counting windows, not applications" \
+  "$(grep -c 'panelLoader.item.staleWindowCount$' BarWidget.qml)" "1"
+chk "the panel takes each app's windows from status.json, beside the list" \
+  "$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'var counts = status.staleWindows')" "1"
+chk "...counting one for an app a service older than the counts lists without them" \
+  "$(grep -c 'count === Math.floor(count)) ? count : 1' Panel.qml)" "1"
+chk "...totals them for the button and the heading" \
+  "$(grep -c 'root.windowsPhrase(root.staleWindowCount)' Panel.qml)" "2"
+chk "...and puts each app's count beside it, in words so it is not taken for a key" \
+  "$(grep -c 'text: root.windowsPhrase(root.windowsOf(staleRow.modelData))' Panel.qml)" "1"
+chk "...readable on every theme: the name's color dimmed, not Color.muted, which all but vanished" \
+  "$(awk '/id: staleRowWindows/,/^              }/' Panel.qml | sed 's|//.*||' | grep -cE 'color: root.bar \? root.bar.foreground|opacity: 0.7|Color.muted')" "2"
 chk "...with a count raised beside it in that same color" \
   "$(awk '/id: staleBadge/,/^  }/' BarWidget.qml | grep -cE 'color: button.activeColor|visible: root.staleCount > 0')" "2"
 chk "...drawn as the shell draws the glyph, so it is not color-fringed" \
@@ -115,8 +153,8 @@ iso = lambda epoch: datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 S = root / "state"; S.mkdir()
 T = int(time.time()) - 1000
-# Vivaldi open before the theme changed; VS Code opened a minute after it.
-windows = [("Vivaldi", "vivaldi-stable", 101), ("Code", "code", 202)]
+# Two Vivaldi windows open before the theme changed; VS Code opened a minute after it.
+windows = [("Vivaldi", "vivaldi-stable", 101), ("Vivaldi", "vivaldi-stable", 101), ("Code", "code", 202)]
 started = {101: T - 100, 202: T + 60}
 st.open_windows = lambda: list(windows)
 st.process_started_at = lambda pid: started.get(pid)
@@ -125,14 +163,18 @@ st.omarchy_reloaded_executables = lambda: set()
 st.gtk_portal_pids = lambda: set()
 
 (S / "status.json").write_text(json.dumps({"themeChangedAt": iso(T), "lastSync": iso(T)}))
-chk("after a theme change, what was open then is stale", st.stale_open_apps(st.stale_baseline(S)), ["Vivaldi-stable"])
+chk("after a theme change, what was open then is stale, counted by window",
+    st.stale_open_windows(st.stale_baseline(S)), {"Vivaldi-stable": 2})
 # A sync that changes nothing -- a Dark Reader retry while the browser is open --
 # moves lastSync and nothing else.
 (S / "status.json").write_text(json.dumps({"themeChangedAt": iso(T), "lastSync": iso(T + 500)}))
 chk("a later sync that changed nothing does not make what opened since stale",
-    st.stale_open_apps(st.stale_baseline(S)), ["Vivaldi-stable"])
+    st.stale_open_windows(st.stale_baseline(S)), {"Vivaldi-stable": 2})
 windows.pop(0)
-chk("...and closing the stale app empties the list", st.stale_open_apps(st.stale_baseline(S)), [])
+chk("...closing one of its windows counts one fewer", st.stale_open_windows(st.stale_baseline(S)),
+    {"Vivaldi-stable": 1})
+windows.pop(0)
+chk("...and closing the last empties the list", st.stale_open_windows(st.stale_baseline(S)), {})
 
 st.mark_theme_changed(S)
 chk("a revert marks a change now, so what is open then counts",

@@ -50,7 +50,7 @@ def run(command, check=False):
 st.subprocess = types.SimpleNamespace(
     run=run, Popen=lambda command, **k: spawned.append(command[-1]), DEVNULL=None, PIPE=None)
 st.kde_color_client_pids = lambda: []
-st.stale_open_apps = lambda since=None: []
+st.stale_open_windows = lambda since=None: {}
 
 memory = {}
 def event():
@@ -251,7 +251,7 @@ def chk(name, got, want):
 
 S = root / "state"; S.mkdir()
 (S / "status.json").write_text(json.dumps({"staleApps": ["Code"]}))
-st.stale_open_apps = lambda since=None: []
+st.stale_open_windows = lambda since=None: {}
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(str(stream_dir / ".socket2.sock"))
 server.listen(1)

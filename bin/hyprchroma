@@ -274,7 +274,7 @@ PY
     exit $?
     ;;
   --version|version)
-    echo "hyprchroma 2.9.3"
+    echo "hyprchroma 2.9.4"
     exit 0
     ;;
 esac
@@ -307,7 +307,7 @@ Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
        hyprchroma install-hooks    place the Omarchy theme and font hooks
        hyprchroma framework (list|remove <target>|restore <target>)
        hyprchroma palette [--all|--capture|--template|--source]
-       hyprchroma stale-apps       list apps still showing the old theme
+       hyprchroma stale-apps       list apps still showing the old theme, and their windows
        hyprchroma restore [--stock|--captured]
        hyprchroma --version
 USAGE
@@ -359,8 +359,9 @@ theme_outputs() {
 # them; say which ones they are so the choice to restart is the user's.
 report_stale_apps() {
   local stale_apps stale_list last_notified
-  # --record keeps the list in status.json too, where the bar widget reads how
-  # many applications are left to close. Only here, under the sync lock.
+  # --record keeps the list in status.json too, with each app's window count,
+  # where the bar widget reads how many are left to close. Only here, under the
+  # sync lock. An app with more than one window reads "Vivaldi (2 windows)".
   stale_apps=$("$HYPRCHROMA_LIB/hyprchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" report-stale-apps --record 2>/dev/null || true)
   if [[ -z $stale_apps ]]; then

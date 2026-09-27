@@ -89,7 +89,7 @@ st.omarchy_reloaded_executables = lambda: set()
 st.window_executable = lambda pid: "whatever"
 st.connection_pid = lambda name: PORTAL_PID if name == GTK else None
 chk("an open portal dialog is not reported as an app to restart",
-    st.stale_open_apps(since=THEME_SWITCH), ["Nautilus"])
+    st.stale_open_windows(since=THEME_SWITCH), {"Nautilus": 1})
 E
 
 # -- running_binary against real processes, since what /proc reports for a

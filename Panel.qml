@@ -99,6 +99,7 @@ Panel {
         root.dependencyChecked = true
         root.daemonRunning = false
         root.installedVersion = ""
+        root.staleWindows = ({})
         root.staleApps = []
       }
     }
@@ -205,6 +206,24 @@ Panel {
   // rather than only in a notification: a notification is gone in seconds, and
   // this is a list you work through at your own pace.
   property var staleApps: []
+  // How many windows each has open, since that is what there is to close. An
+  // app missing from it -- a service older than the counts -- has one.
+  property var staleWindows: ({})
+  readonly property int staleWindowCount: {
+    var counts = root.staleWindows
+    var total = 0
+    for (var i = 0; i < root.staleApps.length; i++) total += root.windowsOf(root.staleApps[i], counts)
+    return total
+  }
+
+  function windowsOf(name, counts) {
+    var count = (counts || root.staleWindows)[name]
+    return (typeof count === "number" && count >= 1 && count === Math.floor(count)) ? count : 1
+  }
+
+  function windowsPhrase(count) {
+    return count === 1 ? "1 window" : count + " windows"
+  }
 
   // The guide replaces the panel body rather than sitting inside it: the list
   // is as long as the user has windows open, and growing the panel by one row
@@ -352,17 +371,24 @@ Panel {
   function refreshStaleApps() {
     // Same absent binary, same silent non-start. Nothing to ask until the
     // presence probe has said the service is there.
-    if (!root.dependencyPresent) { root.staleApps = []; return }
+    if (!root.dependencyPresent) { root.staleWindows = ({}); root.staleApps = []; return }
     if (!staleProcess.running) staleProcess.running = true
   }
 
+  // One app per line, "Vivaldi (2 windows)" where it has more than one.
   function applyStaleApps(output) {
     var names = []
+    var counts = {}
     var lines = (output || "").split("\n")
     for (var i = 0; i < lines.length; i++) {
-      var name = lines[i].trim()
-      if (name !== "") names.push(name)
+      var line = lines[i].trim()
+      if (line === "") continue
+      var match = /^(.*\S) \(([0-9]+) windows\)$/.exec(line)
+      var name = match ? match[1] : line
+      names.push(name)
+      counts[name] = match ? parseInt(match[2], 10) : 1
     }
+    root.staleWindows = counts
     root.staleApps = names
   }
 
@@ -436,9 +462,13 @@ Panel {
     watchChanges: true
     onLoaded: {
       try {
-        var names = JSON.parse(text()).staleApps
-        if (Array.isArray(names))
+        var status = JSON.parse(text())
+        var names = status.staleApps
+        if (Array.isArray(names)) {
+          var counts = status.staleWindows
+          root.staleWindows = (counts && typeof counts === "object" && !Array.isArray(counts)) ? counts : ({})
           root.staleApps = names.filter(function(name) { return typeof name === "string" && name !== "" })
+        }
       } catch (error) {
         // A partly written or foreign file: keep the last list rather than
         // flicker the count to zero.
@@ -476,9 +506,9 @@ Panel {
 
         Text {
           text: root.guideOpen
-            ? (root.hiddenFrameworks.length > 0
-                ? "Applications to close, and what you removed"
-                : "Applications to close")
+            ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
+                                        : "Applications to close")
+              + (root.hiddenFrameworks.length > 0 ? ", and what you removed" : "")
             : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -571,14 +601,37 @@ Panel {
           Repeater {
             model: root.staleApps.slice(0, root.staleShown)
 
-            delegate: Text {
+            // Each app with how many of its windows are open, spelled out so it
+            // is not taken for a key like the numbers beside removed frameworks.
+            delegate: Item {
+              id: staleRow
               required property string modelData
               width: guide.width
-              text: "\u2022  " + modelData
-              color: root.bar ? root.bar.foreground : Color.popups.text
-              font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
+              height: Math.max(staleName.implicitHeight, staleRowWindows.implicitHeight)
+
+              Text {
+                id: staleName
+                text: "\u2022  " + staleRow.modelData
+                color: root.bar ? root.bar.foreground : Color.popups.text
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.left: parent.left
+                anchors.right: staleRowWindows.left
+                anchors.rightMargin: Style.space(10)
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: staleRowWindows
+                text: root.windowsPhrase(root.windowsOf(staleRow.modelData))
+                // The name's color, dimmed: Color.muted all but vanishes on some
+                // themes' panels, and this is a count to read, not a hint.
+                color: root.bar ? root.bar.foreground : Color.popups.text
+                opacity: 0.7
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.right: parent.right
+              }
             }
           }
 
@@ -716,12 +769,12 @@ Panel {
         }
 
         // Reachable by mouse as well as by "/", and carries the count so the
-        // number of applications waiting is visible without opening it.
+        // number of windows waiting is visible without opening it.
         Button {
           visible: !root.guideOpen && root.ready
           width: content.width
-          text: root.staleApps.length > 0
-            ? root.staleApps.length + " to close  (/)"
+          text: root.staleWindowCount > 0
+            ? root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
             : "Nothing to close  (/)"
           iconText: "󰖯"
           foreground: root.bar ? root.bar.foreground : Color.popups.text

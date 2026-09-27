@@ -12,11 +12,13 @@ BarWidget {
   readonly property bool popoutSwitchClosing: panelLoader.item
     ? panelLoader.item.popoutSwitchClosing === true : false
 
-  // Applications still showing the previous theme: the ones to close. The icon
-  // takes the theme's urgent color, as Omarchy's agents widget does when a
-  // limit is near, and a small raised count says how many.
-  readonly property int staleCount: panelLoader.item && panelLoader.item.staleApps
-    ? panelLoader.item.staleApps.length : 0
+  // Windows of applications still showing the previous theme: the ones to
+  // close. The icon takes the theme's urgent color, as Omarchy's agents widget
+  // does when a limit is near, and a small raised count says how many. Windows
+  // rather than applications, since that is what there is to close: two
+  // Vivaldi windows are two, and Vivaldi changes after the second.
+  readonly property int staleCount: panelLoader.item && panelLoader.item.staleWindowCount
+    ? panelLoader.item.staleWindowCount : 0
 
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
@@ -98,8 +100,8 @@ BarWidget {
     text: "\udb80\udfd8"
     active: root.staleCount > 0
     tooltipText: root.opened ? "Close Omarchroma"
-      : root.staleCount === 1 ? "Open Omarchroma: 1 app to close for the new theme"
-      : root.staleCount > 1 ? "Open Omarchroma: " + root.staleCount + " apps to close for the new theme"
+      : root.staleCount > 0
+        ? "Open Omarchroma: " + panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme"
       : "Open Omarchroma"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.togglePanel()
