@@ -107,6 +107,9 @@ chk(f"the write starts within 0.2s of the browser's last process ending",
 # -- two browsers: the one that closes is themed without waiting on the other -
 # Helium closes while Firefox stays open all afternoon: Helium's profile is
 # written as soon as Helium is gone, not when every browser has finished.
+# Timed from the spawn, not from the waiter's start: under load the gap between
+# the two ate into the 0.3s, and a waiter that did wait could look early.
+spawned = time.monotonic()
 closes = subprocess.Popen(["sleep", "0.3"])
 stays = subprocess.Popen(["sleep", "30"])
 closes_tabs = subprocess.Popen(["sleep", "0.1"])   # a renderer that went first
@@ -122,7 +125,7 @@ st.watch_browser_exit(state, data, "sync")
 chk("with two browsers open, the one that closes is written straight away",
     ended["at"] - start < 1.0, True)
 chk("...only once all of its own processes are gone, not at its first to exit",
-    ended["at"] - start >= 0.3, True)
+    ended["at"] - spawned >= 0.3, True)
 stays.kill(); stays.wait(); closes.wait(); closes_tabs.wait()
 E
 rm -rf "$ROOT"

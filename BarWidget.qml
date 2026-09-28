@@ -19,6 +19,11 @@ BarWidget {
   // Vivaldi windows are two, and Vivaldi changes after the second.
   readonly property int staleCount: panelLoader.item && panelLoader.item.staleWindowCount
     ? panelLoader.item.staleWindowCount : 0
+  // A service older than this plugin is one more thing to deal with, and says
+  // so the same way: the icon in the urgent color, counting it as one. The
+  // panel's Update button, lit in the same color, is what clears it.
+  readonly property bool updatePending: panelLoader.item ? panelLoader.item.outdated === true : false
+  readonly property int alertCount: staleCount + (updatePending ? 1 : 0)
 
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
@@ -98,11 +103,14 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\udb80\udfd8"
-    active: root.staleCount > 0
+    active: root.alertCount > 0
     tooltipText: root.opened ? "Close Omarchroma"
-      : root.staleCount > 0
-        ? "Open Omarchroma: " + panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme"
-      : "Open Omarchroma"
+      : root.alertCount === 0 ? "Open Omarchroma"
+      : "Open Omarchroma: "
+        + (root.updatePending ? "1 service update pending" : "")
+        + (root.updatePending && root.staleCount > 0 ? ", and " : "")
+        + (root.staleCount > 0
+            ? panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme" : "")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.togglePanel()
     }
@@ -111,8 +119,8 @@ BarWidget {
   // Raised to the icon's top right, like an exponent, in the same urgent color.
   Text {
     id: staleBadge
-    visible: root.staleCount > 0
-    text: root.staleCount > 9 ? "9+" : String(root.staleCount)
+    visible: root.alertCount > 0
+    text: root.alertCount > 9 ? "9+" : String(root.alertCount)
     color: button.activeColor
     font.family: button.fontFamily
     font.pixelSize: Math.max(7, Math.round(Style.bar.iconFont * 0.62))

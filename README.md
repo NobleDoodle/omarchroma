@@ -73,6 +73,9 @@ With the bar widget:
 * While applications are still showing the previous theme, the icon takes your
   theme's alert color with a small count of how many windows to close; `/`
   lists the applications, with how many windows each has open.
+* When the installed service is older than the plugin, the icon alerts the
+  same way, counting the update as one, and the panel's Update button is lit
+  in that color until it is run.
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely (press `/` and its number to restore).
 * GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and

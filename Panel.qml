@@ -58,6 +58,10 @@ Panel {
     id: manifestFile
     path: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName + "/manifest.json"
     printErrors: false
+    // Watched, so "omarchy plugin update" lights the bar icon as soon as the
+    // checkout moves ahead of the installed service, not at the next login.
+    watchChanges: true
+    onFileChanged: reload()
     onLoaded: {
       try {
         root.expectedVersion = String(JSON.parse(text()).version || "")
@@ -66,6 +70,24 @@ Panel {
       }
     }
   }
+
+  // And the other side: pacman replacing the service's binary -- an update run
+  // from a terminal rather than from here -- asks the version again, so the
+  // alert clears without the panel having to be opened.
+  FileView {
+    id: serviceBinary
+    path: "/usr/bin/hyprchroma"
+    printErrors: false
+    watchChanges: true
+    onFileChanged: {
+      reload()
+      presenceProcess.running = true
+    }
+  }
+
+  // Asked once as the shell starts, not only when the panel opens: the bar icon
+  // shows a pending update, so it has to know about one without being clicked.
+  Component.onCompleted: presenceProcess.running = true
 
   // Numeric compare, field by field. "1.10.0" is newer than "1.9.0", which a
   // string compare gets backwards.
@@ -699,7 +721,24 @@ Panel {
             : (!root.dependencyPresent
                 ? "Install  (i)"
                 : root.outdated ? "Update  (i)" : "Start  (i)")
+          // Lit in the theme's alert color while the service is behind this
+          // panel -- the color the bar icon takes, since this is what clears
+          // it: a fill and a solid border of it, under the panel's own text,
+          // which stays readable where a theme's alert color is a muted one.
+          // Drawn here rather than through the kit's "selected" state, which a
+          // theme may fix to a color of its own.
+          readonly property color alertColor: root.bar ? root.bar.urgent : Color.urgent
           foreground: root.bar ? root.bar.foreground : Color.popups.text
+          background: root.outdated ? Util.alpha(alertColor, 0.30) : "transparent"
+
+          Rectangle {
+            anchors.fill: parent
+            visible: root.outdated
+            color: "transparent"
+            radius: parent.radius
+            border.width: 1
+            border.color: parent.alertColor
+          }
           onClicked: root.installDependency()
         }
 
