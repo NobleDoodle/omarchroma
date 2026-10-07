@@ -18,6 +18,12 @@ st = types.ModuleType("st")
 st.__dict__["__file__"] = REPO + "/lib/hyprchroma-state"
 exec(compile(src.replace('if __name__ == "__main__":\n    raise SystemExit(main())', ''),
              "st", "exec"), st.__dict__)
+# Captured here, pristine, before any test below replaces it with a fixed
+# answer of its own (most do, and do not restore it -- the next test's own
+# replacement is expected to be the cleanup): the one later check that needs
+# the real grouping logic again restores from this, not from whatever the
+# immediately preceding test happened to leave behind.
+pristine_stale_window_groups = st.stale_window_groups
 
 def chk(name, got, want):
     print(f"  {'PASS' if got == want else 'FAIL'} {name}"
@@ -161,6 +167,54 @@ finally:
     if stubborn.poll() is None:
         stubborn.kill(); stubborn.wait(timeout=2)
 
+# -- a relaunch that exits again on its own is failed, not restarted --------
+# Found live: an application closed by this and relaunched, then exited
+# again on its own within a second or two -- deferring to another instance's
+# lock, most likely -- leaving nothing running and no window to reopen,
+# while the old code called it "restarted" because Popen itself had not
+# raised. Driven against a real child, like quit_application's own tests:
+# a process that forks fine and exits of its own accord right after.
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.05
+real_process_cmdline, real_running_binary = st.process_cmdline, st.running_binary
+real_process_cwd, real_process_environ = st.process_cwd, st.process_environ
+quitter = subprocess.Popen(["sleep", "100"])
+quit_cmdline = ["sh", "-c", "exit 0"]
+st.process_cmdline = lambda pid: quit_cmdline if pid == quitter.pid else real_process_cmdline(pid)
+st.running_binary = lambda pid: shutil.which("sh") if pid == quitter.pid else real_running_binary(pid)
+st.process_cwd = lambda pid: "/tmp" if pid == quitter.pid else real_process_cwd(pid)
+st.process_environ = lambda pid: dict(os.environ) if pid == quitter.pid else real_process_environ(pid)
+try:
+    closed_addresses.clear()
+    st.stale_window_groups = lambda since=None: [
+        {"pid": quitter.pid, "name": "Quitter", "addresses": ["0x5"]}]
+    restarted, pending, failed = st.restart_stale_apps(None)
+    chk("a relaunch that exits again on its own is reported failed, not restarted",
+        (restarted, pending, failed), ([], [], ["Quitter"]))
+finally:
+    if quitter.poll() is None:
+        quitter.kill(); quitter.wait(timeout=2)
+    st.process_cmdline, st.running_binary = real_process_cmdline, real_running_binary
+    st.process_cwd, st.process_environ = real_process_cwd, real_process_environ
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- Steam: its own interface regardless of any theme, never flagged --------
+# The pristine stale_window_groups, captured at the very top: every test
+# before this one has left its own fixed answer in place instead of
+# restoring it, and this one needs the actual grouping logic run against
+# the fake window list below.
+st.stale_window_groups = pristine_stale_window_groups
+st.theme_switched_at = lambda: 1_000_000
+st.omarchy_reloaded_executables = lambda: set()
+st.gtk_portal_pids = lambda: set()
+st.window_executable = lambda pid: None
+st.open_windows = lambda: [("Steam", "steam", 500), ("Friends List", "steam", 500)]
+st.process_started_at = lambda pid: 500_000
+chk("Steam is never counted as stale: it has no theme to be behind on",
+    st.stale_open_windows(), {})
+st.open_window_records = lambda: [
+    {"title": "Steam", "class": "steam", "pid": 500, "address": "0xfff"}]
+chk("...nor offered a restart, for the same reason", st.stale_window_groups(), [])
+
 # -- gone between listing and acting: failed, and nothing is launched -------
 gone = subprocess.Popen(["true"]); gone.wait()
 closed_addresses.clear()
@@ -207,8 +261,13 @@ else:
     # would chase, and a PATH that finds the evil "probe" before the real one.
     poisoned_env = dict(os.environ)
     poisoned_env["PATH"] = f"{evil_scratch}:{poisoned_env.get('PATH', '')}"
-    victim = subprocess.Popen(["probe", str(outcome)],
-                              executable=str(real_bin), env=poisoned_env)
+    # DEVNULL, not inherited: the relaunch this proves correct is left running
+    # (pause()) past this block's own end, by design -- its argv names "probe",
+    # not real_bin's path, so nothing here would otherwise hold a test runner
+    # reading this script's own output open past this script's exit.
+    victim = subprocess.Popen(["probe", str(outcome)], executable=str(real_bin),
+                              env=poisoned_env, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL)
     for _ in range(50):
         if outcome.exists():
             break
@@ -223,7 +282,10 @@ else:
         chk("...never the one a poisoned PATH entry would have resolved to first",
             outcome.read_text(), "genuine")
     finally:
-        subprocess.run(["pkill", "-9", "-f", str(real_bin)], check=False)
+        # Matched on the outcome path, present in both the original victim's
+        # argv and the relaunch's: real_bin's own path is not, since the
+        # whole point here is that argv[0] is "probe", decoupled from it.
+        subprocess.run(["pkill", "-9", "-f", str(outcome)], check=False)
 
 # -- CLI: one line per name, grouped by outcome ------------------------------
 import argparse, io, contextlib

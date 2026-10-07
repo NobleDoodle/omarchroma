@@ -103,7 +103,11 @@ With the bar widget:
   with unsaved changes still gets to ask first) and launches it again with the
   command, directory and environment it already had. It is best-effort: an
   application with state only its original launcher had may not come back
-  exactly as it was.
+  exactly as it was, and a relaunch that exits again on its own -- most often
+  an application deferring to a lock another instance of it still holds -- is
+  reported failed rather than claimed as done, and is not retried. Steam is
+  never listed: it draws its own interface regardless of any theme, so there
+  would be nothing to restart it for.
 
 ## Palette Sources
 

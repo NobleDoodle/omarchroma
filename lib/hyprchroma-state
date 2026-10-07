@@ -2095,6 +2095,16 @@ def window_executable(pid):
         return None
 
 
+# Window classes that draw their own interface rather than reading any
+# theme Omarchroma manages (GTK, Qt, a browser's chrome): naming one here
+# would send someone to close and restart it for nothing, since it would
+# come back looking exactly the same. Lower-case, matching how open_windows()
+# and open_window_records() already fold a window's class before this ever
+# sees it. Steam is the known case -- its own UI, in every window it owns,
+# including the friends list and settings, not just the main one.
+UNTHEMED_CLASSES = {"steam"}
+
+
 def stale_open_windows(since=None):
     """{name: windows open} for apps whose process started before the current
     theme was selected, so they are still drawing the previous one. Counted
@@ -2129,6 +2139,8 @@ def stale_open_windows(since=None):
         # A file chooser is not an application anyone restarts, and closing it
         # is already enough: refresh_idle_apps recycles its backend then.
         if pid in portals:
+            continue
+        if klass in UNTHEMED_CLASSES:
             continue
         name = window_display_name(title, klass)
         name = name[:1].upper() + name[1:]
@@ -2165,9 +2177,10 @@ def stale_window_groups(since=None):
     every window that process owns, stale or not; closing one that opened a
     moment ago is the price of the one next to it being stale. The same
     exclusions as stale_open_windows apply window by window, so a window
-    excluded there (Omarchy re-themes its process live, or it is a portal)
-    never pulls an unrelated process into a group by sharing a name with it --
-    each exclusion is decided from that window's own process, never its
+    excluded there (Omarchy re-themes its process live, it is a portal, or
+    it draws its own interface regardless of any theme) never pulls an
+    unrelated process into a group by sharing a name with it -- each
+    exclusion is decided from that window's own process, never its
     neighbor's."""
     if since is None:
         since = theme_switched_at()
@@ -2180,6 +2193,8 @@ def stale_window_groups(since=None):
     for record in records:
         pid = record["pid"]
         if pid in portals or window_executable(pid) in reloaded:
+            continue
+        if record["class"] in UNTHEMED_CLASSES:
             continue
         by_pid.setdefault(pid, []).append(record)
     groups = []
@@ -2247,6 +2262,12 @@ def process_environ(pid):
 # the same way an idle application's own quit grace is bounded.
 WINDOW_CLOSE_GRACE_SECONDS = 5.0
 
+# How long a relaunch is watched before it is believed. Popen succeeding only
+# means the fork did; an application that notices another instance's lock it
+# lost the race for, or that no longer accepts a flag it was last run with,
+# exits again on its own within well under this, not minutes into running.
+RELAUNCH_CHECK_SECONDS = 1.5
+
 
 def restart_stale_apps(state_dir, since=None):
     """Close every window of each process still showing the previous theme,
@@ -2260,7 +2281,10 @@ def restart_stale_apps(state_dir, since=None):
     SIGTERM then SIGKILL, same as quit_application. A process a signal cannot
     move is left for the user rather than guessed at -- a dialog it is
     waiting on, most likely -- and nothing at all is launched in its place, so
-    no duplicate instance is started next to one still running."""
+    no duplicate instance is started next to one still running. A relaunch
+    that exits again on its own within RELAUNCH_CHECK_SECONDS is reported
+    failed, not restarted, and is not retried -- a second copy racing the
+    same lock, or the same flag, would only do it again."""
     restarted, pending, failed = [], [], []
     for group in stale_window_groups(since):
         pid, name = group["pid"], group["name"]
@@ -2301,12 +2325,28 @@ def restart_stale_apps(state_dir, since=None):
             # real one happened to hold. cmdline is still handed over in full,
             # so the program sees the same argv -- including its own argv[0]
             # -- it was launched with.
-            subprocess.Popen(cmdline, executable=exe, cwd=cwd, env=env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-            restarted.append(name)
+            relaunched = subprocess.Popen(
+                cmdline, executable=exe, cwd=cwd, env=env,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as error:
             print(f"Hyprchroma: could not relaunch {name}: {error}",
+                  file=sys.stderr, flush=True)
+            failed.append(name)
+            continue
+        # Watched, not just launched: a process that forked fine and then
+        # quit again on its own -- deferring to a lock it lost the race for,
+        # refusing a flag it was started with -- is not actually back, and
+        # reporting it restarted would have the user looking for a window
+        # that is never going to open.
+        deadline = time.monotonic() + RELAUNCH_CHECK_SECONDS
+        while time.monotonic() < deadline and relaunched.poll() is None:
+            time.sleep(0.1)
+        if relaunched.poll() is None:
+            restarted.append(name)
+        else:
+            print(f"Hyprchroma: {name} relaunched and exited again on its "
+                  f"own (status {relaunched.returncode}); not retried",
                   file=sys.stderr, flush=True)
             failed.append(name)
     return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
