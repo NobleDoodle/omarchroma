@@ -138,13 +138,13 @@ chk "every watcher lock is prepared first" \
 # generator writing kdeglobals by pathname and went unnoticed for a release.
 chk "no generator embeds a writer of its own" \
   "$(countcode 'tempfile\.mkstemp\(|os\.replace\(temporary' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "0"
-# Thirteen: ten in bin/hyprchroma (five embedded Python writers, the theme
+# Fourteen: eleven in bin/hyprchroma (six embedded Python writers, the theme
 # hook, a captured palette, the Pear stylesheet, the browsers' palette, and the
 # last-stale-notify record), one in the GTK generator that writes both its
 # stylesheets when they change, and the Qt/KDE color scheme plus kdeglobals.
 chk "every generator write goes through the helper" \
-  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "13"
-# Five: settings on a toggle, status, the Dark Reader theme, the Pear config,
-# and the removed-framework list.
+  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "14"
+# Six: settings on a toggle, status, the Dark Reader theme, the Pear config,
+# the removed-framework list, and the restart mode.
 chk "sync's embedded writers call the helper" \
-  "$(countcode 'write-file", "--path"' bin/hyprchroma)" "5"
+  "$(countcode 'write-file", "--path"' bin/hyprchroma)" "6"

@@ -2136,6 +2136,182 @@ def stale_open_windows(since=None):
     return counts
 
 
+def open_window_records():
+    """Like open_windows(), but keeps each window's Hyprland address too,
+    which closing one by name needs. A separate call rather than widening
+    open_windows()'s tuple: four callers already unpack that one positionally,
+    and nothing else here needs the address."""
+    result = subprocess.run(["hyprctl", "-j", "clients"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        clients = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return [
+        {"title": window_title(c), "class": (c.get("class") or "").lower(),
+         "pid": c.get("pid"), "address": c.get("address")}
+        for c in clients if c.get("pid", 0) > 0 and c.get("address")
+    ]
+
+
+def stale_window_groups(since=None):
+    """Open windows grouped by the process that owns them, one group per
+    process with at least one window still showing the previous theme.
+
+    Restarting needs the whole process, not one window of it -- a single
+    process cannot run half on each theme -- so a qualifying group lists
+    every window that process owns, stale or not; closing one that opened a
+    moment ago is the price of the one next to it being stale. The same
+    exclusions as stale_open_windows apply window by window, so a window
+    excluded there (Omarchy re-themes its process live, or it is a portal)
+    never pulls an unrelated process into a group by sharing a name with it --
+    each exclusion is decided from that window's own process, never its
+    neighbor's."""
+    if since is None:
+        since = theme_switched_at()
+    records = open_window_records()
+    if since is None or not records:
+        return []
+    reloaded = omarchy_reloaded_executables()
+    portals = gtk_portal_pids()
+    by_pid = {}
+    for record in records:
+        pid = record["pid"]
+        if pid in portals or window_executable(pid) in reloaded:
+            continue
+        by_pid.setdefault(pid, []).append(record)
+    groups = []
+    for pid, windows in by_pid.items():
+        started = process_started_at(pid)
+        if started is None or started >= since:
+            continue
+        name = window_display_name(windows[0]["title"], windows[0]["class"])
+        name = name[:1].upper() + name[1:]
+        groups.append({"pid": pid, "name": name,
+                       "addresses": [w["address"] for w in windows]})
+    return groups
+
+
+def process_cmdline(pid):
+    """argv as the process was started with, or None if that cannot be read --
+    gone, or never this account's to read. Used only for the argument list a
+    restart hands the program; the program actually executed comes from
+    running_binary(), not from argv[0], so nothing here is trusted to name an
+    executable."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    parts = raw.split(b"\0")
+    if parts and parts[-1] == b"":
+        parts.pop()
+    if not parts:
+        return None
+    try:
+        return [part.decode() for part in parts]
+    except UnicodeDecodeError:
+        return None
+
+
+def process_cwd(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def process_environ(pid):
+    """The process's own environment, name to value, or {} if it cannot be
+    read. Handed back to it unchanged on restart: this is not new trust being
+    extended, since it is exactly what the process already had."""
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    env = {}
+    for entry in raw.split(b"\0"):
+        if not entry or b"=" not in entry:
+            continue
+        key, _, value = entry.partition(b"=")
+        try:
+            env[key.decode()] = value.decode()
+        except UnicodeDecodeError:
+            continue
+    return env
+
+
+# How long a window is given to close itself -- and show its own "save
+# changes?" prompt, if it has one -- before a restart escalates to a signal,
+# the same way an idle application's own quit grace is bounded.
+WINDOW_CLOSE_GRACE_SECONDS = 5.0
+
+
+def restart_stale_apps(state_dir, since=None):
+    """Close every window of each process still showing the previous theme,
+    then launch each one again with the command, directory and environment it
+    already had. Returns (restarted, pending, failed) names, sorted.
+
+    Graceful first: hyprctl is asked to close each window the way its own
+    close button would, which gives a toolkit the chance to show its own
+    unsaved-changes prompt rather than losing work silently. Only a process
+    that is still here after WINDOW_CLOSE_GRACE_SECONDS is signalled directly,
+    SIGTERM then SIGKILL, same as quit_application. A process a signal cannot
+    move is left for the user rather than guessed at -- a dialog it is
+    waiting on, most likely -- and nothing at all is launched in its place, so
+    no duplicate instance is started next to one still running."""
+    restarted, pending, failed = [], [], []
+    for group in stale_window_groups(since):
+        pid, name = group["pid"], group["name"]
+        exe = running_binary(pid)
+        cmdline = process_cmdline(pid)
+        if not exe or not os.path.isabs(exe) or not cmdline:
+            # Gone already between listing and acting, or unreadable: nothing
+            # safe to relaunch with, so the window is left rather than closed
+            # with nothing to replace it.
+            failed.append(name)
+            continue
+        cwd = process_cwd(pid) or str(Path.home())
+        env = process_environ(pid)
+        for address in group["addresses"]:
+            subprocess.run(["hyprctl", "dispatch", "closewindow", "address:" + address],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
+        while time.monotonic() < deadline and process_alive(pid):
+            time.sleep(0.1)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if not process_alive(pid):
+                break
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                break
+            sig_deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+            while time.monotonic() < sig_deadline and process_alive(pid):
+                time.sleep(0.05)
+        if process_alive(pid):
+            pending.append(name)
+            continue
+        try:
+            # executable= is the kernel's own record of what this process is
+            # running, not argv[0] re-resolved through PATH: a process started
+            # as "firefox" by name, left to PATH here, could come back running
+            # whatever a directory earlier in this account's PATH than the
+            # real one happened to hold. cmdline is still handed over in full,
+            # so the program sees the same argv -- including its own argv[0]
+            # -- it was launched with.
+            subprocess.Popen(cmdline, executable=exe, cwd=cwd, env=env,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            restarted.append(name)
+        except OSError as error:
+            print(f"Hyprchroma: could not relaunch {name}: {error}",
+                  file=sys.stderr, flush=True)
+            failed.append(name)
+    return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
+
+
 # Any process with KColorScheme mapped reads the colors in kdeglobals and
 # reloads when they change. That is the predicate, rather than a list of KDE
 # applications, so it covers ones this plugin has never heard of.
@@ -3292,6 +3468,7 @@ def main():
                        help="judge staleness against when the theme last changed (the default)")
     stale.add_argument("--record", action="store_true",
                        help="also keep the list in status.json, for the bar widget's count")
+    sub.add_parser("restart-stale-apps")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -3373,6 +3550,15 @@ def main():
             record_stale_apps(args.state_dir, windows)
         for name in sorted(windows):
             print(stale_line(name, windows[name]))
+    elif args.command == "restart-stale-apps":
+        restarted, pending, failed = restart_stale_apps(
+            args.state_dir, stale_baseline(args.state_dir))
+        for name in restarted:
+            print(f"restarted {name}")
+        for name in pending:
+            print(f"pending {name}")
+        for name in failed:
+            print(f"failed {name}")
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
             print(name)

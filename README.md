@@ -57,6 +57,8 @@ hyprchroma framework remove pear  # remove from the panel and revert
 hyprchroma framework restore pear # put it back and sync
 hyprchroma palette --capture      # pin the current palette to a file
 hyprchroma restore --stock        # revert everything to stock defaults
+hyprchroma restart-stale          # close and relaunch every stale application
+hyprchroma --restart-mode=confirm # force | confirm | off -- see below
 ```
 
 With the bar widget:
@@ -67,6 +69,7 @@ With the bar widget:
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, and any removed frameworks |
+| `a` (in that list) | Restart every one of them: close, then relaunch |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
 
@@ -90,6 +93,17 @@ With the bar widget:
 * Additional browsers is off until you switch it on: it writes into your browser
   profiles (see below). Each browser picks it up on its next start. Chromium,
   Chrome, Brave and Helium are not included; Omarchy colors those itself.
+* The applications-to-close list has a Restart All button, in every mode, and a
+  restart mode below it: **Force** restarts every stale application right after
+  a sync, with no prompt; **Confirm** asks first, in the same popup a global
+  hotkey can open from anywhere (bind one to `restartStaleApps` in your own
+  bindings.lua, the way the toggles above are bound); **Off**, the default,
+  does neither -- the list's own button is still there either way. A restart
+  closes each window the way its own close button would (so an application
+  with unsaved changes still gets to ask first) and launches it again with the
+  command, directory and environment it already had. It is best-effort: an
+  application with state only its original launcher had may not come back
+  exactly as it was.
 
 ## Palette Sources
 
@@ -182,6 +196,7 @@ o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear"
 o.bind("SUPER + ALT + F", "Omarchroma: toggle Flatpak apps", om .. " toggleFlatpak")
 o.bind("SUPER + ALT + B", "Omarchroma: toggle additional browsers", om .. " toggleBrowsers")
 o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
+o.bind("SUPER + ALT + A", "Omarchroma: restart stale applications", om .. " restartStaleApps")
 ```
 
 These drive the bar widget. If running standalone, map to `hyprchroma --force`

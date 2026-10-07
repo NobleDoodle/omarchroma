@@ -282,8 +282,44 @@ PY
       report-stale-apps --since-last-sync "$@"
     exit $?
     ;;
+  restart-stale)
+    # Closes every window of each application still showing the previous
+    # theme, then launches it again with the command, directory and
+    # environment it already had. One path for all three ways of reaching
+    # it: the window list's own button, the confirmation popup's "yes", and
+    # restartMode=force running it on its own right after a sync.
+    shift
+    want_notify=0
+    for argument in "$@"; do
+      case "$argument" in
+        --notify) want_notify=1 ;;
+        *) echo "hyprchroma restart-stale: unknown option: $argument" >&2; exit 2 ;;
+      esac
+    done
+    out=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restart-stale-apps)
+    restarted=$(awk '$1=="restarted"{sub(/^restarted /,""); print}' <<<"$out")
+    pending=$(awk '$1=="pending"{sub(/^pending /,""); print}' <<<"$out")
+    failed=$(awk '$1=="failed"{sub(/^failed /,""); print}' <<<"$out")
+    [[ -n $restarted ]] && printf 'Hyprchroma: restarted: %s\n' "${restarted//$'\n'/, }"
+    [[ -n $pending ]] && printf 'Hyprchroma: still open, could not be closed: %s\n' "${pending//$'\n'/, }"
+    [[ -n $failed ]] && printf 'Hyprchroma: could not be restarted: %s\n' "${failed//$'\n'/, }"
+    if (( want_notify )) && command -v notify-send >/dev/null; then
+      body=""
+      [[ -n $restarted ]] && body+="Restarted: ${restarted//$'\n'/, }"$'\n'
+      [[ -n $pending ]] && body+="Still open: ${pending//$'\n'/, }"$'\n'
+      [[ -n $failed ]] && body+="Could not restart: ${failed//$'\n'/, }"
+      notify-send -a Hyprchroma "Restarting applications" \
+        "${body:-Nothing needed restarting.}" 2>/dev/null || true
+    fi
+    # The list the panel shows is only current once this has had its say.
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+      report-stale-apps --since-last-sync --record >/dev/null 2>&1 || true
+    exit 0
+    ;;
   --version|version)
-    echo "hyprchroma 3.0.0"
+    echo "hyprchroma 3.1.0"
     exit 0
     ;;
 esac
@@ -293,6 +329,7 @@ notify=0
 force=0
 target="all"
 set_enabled=""
+restart_mode=""
 
 for argument in "$@"; do
   case "$argument" in
@@ -308,6 +345,9 @@ for argument in "$@"; do
     --target=browsers) target="browsers" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
+    --restart-mode=force) restart_mode="force" ;;
+    --restart-mode=confirm) restart_mode="confirm" ;;
+    --restart-mode=off) restart_mode="off" ;;
     -h|--help)
       cat <<'USAGE'
 Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
@@ -317,6 +357,8 @@ Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
        hyprchroma framework (list|remove <target>|restore <target>)
        hyprchroma palette [--all|--capture|--template|--source]
        hyprchroma stale-apps       list apps still showing the old theme, and their windows
+       hyprchroma restart-stale [--notify]   close and relaunch every one of them
+       hyprchroma --restart-mode=force|confirm|off   when that happens on its own
        hyprchroma restore [--stock|--captured]
        hyprchroma --version
 USAGE
@@ -472,6 +514,18 @@ target_enabled() {
         "$SETTINGS_FILE" 2>/dev/null || echo "$default") == "true" ]]
 }
 
+# Off unless recorded otherwise, the same way Flatpak and Additional browsers
+# default off: restarting an application on its own, with nothing asked, is
+# not something an install or an upgrade may turn on for the user.
+restart_mode() {
+  local mode
+  mode=$(jq -r '.restartMode // "off"' "$SETTINGS_FILE" 2>/dev/null) || mode="off"
+  case "$mode" in
+    force|confirm) echo "$mode" ;;
+    *) echo "off" ;;
+  esac
+}
+
 if [[ -n $set_enabled ]]; then
   [[ $target != "all" ]] || fail "--set-enabled requires a specific --target"
   settings_key=$(target_key "$target") || fail "unknown target: $target"
@@ -513,6 +567,27 @@ frameworks[key] = enabled
 atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
   [[ $set_enabled == "true" ]] && force=1
+fi
+
+if [[ -n $restart_mode ]]; then
+  # A setting of its own, not tied to any framework, so it is written and
+  # left at that rather than falling into a sync the way --set-enabled does.
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$restart_mode" <<'PY'
+import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
+import json
+import subprocess
+from pathlib import Path
+
+path, mode = Path(sys.argv[1]), sys.argv[2]
+settings = json.loads(path.read_text()) if path.exists() else {}
+settings["restartMode"] = mode
+subprocess.run(
+    [HELPER, "write-file", "--path", str(path)],
+    input=(json.dumps(settings, indent=2) + "\n").encode(), check=True,
+)
+PY
+  echo "Hyprchroma: restart mode set to $restart_mode"
+  exit 0
 fi
 
 # The lock is created by the state helper, relative to a directory descriptor
@@ -1119,5 +1194,17 @@ fi
 # when there is something new for their next launch to read.
 if (( theme_changed )); then
   recycle_idle_apps
+  # restartMode=force: nothing is left stale for the user to deal with by
+  # hand. Gated on theme_changed for the same reason recycling is -- a quiet
+  # pass that changed nothing must not restart windows that merely happened
+  # to be open -- and notifies only when this run itself would, so the
+  # daemon's own background passes stay as quiet as they already are.
+  if [[ $(restart_mode) == force ]]; then
+    if (( notify )); then
+      "$HYPRCHROMA_SELF" restart-stale --notify || true
+    else
+      "$HYPRCHROMA_SELF" restart-stale || true
+    fi
+  fi
 fi
 report_stale_apps

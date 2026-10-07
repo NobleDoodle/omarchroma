@@ -265,6 +265,23 @@ Panel {
   // per application would push the frameworks off the screen.
   property bool guideOpen: false
 
+  // What happens to the applications the guide lists, on its own, once a sync
+  // finds any of them stale: restart every one without asking ("force"), ask
+  // first ("confirm", the popup the global hotkey also opens), or do nothing
+  // and leave the guide's own button as the only way ("off", the default --
+  // restarting a window is exactly the kind of thing an install or an update
+  // may not decide on the user's behalf). The mode governs only what happens
+  // automatically; the guide's button and the popup both restart the same way
+  // regardless of which mode is set.
+  property string restartMode: "off"
+  readonly property var restartModes: ["force", "confirm", "off"]
+
+  // The same confirmation the global hotkey opens, reachable with the panel
+  // already open too -- there is no reason the one reachable from outside it
+  // should be the only way in. Mutually exclusive with the guide: each is the
+  // whole panel body while it is showing, the way the guide already is.
+  property bool confirmRestartOpen: false
+
   // However many are open, the panel stays a readable size and says how many
   // it did not name.
   readonly property int staleShown: 8
@@ -360,6 +377,46 @@ Panel {
     refreshProcess.running = true
   }
 
+  // A write of its own, not a sync -- modeProcess rather than refreshProcess,
+  // so choosing a mode is never blocked behind, or seen to be, a sync already
+  // running, and setting it does not show as "Synchronizing all...".
+  function setRestartMode(mode) {
+    if (restartModes.indexOf(mode) === -1 || modeProcess.running) return
+    modeProcess.command = [ "/usr/bin/hyprchroma", "--restart-mode=" + mode ]
+    modeProcess.running = true
+  }
+
+  Process {
+    id: modeProcess
+    environment: ({ PATH: root.trustedPath })
+    onExited: settingsFile.reload()
+  }
+
+  // Closes and relaunches every application the guide lists, the one
+  // mechanism behind the guide's own button, the confirmation popup's "yes",
+  // and (from the service's side, on its own) restartMode=force. Always
+  // --notify: whichever of those called it, this is the only report of an
+  // action that just happened out of sight.
+  function runRestart() {
+    if (restartProcess.running) return
+    restartProcess.running = true
+  }
+
+  // What the popup's "yes" does: close it, then restart, in that order, so a
+  // restart that takes a moment is not shown behind a popup still claiming to
+  // be asking.
+  function confirmRestart() {
+    root.confirmRestartOpen = false
+    root.runRestart()
+  }
+
+  Process {
+    id: restartProcess
+    command: [ "/usr/bin/hyprchroma", "restart-stale", "--notify" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: root.refreshStaleApps()
+  }
+
   // "r" matches the convention PanelKeyCatcher documents for refresh; the
   // digits match each row's position, which the row displays.
   function handleKey(text) {
@@ -375,6 +432,14 @@ Panel {
     // toggle without the service. A key that would open it is ignored rather
     // than opening an always-empty screen.
     if (!root.ready) return
+    // The confirmation popup owns every key while it is up: the same "a" that
+    // opened it (the global hotkey, bound in bindings.lua) or that restarts
+    // directly from the guide also answers it, so one key does both jobs
+    // everywhere it appears.
+    if (root.confirmRestartOpen) {
+      if (key === "a") root.confirmRestart()
+      return
+    }
     // "/" rather than "?" so no shift is needed, and rather than "h" because
     // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
     // reason the framework rows are numbered.
@@ -386,6 +451,14 @@ Panel {
     // While the guide is up, a digit means one of the removed frameworks listed
     // there -- not one of the toggles, whose rows are not on screen.
     if (root.guideOpen) {
+      // Direct, no popup: being in the list already is the confirmation the
+      // popup asks for everywhere else. The global hotkey (bound in
+      // bindings.lua) reads the same key to open that popup, so the two stay
+      // in step without the plugin writing the binding itself.
+      if (key === "a" && root.staleWindowCount > 0) {
+        root.runRestart()
+        return
+      }
       var back = parseInt(key, 10) - 1
       if (back >= 0 && back < root.hiddenFrameworks.length) {
         root.restoreFramework(root.hiddenFrameworks[back].target)
@@ -479,11 +552,17 @@ Panel {
           flatpak: frameworks.flatpak === true,
           browsers: frameworks.browsers === true
         }
+        root.restartMode = root.restartModes.indexOf(parsed.restartMode) !== -1
+          ? parsed.restartMode : "off"
       } catch (error) {
         root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+        root.restartMode = "off"
       }
     }
-    onLoadFailed: root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+    onLoadFailed: {
+      root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+      root.restartMode = "off"
+    }
     onFileChanged: reload()
   }
 
@@ -526,14 +605,19 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      // Escape leaves the guide first, so it never strands the user on a view
-      // they cannot back out of.
+      // Escape leaves the nearest view first -- the popup, then the guide --
+      // so it never strands the user on one they cannot back out of.
       onCloseRequested: {
-        if (root.guideOpen) root.guideOpen = false
+        if (root.confirmRestartOpen) root.confirmRestartOpen = false
+        else if (root.guideOpen) root.guideOpen = false
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) { root.handleKey(text) }
+      // Enter and Space reach nothing else in this panel, so the popup takes
+      // them as a second way to say yes, beside the key that opened it.
+      onReturnRequested: if (root.confirmRestartOpen) root.confirmRestart()
+      onActivateRequested: if (root.confirmRestartOpen) root.confirmRestart()
 
       Column {
         id: content
@@ -541,20 +625,62 @@ Panel {
         spacing: Style.space(8)
 
         Text {
-          text: root.guideOpen
-            ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
-                                        : "Applications to close")
-              + (root.hiddenFrameworks.length > 0 ? ", and what you removed" : "")
-            : "Omarchroma"
+          text: root.confirmRestartOpen
+            ? "Restart now?"
+            : root.guideOpen
+              ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
+                                          : "Applications to close")
+                + (root.hiddenFrameworks.length > 0 ? ", and what you removed" : "")
+              : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.body
           font.bold: true
         }
 
+        // The same confirmation the global hotkey opens -- bound to a key of
+        // the user's own choosing in bindings.lua, matching every other
+        // hotkey this plugin exposes -- so it works whether the panel was
+        // already open or not. Its own small view rather than a dialog of its
+        // own kind: the panel is already the one popup this plugin shows.
+        Column {
+          id: confirmRestart
+          visible: root.confirmRestartOpen
+          width: content.width
+          spacing: Style.space(6)
+
+          Text {
+            width: confirmRestart.width
+            text: root.staleWindowCount > 0
+              ? "Close and relaunch " + root.windowsPhrase(root.staleWindowCount) + "?"
+              : "Nothing is showing the previous theme."
+            color: root.bar ? root.bar.foreground : Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          Button {
+            visible: root.staleWindowCount > 0
+            width: confirmRestart.width
+            text: "Restart  (a)"
+            iconText: "󰜉"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.confirmRestart()
+          }
+
+          Button {
+            width: confirmRestart.width
+            text: "Cancel  (Esc)"
+            iconText: "󰌍"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.confirmRestartOpen = false
+          }
+        }
+
         Column {
           id: guide
-          visible: root.guideOpen
+          visible: root.guideOpen && !root.confirmRestartOpen
           width: content.width
           spacing: Style.space(6)
 
@@ -681,6 +807,70 @@ Panel {
             font.pixelSize: Style.font.caption
           }
 
+          // Both toggles live here rather than beside the framework list: this
+          // is the one place that already talks about applications left on
+          // the previous theme, and the only place the user ever sees them.
+          PanelSeparator {
+            visible: root.staleApps.length > 0 || root.hiddenFrameworks.length > 0
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+          }
+
+          // Present in every mode, not only "off": restartMode decides what
+          // happens on its own, never whether this still works by hand.
+          Button {
+            visible: root.staleWindowCount > 0
+            width: guide.width
+            text: "Restart All  (a)"
+            iconText: "\udb81\udf09"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.runRestart()
+          }
+
+          Text {
+            width: guide.width
+            text: "When a sync leaves applications stale:"
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            topPadding: Style.space(6)
+          }
+
+          Row {
+            width: guide.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: [
+                { mode: "force", label: "Force" },
+                { mode: "confirm", label: "Confirm" },
+                { mode: "off", label: "Off" }
+              ]
+              delegate: Button {
+                id: modeButton
+                required property var modelData
+                width: (guide.width - Style.space(12)) / 3
+                text: modelData.label
+                selected: root.restartMode === modelData.mode
+                bordered: true
+                foreground: root.bar ? root.bar.foreground : Color.popups.text
+                onClicked: root.setRestartMode(modelData.mode)
+              }
+            }
+          }
+
+          Text {
+            width: guide.width
+            text: root.restartMode === "force"
+              ? "Restarts every one on its own, right after a sync."
+              : root.restartMode === "confirm"
+                ? "Asks first \u2014 the same popup the global hotkey (a) opens."
+                : "Nothing on its own; the button above still works."
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
           Button {
             width: guide.width
             text: "Back  (/)"
@@ -691,7 +881,7 @@ Panel {
         }
 
         Text {
-          visible: !root.guideOpen && root.ready
+          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
@@ -713,7 +903,7 @@ Panel {
         // is real only once the service is; each is gated on root.ready for
         // the same reason this replaces the old descriptive sentence.
         Button {
-          visible: !root.guideOpen && root.dependencyChecked && !root.ready
+          visible: !root.guideOpen && !root.confirmRestartOpen && root.dependencyChecked && !root.ready
           width: content.width
           enabled: !root.installing
           text: root.installing
@@ -747,7 +937,7 @@ Panel {
 
           delegate: Item {
             id: row
-            visible: !root.guideOpen && root.ready
+            visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
             required property var modelData
             required property int index
             width: content.width
@@ -807,13 +997,13 @@ Panel {
         // enabled" and "Nothing to close" over an otherwise empty panel --
         // controls for a thing that does not exist yet.
         PanelSeparator {
-          visible: !root.guideOpen && root.ready
+          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           foreground: root.bar ? root.bar.foreground : Color.popups.text
         }
 
 
         Button {
-          visible: !root.guideOpen && root.ready
+          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
@@ -825,7 +1015,7 @@ Panel {
         // Reachable by mouse as well as by "/", and carries the count so the
         // number of windows waiting is visible without opening it.
         Button {
-          visible: !root.guideOpen && root.ready
+          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: root.staleWindowCount > 0
             ? root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
