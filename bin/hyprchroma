@@ -319,7 +319,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.1.4"
+    echo "hyprchroma 3.1.5"
     exit 0
     ;;
 esac
@@ -804,6 +804,17 @@ fi
 if (( browsers_resume )); then
   "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
     sync-browsers --resume >/dev/null 2>&1 || true
+fi
+
+# Omarchy writes VS Code's generated "Omarchy" theme afresh on every theme
+# switch, without the flag that has the editor re-read it when it changes;
+# put back whenever a switch can have happened -- Omarchy's theme hook always
+# runs a forced sync, and a palette change is one -- ahead of the early exit
+# below. Not on the quiet passes every window event starts, which test-sync-
+# lock holds to one helper process each. See editor_live_themes.
+if (( force )) || [[ $fingerprint != "$previous_fingerprint" ]]; then
+  "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+    editor-live-themes >/dev/null 2>&1 || true
 fi
 
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \

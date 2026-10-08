@@ -126,6 +126,13 @@ With the bar widget:
   own interface regardless of any theme, so there would be nothing to
   restart it for. Neither is VS Code, nor anything else Omarchy re-themes
   live on its own when the theme changes.
+* VS Code (and VS Code Insiders, VSCodium, Cursor) follows every theme switch
+  live. Most Omarchy themes give the editor no theme of their own: Omarchy
+  regenerates the colors of one theme always named "Omarchy", and an open
+  editor kept showing the old colors until it was restarted. Each sync after
+  a switch marks that generated theme for the editor to watch, so it re-reads
+  the colors the moment they change. The editor picks the mark up the next
+  time it starts; every switch after that is live.
 
 ## Palette Sources
 
