@@ -2086,7 +2086,16 @@ def omarchy_reloaded_executables():
             continue
         code = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in text.splitlines())
         tokens |= set(re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", code))
-    return tokens & running_executables()
+    return (tokens - OMARCHY_EDITORS) & running_executables()
+
+
+# The editors omarchy-theme-set-vscode themes, by executable: VS Code, VS Code
+# Insiders, VSCodium and Cursor. Named in Omarchy's theme scripts, but not
+# re-themed live: Omarchy writes the editor's settings, and an open editor
+# keeps the colors it already loaded until it is restarted (for most themes,
+# the setting does not even change). So they are listed for restart like any
+# other application, not left out as re-themed.
+OMARCHY_EDITORS = {"code", "code-insiders", "codium", "cursor"}
 
 
 def window_executable(pid):
@@ -2652,95 +2661,6 @@ def place_windows(plans, before):
                 break
         if remaining:
             time.sleep(0.25)
-
-
-# Where Omarchy's omarchy-theme-set-vscode installs the color theme it
-# generates for each editor it themes: VS Code, VS Code Insiders, VSCodium
-# and Cursor, in that script's own order.
-# Each paired with that editor's configuration directory, under ~/.config,
-# where it caches its scan of installed extensions.
-OMARCHY_EDITOR_THEME_EXTENSIONS = (
-    (".vscode/extensions/omarchy-theme", "Code"),
-    (".vscode-insiders/extensions/omarchy-theme", "Code - Insiders"),
-    (".vscode-oss/extensions/omarchy-theme", "VSCodium"),
-    (".cursor/extensions/omarchy-theme", "Cursor"),
-)
-
-
-def forget_extension_scan(editor):
-    """Remove an editor's cached scan of the user's installed extensions.
-
-    An editor starts from that cache, re-scans the disk three seconds later,
-    and when the two differ deletes the cache itself and shows "Extensions
-    have been modified on disk. Please reload the window." -- an error prompt
-    for nothing but the theme flag below. Without a cache it simply scans,
-    and says nothing. Only the user-extension caches; the built-in ones are
-    the editor's own and never differ."""
-    profiles = Path.home() / ".config" / editor / "CachedProfilesData"
-    try:
-        caches = [cache for profile in profiles.iterdir() if profile.is_dir() and not profile.is_symlink()
-                  for cache in profile.glob("extensions.user*.cache")]
-    except OSError:
-        return
-    for cache in caches:
-        try:
-            # Through a verified descriptor for the profile directory, as
-            # every other removal here is: a symlink at the name is removed
-            # itself, never followed.
-            safe_unlink(cache)
-        except OSError:
-            continue
-
-
-def editor_live_themes():
-    """Mark the color theme Omarchy generates for VS Code and its relatives as
-    one the editor watches, so a theme switch shows in an open editor at once.
-    Returns the package.json files changed.
-
-    For most themes Omarchy does not switch the editor to a different theme:
-    it regenerates the colors of one theme always named "Omarchy", and the
-    setting naming it never changes. The editor reads a theme's file once and
-    reuses that copy, so an open window kept the old colors until it was
-    restarted -- live for some theme switches, not for others. The editor's
-    own theme watcher, the one behind live theme editing, re-reads a theme's
-    file the moment it changes, for any theme whose entry in package.json
-    carries "_watch": true. Omarchy writes that package.json afresh on every
-    switch, without it, so it is put back here on every sync; the editor
-    reads package.json when it starts, so it takes effect from the editor's
-    next start on, whenever that is, and every switch after that is live.
-    Its cached scan of extensions goes with each change, so that start says
-    nothing about it (see forget_extension_scan).
-
-    Only Omarchy's own generated extension is touched -- recognised by its
-    name and publisher -- and only the _watch key on its theme entries."""
-    changed = []
-    for relative, editor in OMARCHY_EDITOR_THEME_EXTENSIONS:
-        manifest = Path.home() / relative / "package.json"
-        text = safe_read(manifest, 64 * 1024)
-        if text is None:
-            continue
-        try:
-            package = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(package, dict) or package.get("name") != "omarchy-theme" \
-                or package.get("publisher") != "local":
-            continue
-        themes = (package.get("contributes") or {}).get("themes")
-        if not isinstance(themes, list) or not themes:
-            continue
-        missing = [theme for theme in themes if isinstance(theme, dict) and theme.get("_watch") is not True]
-        if not missing:
-            continue
-        for theme in missing:
-            theme["_watch"] = True
-        try:
-            atomic_write(manifest, (json.dumps(package, indent=4) + "\n").encode())
-        except OSError:
-            continue
-        forget_extension_scan(editor)
-        changed.append(str(manifest))
-    return changed
 
 
 # Any process with KColorScheme mapped reads the colors in kdeglobals and
@@ -3903,7 +3823,6 @@ def main():
     # The hyprchroma entry point to run once everything is closed and before
     # anything is relaunched; given by bin/hyprchroma as its own path.
     restart.add_argument("--sync-command")
-    sub.add_parser("editor-live-themes")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -4008,9 +3927,6 @@ def main():
             print(f"pending {name}")
         for name in failed:
             print(f"failed {name}")
-    elif args.command == "editor-live-themes":
-        for manifest in editor_live_themes():
-            print(f"live {manifest}")
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
             print(name)

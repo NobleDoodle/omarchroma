@@ -124,16 +124,9 @@ With the bar widget:
   application deferring to another copy of itself -- is reported failed, not
   claimed as done, and is not retried. Steam is never listed: it draws its
   own interface regardless of any theme, so there would be nothing to
-  restart it for. Neither is VS Code, nor anything else Omarchy re-themes
-  live on its own when the theme changes.
-* VS Code (and VS Code Insiders, VSCodium, Cursor) follows every theme switch
-  live. Most Omarchy themes give the editor no theme of their own: Omarchy
-  regenerates the colors of one theme always named "Omarchy", and an open
-  editor kept showing the old colors until it was restarted. Each sync after
-  a switch marks that generated theme for the editor to watch, so it re-reads
-  the colors the moment they change. The editor picks the mark up the next
-  time it starts, whenever you next restart it, without any prompt; every
-  switch after that is live.
+  restart it for. Nor is anything Omarchy re-themes live on its own when the
+  theme changes, such as terminals and the shell. VS Code is listed: Omarchy
+  writes its settings, but an open editor keeps its old colors until restarted.
 
 ## Palette Sources
 
