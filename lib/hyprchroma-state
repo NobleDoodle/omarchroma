@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import codecs
 import fcntl
 import json
 import os
@@ -2204,7 +2205,7 @@ def stale_window_groups(since=None):
             continue
         name = window_display_name(windows[0]["title"], windows[0]["class"])
         name = name[:1].upper() + name[1:]
-        groups.append({"pid": pid, "name": name,
+        groups.append({"pid": pid, "name": name, "class": windows[0]["class"],
                        "addresses": [w["address"] for w in windows]})
     return groups
 
@@ -2257,6 +2258,120 @@ def process_environ(pid):
     return env
 
 
+_SESSION_ENVIRONMENT = None
+
+
+def session_environment():
+    """The graphical session's environment, as the systemd user manager holds
+    it -- what uwsm finalized and what every application the launcher starts
+    is given. {} if it cannot be read.
+
+    Needed because a process's own /proc/<pid>/environ is not always its
+    environment: Chromium and every Electron application (Vivaldi, YouTube
+    Music, VS Code) reuse that memory for their process title, and it reads
+    back empty. Relaunching one with what was read there started it with no
+    WAYLAND_DISPLAY, no session bus and no runtime directory, and it exited
+    at once."""
+    global _SESSION_ENVIRONMENT
+    if _SESSION_ENVIRONMENT is not None:
+        return _SESSION_ENVIRONMENT
+    systemctl = shutil.which("systemctl", path=trusted_path())
+    env = {}
+    if systemctl:
+        result = subprocess.run([systemctl, "--user", "show-environment"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                check=False, timeout=10)
+        for line in result.stdout.split(b"\n") if result.returncode == 0 else []:
+            key, sep, value = line.partition(b"=")
+            if not sep or not key or not key.replace(b"_", b"").isalnum():
+                continue
+            # A value with anything a shell would mangle comes back in bash's
+            # $'...' quoting; escape_decode undoes exactly that escaping and
+            # leaves raw UTF-8 bytes alone.
+            if value.startswith(b"$'") and value.endswith(b"'"):
+                value = codecs.escape_decode(value[2:-1])[0]
+            try:
+                env[key.decode()] = value.decode()
+            except UnicodeDecodeError:
+                continue
+    _SESSION_ENVIRONMENT = env
+    return env
+
+
+def relaunch_environment(pid):
+    """The environment a restarted application is given: its own, when it can
+    be read and is evidently a real session environment, otherwise the
+    session's -- the same one its launcher would have handed it."""
+    own = process_environ(pid)
+    if own.get("XDG_RUNTIME_DIR") and (own.get("WAYLAND_DISPLAY") or own.get("DISPLAY")):
+        return own
+    return session_environment() or own
+
+
+# Scanned once per run of this helper, the same reasoning as executable_index
+# in the Dark Reader helper: checking each restarted application against the
+# filesystem on its own would mean re-reading every directory below for each
+# one. {window class (lower-case, matching what Hyprland and open_windows()
+# already fold it to): desktop entry id}.
+_DESKTOP_ENTRIES = None
+
+
+def desktop_entries():
+    """Every installed application's id, by the window class its own
+    StartupWMClass declares. A window's class is the one thing here that was
+    never attacker-chosen by this restart: Hyprland reports it from the
+    window itself, independent of anything this account controls."""
+    global _DESKTOP_ENTRIES
+    if _DESKTOP_ENTRIES is not None:
+        return _DESKTOP_ENTRIES
+    roots = [Path.home() / ".local/share", Path.home() / ".local/share/flatpak/exports/share"]
+    roots += [Path(part) for part in (os.environ.get("XDG_DATA_DIRS")
+                                      or "/usr/share:/usr/local/share").split(":") if part]
+    roots.append(Path("/var/lib/flatpak/exports/share"))
+    entries = {}
+    for root in roots:
+        directory = root / "applications"
+        try:
+            names = sorted(entry.name for entry in os.scandir(directory)
+                           if entry.name.endswith(".desktop"))
+        except OSError:
+            continue
+        for filename in names:
+            text = safe_read(directory / filename, MAX_FOREIGN_FILE)
+            if text is None:
+                continue
+            klass = None
+            for line in text.splitlines():
+                if line.startswith("StartupWMClass="):
+                    klass = line[len("StartupWMClass="):].strip().lower()
+                    break
+            # The full file name, suffix and all: that suffix is how uwsm
+            # tells a desktop entry id from a command name (main.py, "elif
+            # arg.endswith('.desktop')"). Without it, it looks for a binary
+            # called "com.github.th-ch.youtube-music" and fails.
+            if klass:
+                entries.setdefault(klass, filename)
+    _DESKTOP_ENTRIES = entries
+    return entries
+
+
+def relaunch_command(klass, cmdline, exe):
+    """How to bring an application back: by the application's own installed
+    launcher where one names this window class, which is what actually
+    starts it the way the desktop would -- in the systemd scope Omarchy
+    launches every graphical application into, with whatever a package's own
+    wrapper script sets up. A plain re-exec of the binary skips both, and at
+    least one real, GPU-sandboxed application was observed exiting silently
+    within its first second there, never reaching a window. Falls back to a
+    plain relaunch of the kernel's own record of the binary where no entry
+    names this class, or uwsm itself is not installed."""
+    uwsm = shutil.which("uwsm", path=trusted_path())
+    entry = uwsm and desktop_entries().get(klass)
+    if entry:
+        return [uwsm, "app", "-s", "a", "--", entry]
+    return [exe] + cmdline[1:]
+
+
 # How long a window is given to close itself -- and show its own "save
 # changes?" prompt, if it has one -- before a restart escalates to a signal,
 # the same way an idle application's own quit grace is bounded.
@@ -2287,7 +2402,7 @@ def restart_stale_apps(state_dir, since=None):
     same lock, or the same flag, would only do it again."""
     restarted, pending, failed = [], [], []
     for group in stale_window_groups(since):
-        pid, name = group["pid"], group["name"]
+        pid, name, klass = group["pid"], group["name"], group["class"]
         exe = running_binary(pid)
         cmdline = process_cmdline(pid)
         if not exe or not os.path.isabs(exe) or not cmdline:
@@ -2297,7 +2412,7 @@ def restart_stale_apps(state_dir, since=None):
             failed.append(name)
             continue
         cwd = process_cwd(pid) or str(Path.home())
-        env = process_environ(pid)
+        env = relaunch_environment(pid)
         for address in group["addresses"]:
             subprocess.run(["hyprctl", "dispatch", "closewindow", "address:" + address],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -2318,15 +2433,18 @@ def restart_stale_apps(state_dir, since=None):
             pending.append(name)
             continue
         try:
-            # executable= is the kernel's own record of what this process is
-            # running, not argv[0] re-resolved through PATH: a process started
-            # as "firefox" by name, left to PATH here, could come back running
+            # relaunch_command names an installed launcher by this window's
+            # own class where one exists -- the systemd scope and any
+            # wrapper a plain re-exec of the binary would skip -- or falls
+            # back to the kernel's own record of the binary, exe, which
+            # cmdline[0] is never substituted for: a process started as
+            # "firefox" by name, left to PATH here, could come back running
             # whatever a directory earlier in this account's PATH than the
-            # real one happened to hold. cmdline is still handed over in full,
-            # so the program sees the same argv -- including its own argv[0]
-            # -- it was launched with.
+            # real one happened to hold. Either way argv[0] is already an
+            # absolute, verified path, so it is its own executable=.
+            argv = relaunch_command(klass, cmdline, exe)
             relaunched = subprocess.Popen(
-                cmdline, executable=exe, cwd=cwd, env=env,
+                argv, executable=argv[0], cwd=cwd, env=env,
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, start_new_session=True)
         except OSError as error:

@@ -125,7 +125,7 @@ proc = spawn_app()
 try:
     closed_addresses.clear()
     st.stale_window_groups = lambda since=None: [
-        {"pid": proc.pid, "name": "App", "addresses": ["0x111", "0x222"]}]
+        {"pid": proc.pid, "name": "App", "class": "test-app", "addresses": ["0x111", "0x222"]}]
     restarted, pending, failed = st.restart_stale_apps(None)
     chk("hyprctl is asked to close every window the group listed",
         sorted(closed_addresses), ["address:0x111", "address:0x222"])
@@ -158,7 +158,7 @@ try:
     st.os.kill = lambda pid, sig: None if pid == stubborn.pid else real_kill(pid, sig)
     closed_addresses.clear()
     st.stale_window_groups = lambda since=None: [
-        {"pid": stubborn.pid, "name": "Stubborn", "addresses": ["0x999"]}]
+        {"pid": stubborn.pid, "name": "Stubborn", "class": "test-app", "addresses": ["0x999"]}]
     restarted, pending, failed = st.restart_stale_apps(None)
     chk("a process nothing can close is reported pending, not restarted",
         (restarted, pending, failed), ([], ["Stubborn"], []))
@@ -186,7 +186,7 @@ st.process_environ = lambda pid: dict(os.environ) if pid == quitter.pid else rea
 try:
     closed_addresses.clear()
     st.stale_window_groups = lambda since=None: [
-        {"pid": quitter.pid, "name": "Quitter", "addresses": ["0x5"]}]
+        {"pid": quitter.pid, "name": "Quitter", "class": "test-app", "addresses": ["0x5"]}]
     restarted, pending, failed = st.restart_stale_apps(None)
     chk("a relaunch that exits again on its own is reported failed, not restarted",
         (restarted, pending, failed), ([], [], ["Quitter"]))
@@ -219,7 +219,7 @@ chk("...nor offered a restart, for the same reason", st.stale_window_groups(), [
 gone = subprocess.Popen(["true"]); gone.wait()
 closed_addresses.clear()
 st.stale_window_groups = lambda since=None: [
-    {"pid": gone.pid, "name": "Gone", "addresses": ["0x000"]}]
+    {"pid": gone.pid, "name": "Gone", "class": "test-app", "addresses": ["0x000"]}]
 real_popen = st.subprocess.Popen
 launched = []
 st.subprocess.Popen = lambda *a, **k: launched.append(a) or real_popen(["true"])
@@ -275,7 +275,7 @@ else:
     try:
         closed_addresses.clear()
         st.stale_window_groups = lambda since=None: [
-            {"pid": victim.pid, "name": "Probe", "addresses": ["0x1"]}]
+            {"pid": victim.pid, "name": "Probe", "class": "test-app", "addresses": ["0x1"]}]
         restarted, pending, failed = st.restart_stale_apps(None)
         chk("the relaunch ran the real binary", (restarted, outcome.read_text()),
             (["Probe"], "genuine"))
@@ -286,6 +286,50 @@ else:
         # argv and the relaunch's: real_bin's own path is not, since the
         # whole point here is that argv[0] is "probe", decoupled from it.
         subprocess.run(["pkill", "-9", "-f", str(outcome)], check=False)
+
+# -- relaunch_command: an installed launcher by window class, where one -----
+# exists, uwsm's own scope instead of a plain re-exec -- found live: a real
+# GPU-sandboxed application relaunched by a plain re-exec of its binary
+# exited silently within its first second, launched this way it did not.
+# Real desktop files, not fakes: HOME is not sandboxed for this half of the
+# script, and YouTube Music's, declaring the class below, ships with Omarchy.
+chk("a window class with an installed launcher resolves to its desktop file, suffix and all",
+    st.desktop_entries().get("com.github.th-ch.youtube-music"),
+    "com.github.th-ch.youtube-music.desktop")
+uwsm_path = shutil.which("uwsm", path=st.trusted_path())
+if uwsm_path:
+    chk("...and relaunch_command runs it through uwsm's own scope",
+        st.relaunch_command("com.github.th-ch.youtube-music",
+                            ["/opt/YouTube Music/youtube-music"],
+                            "/opt/YouTube Music/youtube-music"),
+        [uwsm_path, "app", "-s", "a", "--", "com.github.th-ch.youtube-music.desktop"])
+else:
+    print("  SKIP relaunch_command via uwsm: uwsm is not installed here")
+chk("a class with no installed launcher falls back to the kernel's own exe",
+    st.relaunch_command("no.such.class", ["firefox", "--new-window"], "/usr/bin/firefox"),
+    ["/usr/bin/firefox", "--new-window"])
+
+# -- relaunch_environment: the session's, when the app's own reads empty ---
+# Found live: Chromium and Electron reuse /proc/<pid>/environ for their
+# process title, so Vivaldi and YouTube Music read back with no environment
+# at all, and were relaunched with no display, no session bus and no runtime
+# directory -- and exited at once.
+real_environ, real_session = st.process_environ, st.session_environment
+session = {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1",
+           "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
+st.session_environment = lambda: session
+st.process_environ = lambda pid: {}
+chk("an application whose environment reads back empty gets the session's",
+    st.relaunch_environment(1), session)
+own = {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1", "MY_FLAG": "1"}
+st.process_environ = lambda pid: own
+chk("...one whose own environment is real keeps exactly that",
+    st.relaunch_environment(1), own)
+st.process_environ, st.session_environment = real_environ, real_session
+chk("the session environment parses bash's $'...' quoting systemctl uses",
+    __import__("codecs").escape_decode(b"wayland,x11,*")[0].decode()
+    + "|" + __import__("codecs").escape_decode(b"sh -c \\'col -bx\\'")[0].decode(),
+    "wayland,x11,*|sh -c 'col -bx'")
 
 # -- CLI: one line per name, grouped by outcome ------------------------------
 import argparse, io, contextlib
