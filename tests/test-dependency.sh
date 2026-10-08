@@ -66,7 +66,7 @@ chk "\"i\" is still the key for all three, not just named in the button" \
 # The separator and the refresh/close-apps buttons once checked only
 # !guideOpen, so with no service installed they still drew over an otherwise
 # empty panel -- controls for a framework list that had nothing in it.
-for control in 'PanelSeparator {' 'text: "Refresh enabled' 'to close  (/)"'; do
+for control in 'PanelSeparator {' 'text: "Refresh enabled' 'to close, and settings  (/)"'; do
   chk "gated on root.ready: $control" \
     "$(code Panel.qml | grep -B3 -A2 "$control" | grep -c 'visible:.*root\.ready')" "1"
 done
@@ -98,9 +98,10 @@ chk "the only AUR calls that exist are for Pear Desktop, not hyprchroma" \
   "$(countcode 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
 chk "it runs in a terminal the user can see" \
   "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
-# Two: this one, and the Escape handler that has always been there.
+# Three: this one, the Escape handler that has always been there, and the
+# restart, which closes the panel out of the way of the windows it reopens.
 chk "the panel closes before the terminal opens" \
-  "$(countcode 'root.close\(\)' Panel.qml)" "2"
+  "$(countcode 'root.close\(\)' Panel.qml)" "3"
 chk "the service is enabled after building" \
   "$(grep -c '^systemctl --user enable hyprchromad.service' bin/hyprchroma-setup)" "1"
 # Restarted, so an update runs at once: "enable --now" left a running service

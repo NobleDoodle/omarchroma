@@ -63,9 +63,15 @@ real_subprocess_run = subprocess.run
 # dispatch call is faked; everything else is the real subprocess.run, so a
 # write-a-marker-and-wait probe is not needed to prove gcc actually ran.
 dispatched = []
+evaluated = []
 def fake_run(command, **kwargs):
     # Answers the Lua form current Hyprland takes, as Hyprland does ("ok"),
     # and records which window each close and move was for.
+    # hyprctl eval is Lua run inside the live Hyprland -- a window rule, here
+    # -- so it is answered, never passed through to the real one.
+    if command[:2] == ["hyprctl", "eval"]:
+        evaluated.append(command[2])
+        return types.SimpleNamespace(returncode=0, stdout="ok\n")
     if command[:2] == ["hyprctl", "dispatch"]:
         dispatched.append(command[2])
         found = __import__("re").search(r'address:(0x[0-9a-f]+)', command[2])
@@ -481,6 +487,51 @@ chk("a launcher that exits at once is restarted when its window comes back",
     handoff(True), (["Handoff"], [], []))
 chk("...and failed when no window of its own ever does", handoff(False), ([], [], ["Handoff"]))
 st.open_window_records, st.process_cmdline, st.running_binary = real_records, real_cmdline, real_binary
+st.stale_window_groups = pristine_stale_window_groups
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- relaunched windows open out of sight, then land where they were -------
+# Found live: every relaunched window appeared on the workspace the user was
+# on and visibly jumped away a moment later.
+evaluated.clear()
+st.hide_new_windows({"vivaldi-stable", "com.github.th-ch.youtube-music", 'x" }) hl.exec("y'})
+chk("a rule sends the restarting apps' new windows to a hidden workspace, by class",
+    evaluated, ['_G.omarchroma_restart_rule = hl.window_rule({ name = "omarchroma-restart", '
+                'match = { class = "(?i)^(com\\\\.github\\\\.th\\\\-ch\\\\.youtube\\\\-music|vivaldi\\\\-stable)$" }, '
+                'workspace = "special:omarchroma-restart silent" })'])
+chk("...a class that is not a plain name is never written into it",
+    'hl.exec' in evaluated[0], False)
+real_records = st.open_window_records
+st.open_window_records = lambda: [
+    {"title": "Extra", "class": "vivaldi-stable", "pid": 9, "address": "0xe1", "workspace": "special:omarchroma-restart"},
+    {"title": "Other", "class": "kitty", "pid": 4, "address": "0xe2", "workspace": "1"}]
+dispatched.clear()
+st.reveal_hidden_windows([{"windows": [{"class": "vivaldi-stable", "workspace": "3"}]}])
+chk("a window left hidden goes to its application's own workspace; nothing else moves",
+    dispatched, ['hl.dsp.window.move({ workspace = "3", follow = false, window = "address:0xe1" })'])
+# The rule is switched off even when relaunching fails outright.
+evaluated.clear()
+real_relaunch = st.relaunch_and_place
+def explode(closed, before):
+    raise RuntimeError("relaunch failed")
+st.relaunch_and_place = explode
+proc = spawn_sleeper()
+st.stale_window_groups = lambda since=None: [{
+    "pid": proc.pid, "name": "Boom", "class": "test-boom", "addresses": ["0x60"],
+    "windows": [{"address": "0x60", "class": "test-boom", "title": "T", "workspace": "2"}]}]
+st.open_window_records = lambda: []
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.3
+try:
+    st.restart_stale_apps(None)
+except RuntimeError:
+    pass
+finally:
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=2)
+chk("...and the rule is switched off again even when relaunching fails",
+    [e.split("(")[0] for e in evaluated], ["_G.omarchroma_restart_rule = hl.window_rule", "if _G.omarchroma_restart_rule then _G.omarchroma_restart_rule:set_enabled"])
+st.relaunch_and_place, st.open_window_records = real_relaunch, real_records
 st.stale_window_groups = pristine_stale_window_groups
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
 

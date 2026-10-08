@@ -400,6 +400,10 @@ Panel {
   function runRestart() {
     if (restartProcess.running) return
     restartProcess.running = true
+    // Out of the way of what is about to close and reopen: the restart runs
+    // on without the panel, and reports through its notification.
+    root.guideOpen = false
+    root.close()
   }
 
   // What the popup's "yes" does: close it, then restart, in that order, so a
@@ -1013,13 +1017,14 @@ Panel {
         }
 
         // Reachable by mouse as well as by "/", and carries the count so the
-        // number of windows waiting is visible without opening it.
+        // number of windows waiting is visible without opening it. Named for
+        // both things it holds: the list, and the restart settings below it.
         Button {
           visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: root.staleWindowCount > 0
-            ? root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
-            : "Nothing to close  (/)"
+            ? root.windowsPhrase(root.staleWindowCount) + " to close, and settings  (/)"
+            : "Settings  (/)"
           iconText: "󰖯"
           foreground: root.bar ? root.bar.foreground : Color.popups.text
           onClicked: {

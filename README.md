@@ -68,7 +68,7 @@ With the bar widget:
 | Left click palette icon | Open/close the panel |
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
-| `/` | Show apps still using the old theme, and any removed frameworks |
+| `/` | Show apps still using the old theme, restart settings, and any removed frameworks |
 | `a` (in that list) | Restart every one of them: close, then relaunch |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |

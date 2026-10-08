@@ -43,5 +43,8 @@ chk "shell writes route through the audited helper" \
 
 chk "restore_file no longer uses copy2" "$(count 'shutil\.copy2\(snapshot_dir' lib/hyprchroma-state)" "0"
 chk "privileged block reads with O_NOFOLLOW" "$(count 'read_text\(\)' install.sh)" "0"
+# hyprctl's own "eval" subcommand -- Lua run inside Hyprland, as an argv entry,
+# built only from validated window classes (test-restart-stale.sh) -- is not
+# the shell or Python eval this guards against, and is the one form exempted.
 chk "no shell=True / eval / os.system" \
-  "$(grep -rhoE 'shell=True|os\.system|\beval\b' bin/ lib/ install.sh uninstall.sh 2>/dev/null | wc -l)" "0"
+  "$(grep -rhE 'shell=True|os\.system|\beval\b' bin/ lib/ install.sh uninstall.sh 2>/dev/null | grep -vF '["hyprctl", "eval", lua]' | wc -l)" "0"

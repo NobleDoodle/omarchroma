@@ -2223,6 +2223,54 @@ def close_window(address):
                            ["closewindow", f"address:{address}"])
 
 
+# Where relaunched windows open, out of sight, until each is moved straight to
+# the workspace it was on: otherwise every one appeared on the workspace the
+# user was looking at and visibly jumped away a moment later.
+HIDDEN_WORKSPACE = "special:omarchroma-restart"
+WINDOW_CLASS = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
+
+
+def hyprland_eval(lua):
+    """Run Lua in Hyprland; True if it answered "ok". False on a Hyprland that
+    has no Lua config -- where nothing below is attempted at all."""
+    result = subprocess.run(["hyprctl", "eval", lua], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, check=False)
+    return result.returncode == 0 and (result.stdout or "").strip() == "ok"
+
+
+def hide_new_windows(classes):
+    """Have Hyprland open new windows of these classes on HIDDEN_WORKSPACE.
+
+    A named rule whose handle is kept in a Lua global, so show_new_windows can
+    switch it off again; a rule added this way otherwise lasts until the next
+    config reload. Only class names that are plain identifiers go into the
+    pattern -- it is Lua source, and a regex. Case-insensitive, since the
+    classes recorded here are folded to lower case."""
+    safe = sorted({klass for klass in classes if WINDOW_CLASS.match(klass or "")})
+    if not safe:
+        return False
+    pattern = "(?i)^(" + "|".join(re.escape(klass) for klass in safe) + ")$"
+    lua_pattern = pattern.replace("\\", "\\\\")
+    return hyprland_eval(
+        "_G.omarchroma_restart_rule = hl.window_rule({ name = \"omarchroma-restart\", "
+        f"match = {{ class = \"{lua_pattern}\" }}, workspace = \"{HIDDEN_WORKSPACE} silent\" }})")
+
+
+def show_new_windows():
+    """Switch the rule hide_new_windows added off, if there is one."""
+    return hyprland_eval("if _G.omarchroma_restart_rule then "
+                         "_G.omarchroma_restart_rule:set_enabled(false) end")
+
+
+def active_workspace():
+    result = subprocess.run(["hyprctl", "-j", "activeworkspace"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, check=False)
+    try:
+        return workspace_selector(json.loads(result.stdout))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def move_window_silently(address, workspace):
     if not WINDOW_ADDRESS.match(address or "") or not workspace or not WORKSPACE_NAME.match(workspace):
         return False
@@ -2593,8 +2641,24 @@ def restart_stale_apps(state_dir, since=None, between=None):
     if closed and between is not None:
         between()
 
-    # 4. Relaunch, all at once, then watch them together.
+    # 4. Relaunch, all at once, then watch them together -- their windows
+    # opening out of sight, on HIDDEN_WORKSPACE, until step 5 places them.
     before = {record["address"] for record in (open_window_records() or [])}
+    hidden = hide_new_windows({w["class"] for plan in closed for w in plan.get("windows") or []})
+    try:
+        restarted_more, failed_more = relaunch_and_place(closed, before)
+    finally:
+        if hidden:
+            show_new_windows()
+            reveal_hidden_windows(closed)
+    restarted += restarted_more
+    failed += failed_more
+    return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
+
+
+def relaunch_and_place(closed, before):
+    """Steps 4 and 5 of restart_stale_apps: (restarted, failed) names."""
+    restarted, failed = [], []
     launched = []
     for plan in closed:
         try:
@@ -2641,7 +2705,26 @@ def restart_stale_apps(state_dir, since=None, between=None):
             print(f"Hyprchroma: {plan['name']} was relaunched, but no window of its "
                   f"own reopened within {PLACEMENT_SECONDS:.0f}s", file=sys.stderr, flush=True)
             failed.append(plan["name"])
-    return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
+    return restarted, failed
+
+
+def reveal_hidden_windows(plans):
+    """Nothing may be left on HIDDEN_WORKSPACE: a window with no original to be
+    matched to -- an application opening more than it had -- goes to its own
+    application's first workspace, or else the one the user is on."""
+    records = open_window_records() or []
+    fallback = None
+    for record in records:
+        if record.get("workspace") != HIDDEN_WORKSPACE:
+            continue
+        target = next((w["workspace"] for plan in plans for w in plan.get("windows") or []
+                       if w["class"] == record["class"] and w.get("workspace")
+                       and w["workspace"] != HIDDEN_WORKSPACE), None)
+        if target is None:
+            fallback = fallback or active_workspace()
+            target = fallback
+        if target:
+            move_window_silently(record["address"], target)
 
 
 def place_windows(plans, before):
