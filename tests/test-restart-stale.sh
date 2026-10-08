@@ -451,6 +451,39 @@ chk("unmatched by title, it takes the next original in order; already there, it 
     dispatched, [])
 st.open_window_records = real_records
 
+# -- a launcher that hands off and exits: judged by its window --------------
+# Found live: VS Code's "code" starts the editor in the background and exits
+# at once, and was reported "could not be restarted" while it came back fine.
+real_records, real_cmdline, real_binary = st.open_window_records, st.process_cmdline, st.running_binary
+st.WINDOW_CLOSE_GRACE_SECONDS, st.PLACEMENT_SECONDS = 0.3, 1.0
+def handoff(window_returns):
+    proc = spawn_sleeper()
+    shown = []
+    st.open_window_records = lambda: list(shown)
+    st.process_cmdline = lambda pid: ["sh", "-c", "exit 0"] if pid == proc.pid else real_cmdline(pid)
+    st.running_binary = lambda pid: shutil.which("sh") if pid == proc.pid else real_binary(pid)
+    st.stale_window_groups = lambda since=None: [{
+        "pid": proc.pid, "name": "Handoff", "class": "test-handoff", "addresses": ["0x50"],
+        "windows": [{"address": "0x50", "class": "test-handoff", "title": "Editor", "workspace": "2"}]}]
+    def between():
+        if window_returns:
+            # Appears once the relaunch has run, as the editor's would.
+            import threading
+            threading.Timer(0.5, lambda: shown.append(
+                {"title": "Editor", "class": "test-handoff", "pid": 99, "address": "0x51", "workspace": "1"})).start()
+    try:
+        return st.restart_stale_apps(None, between=between)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=2)
+chk("a launcher that exits at once is restarted when its window comes back",
+    handoff(True), (["Handoff"], [], []))
+chk("...and failed when no window of its own ever does", handoff(False), ([], [], ["Handoff"]))
+st.open_window_records, st.process_cmdline, st.running_binary = real_records, real_cmdline, real_binary
+st.stale_window_groups = pristine_stale_window_groups
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
 # -- relaunch_environment: the session's, when the app's own reads empty ---
 # Found live: Chromium and Electron reuse /proc/<pid>/environ for their
 # process title, so Vivaldi and YouTube Music read back with no environment
@@ -613,3 +646,9 @@ chk "the popup can be answered with the same key, or Enter, or Space" \
   "$(grep -c 'onReturnRequested: if (root.confirmRestartOpen) root.confirmRestart()' Panel.qml),$(grep -c 'onActivateRequested: if (root.confirmRestartOpen) root.confirmRestart()' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \
   "$(awk '/onCloseRequested: \{/,/^      \}/' Panel.qml | grep -c 'confirmRestartOpen')" "1"
+chk "restartMode=confirm opens the panel's own confirmation once the list is recorded" \
+  "$(awk '/^report_stale_apps$/{r=NR} /omarchy-shell -q io.github.nobledoodle.omarchroma restartStaleApps/{print (r && r < NR) ? "after" : "before"; exit}' "$REPO/bin/hyprchroma")" "after"
+chk "...only after a theme change that left something to restart" \
+  "$(grep -B3 'omarchy-shell -q io.github.nobledoodle.omarchroma restartStaleApps' "$REPO/bin/hyprchroma" | grep -oE 'theme_changed|staleApps|== confirm' | sort -u | wc -l)" "3"
+chk "...and the popup asks for the list afresh rather than trusting the file's timing" \
+  "$(awk '/function restartStaleApps\(\)/,/^    }/' "$REPO/BarWidget.qml" | grep -c 'refreshStaleApps()')" "1"

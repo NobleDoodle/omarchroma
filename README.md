@@ -95,7 +95,7 @@ With the bar widget:
   Chrome, Brave and Helium are not included; Omarchy colors those itself.
 * The applications-to-close list has a Restart All button, in every mode, and a
   restart mode below it: **Force** restarts every stale application right after
-  a sync, with no prompt; **Confirm** asks first, in the same popup a global
+  a sync, with no prompt; **Confirm** opens a popup after each theme switch that leaves apps on the old theme -- press `a` (or Enter) to restart them, Esc to leave them -- the same popup a global
   hotkey can open from anywhere (bind one to `restartStaleApps` in your own
   bindings.lua, the way the toggles above are bound); **Off**, the default,
   does neither -- the list's own button is still there either way.

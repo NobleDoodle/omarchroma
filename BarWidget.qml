@@ -104,6 +104,10 @@ BarWidget {
       var panel = panelLoader.item
       if (!panel) return
       panel.confirmRestartOpen = true
+      // Asked afresh, not trusted from status.json: opened right after a
+      // sync records the list, the file's change notice can land a moment
+      // after this.
+      panel.refreshStaleApps()
       root.open()
     }
   }

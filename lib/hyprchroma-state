@@ -2610,13 +2610,20 @@ def restart_stale_apps(state_dir, since=None, between=None):
     # again on its own -- deferring to a lock it lost the race for, refusing
     # a flag it was started with -- is not actually back, and reporting it
     # restarted would have the user looking for a window that is never going
-    # to open.
+    # to open. But a launcher that exits successfully may only have handed
+    # off: VS Code's "code" starts the editor in the background and exits at
+    # once, and was reported "could not be restarted" while it came back
+    # fine. One of those is judged by what matters -- its window, in step 5.
     deadline = time.monotonic() + RELAUNCH_CHECK_SECONDS
     while time.monotonic() < deadline and any(proc.poll() is None for _, proc in launched):
         time.sleep(0.1)
+    staying, handed_off = [], []
     for plan, proc in launched:
         if proc.poll() is None:
+            staying.append(plan)
             restarted.append(plan["name"])
+        elif proc.returncode == 0 and plan.get("windows"):
+            handed_off.append(plan)
         else:
             print(f"Hyprchroma: {plan['name']} relaunched and exited again on its "
                   f"own (status {proc.returncode}); not retried",
@@ -2624,7 +2631,16 @@ def restart_stale_apps(state_dir, since=None, between=None):
             failed.append(plan["name"])
 
     # 5. Back where they were: each new window to its original's workspace.
-    place_windows([plan for plan, proc in launched if proc.poll() is None], before)
+    # Watched for every relaunch, so a handed-off one counts as restarted
+    # exactly when a window of its own comes back.
+    reappeared = place_windows(staying + handed_off, before)
+    for plan in handed_off:
+        if id(plan) in reappeared:
+            restarted.append(plan["name"])
+        else:
+            print(f"Hyprchroma: {plan['name']} was relaunched, but no window of its "
+                  f"own reopened within {PLACEMENT_SECONDS:.0f}s", file=sys.stderr, flush=True)
+            failed.append(plan["name"])
     return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
 
 
@@ -2637,8 +2653,10 @@ def place_windows(plans, before):
     title first (a browser restoring its session reopens the same pages), and
     otherwise to the next original in the order they were open. One already on
     the right workspace is left; one whose original's workspace could not be
-    named safely is left where it opened."""
+    named safely is left where it opened. Returns the id() of every plan at
+    least one new window was matched to."""
     remaining = {id(plan): list(plan["windows"]) for plan in plans if plan.get("windows")}
+    reappeared = set()
     handled = set(before)
     deadline = time.monotonic() + PLACEMENT_SECONDS
     while remaining and time.monotonic() < deadline:
@@ -2652,6 +2670,7 @@ def place_windows(plans, before):
                 if not originals or record["class"] not in {w["class"] for w in plan["windows"]}:
                     continue
                 handled.add(address)
+                reappeared.add(id(plan))
                 match = next((w for w in originals if w["title"] == record["title"]), originals[0])
                 originals.remove(match)
                 if not originals:
@@ -2661,6 +2680,7 @@ def place_windows(plans, before):
                 break
         if remaining:
             time.sleep(0.25)
+    return reappeared
 
 
 # Any process with KColorScheme mapped reads the colors in kdeglobals and

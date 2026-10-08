@@ -319,7 +319,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.1.7"
+    echo "hyprchroma 3.1.8"
     exit 0
     ;;
 esac
@@ -1214,3 +1214,12 @@ if (( theme_changed )); then
   fi
 fi
 report_stale_apps
+# restartMode=confirm: once the list is recorded -- the panel reads it from
+# status.json -- open the panel's own confirmation, the one a restartStaleApps
+# hotkey opens, answered with "a" (or Enter) to restart or Esc to leave them.
+# Only after a theme change that left something to restart, and best-effort:
+# -q makes a shell that is not running a quiet no-op, not an error.
+if (( theme_changed )) && [[ -z ${HYPRCHROMA_NO_AUTO_RESTART:-} && $(restart_mode) == confirm ]] &&
+   [[ $(jq -r '(.staleApps // []) | length' "$STATUS_FILE" 2>/dev/null || echo 0) != 0 ]]; then
+  omarchy-shell -q io.github.nobledoodle.omarchroma restartStaleApps >/dev/null 2>&1 </dev/null 9>&- || true
+fi
