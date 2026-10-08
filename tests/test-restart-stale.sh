@@ -62,10 +62,16 @@ real_subprocess_run = subprocess.run
 # compile the two probes the PATH-poisoning check needs. Only a hyprctl
 # dispatch call is faked; everything else is the real subprocess.run, so a
 # write-a-marker-and-wait probe is not needed to prove gcc actually ran.
+dispatched = []
 def fake_run(command, **kwargs):
+    # Answers the Lua form current Hyprland takes, as Hyprland does ("ok"),
+    # and records which window each close and move was for.
     if command[:2] == ["hyprctl", "dispatch"]:
-        closed_addresses.append(command[3])
-        return types.SimpleNamespace(returncode=0)
+        dispatched.append(command[2])
+        found = __import__("re").search(r'address:(0x[0-9a-f]+)', command[2])
+        if found and "window.close" in command[2]:
+            closed_addresses.append("address:" + found.group(1))
+        return types.SimpleNamespace(returncode=0, stdout="ok\n")
     return real_subprocess_run(command, **kwargs)
 st.subprocess.run = fake_run
 
@@ -403,6 +409,47 @@ chk("...one answering with a save dialog is never signalled, and is reported sti
 st.open_window_records = real_records
 st.stale_window_groups = pristine_stale_window_groups
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- the close is sent in the form this Hyprland actually parses ------------
+# Found live: under Omarchy's Lua config "closewindow address:..." fails to
+# parse, and with its output discarded no window was ever asked to close --
+# every "close" was the SIGTERM after it.
+dispatched.clear()
+st.close_window("0xabc")
+chk("a close is sent as Lua, by address -- the form Omarchy's Lua config parses",
+    dispatched, ['hl.dsp.window.close({ window = "address:0xabc" })'])
+dispatched.clear()
+chk("an address that is not one is never written into a dispatch",
+    (st.close_window('0x1" }) hl.exec("x'), st.move_window_silently("0x1", '3" }) --'), dispatched),
+    (False, False, []))
+chk("workspaces are named the way a dispatch takes them",
+    [st.workspace_selector(w) for w in ({"id": 3, "name": "3"}, {"id": -98, "name": "special:scratchpad"},
+                                        {"id": 12, "name": "music"}, {"id": 4, "name": 'x"; os'}, None)],
+    ["3", "special:scratchpad", "name:music", None, None])
+
+# -- reopened windows go back to the workspaces they were on ----------------
+real_records = st.open_window_records
+st.PLACEMENT_SECONDS = 1.0
+reopened = [{"title": "Docs - Vivaldi", "class": "vivaldi-stable", "pid": 9, "address": "0xb2", "workspace": "1"},
+            {"title": "Mail - Vivaldi", "class": "vivaldi-stable", "pid": 9, "address": "0xb1", "workspace": "1"},
+            {"title": "Terminal", "class": "kitty", "pid": 4, "address": "0xc0", "workspace": "1"}]
+st.open_window_records = lambda: reopened
+plan = {"windows": [{"address": "0xa1", "class": "vivaldi-stable", "title": "Mail - Vivaldi", "workspace": "3"},
+                    {"address": "0xa2", "class": "vivaldi-stable", "title": "Docs - Vivaldi", "workspace": "special:scratchpad"}]}
+dispatched.clear()
+st.place_windows([plan], before={"0xc0"})
+chk("each reopened window goes back to its original's workspace, matched by title",
+    sorted(dispatched), sorted([
+        'hl.dsp.window.move({ workspace = "3", follow = false, window = "address:0xb1" })',
+        'hl.dsp.window.move({ workspace = "special:scratchpad", follow = false, window = "address:0xb2" })']))
+chk("...silently, and never a window that was already open, or another application's",
+    all("follow = false" in d and "0xc0" not in d for d in dispatched), True)
+reopened[:] = [{"title": "New Tab", "class": "vivaldi-stable", "pid": 9, "address": "0xd1", "workspace": "3"}]
+dispatched.clear()
+st.place_windows([plan], before=set())
+chk("unmatched by title, it takes the next original in order; already there, it is left",
+    dispatched, [])
+st.open_window_records = real_records
 
 # -- relaunch_environment: the session's, when the app's own reads empty ---
 # Found live: Chromium and Electron reuse /proc/<pid>/environ for their

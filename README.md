@@ -116,12 +116,16 @@ With the bar widget:
      one exists (the same systemd scope and wrapper script your launcher
      uses), with its own working directory and environment -- or the
      session's, for Chromium and Electron apps, which hide theirs.
+  5. **Place.** Each reopened window is moved back to the workspace its
+     original was on -- matched by title, else in order -- without taking
+     focus from where you are.
 
   It is best-effort: a relaunch that exits again on its own -- most often an
   application deferring to another copy of itself -- is reported failed, not
   claimed as done, and is not retried. Steam is never listed: it draws its
   own interface regardless of any theme, so there would be nothing to
-  restart it for.
+  restart it for. Neither is VS Code, nor anything else Omarchy re-themes
+  live on its own when the theme changes.
 
 ## Palette Sources
 

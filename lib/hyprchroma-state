@@ -2164,9 +2164,62 @@ def open_window_records():
         return None
     return [
         {"title": window_title(c), "class": (c.get("class") or "").lower(),
-         "pid": c.get("pid"), "address": c.get("address")}
+         "pid": c.get("pid"), "address": c.get("address"),
+         "workspace": workspace_selector(c.get("workspace"))}
         for c in clients if c.get("pid", 0) > 0 and c.get("address")
     ]
+
+
+# A Hyprland window address, as hyprctl reports one. Checked before one is
+# written into a dispatch, which is Lua source on current Hyprland.
+WINDOW_ADDRESS = re.compile(r"\A0x[0-9a-f]+\Z")
+# A workspace name this will put back into a dispatch: hyprctl's own reports,
+# but a named workspace's name is whatever the user typed.
+WORKSPACE_NAME = re.compile(r"\A[A-Za-z0-9 _.:-]{1,64}\Z")
+
+
+def workspace_selector(workspace):
+    """How a dispatch names the workspace hyprctl reported a window on, or
+    None: "3" for a numbered one, "special:scratchpad" for a special one,
+    "name:music" for a named one. One whose name could not be written back
+    safely is left as None, and its window simply not moved."""
+    if not isinstance(workspace, dict):
+        return None
+    name = str(workspace.get("name") or "")
+    if not WORKSPACE_NAME.match(name):
+        return None
+    if name.isdigit() or name.startswith("special:"):
+        return name
+    return "name:" + name
+
+
+def window_dispatch(lua, legacy):
+    """One dispatch at one window: the Lua form current Hyprland speaks under
+    Omarchy's Lua config, then the dispatcher syntax older Hyprland takes.
+    True if Hyprland accepted either. The legacy form alone failed to parse
+    under the Lua config, and its output went to /dev/null -- so for a whole
+    release no window was ever actually asked to close."""
+    for args in (["hyprctl", "dispatch", lua], ["hyprctl", "dispatch", *legacy]):
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                text=True, check=False)
+        if result.returncode == 0 and (result.stdout or "").strip() == "ok":
+            return True
+    return False
+
+
+def close_window(address):
+    if not WINDOW_ADDRESS.match(address or ""):
+        return False
+    return window_dispatch(f'hl.dsp.window.close({{ window = "address:{address}" }})',
+                           ["closewindow", f"address:{address}"])
+
+
+def move_window_silently(address, workspace):
+    if not WINDOW_ADDRESS.match(address or "") or not workspace or not WORKSPACE_NAME.match(workspace):
+        return False
+    return window_dispatch(
+        f'hl.dsp.window.move({{ workspace = "{workspace}", follow = false, window = "address:{address}" }})',
+        ["movetoworkspacesilent", f"{workspace},address:{address}"])
 
 
 def stale_window_groups(since=None):
@@ -2206,7 +2259,10 @@ def stale_window_groups(since=None):
         name = window_display_name(windows[0]["title"], windows[0]["class"])
         name = name[:1].upper() + name[1:]
         groups.append({"pid": pid, "name": name, "class": windows[0]["class"],
-                       "addresses": [w["address"] for w in windows]})
+                       "addresses": [w["address"] for w in windows],
+                       "windows": [{"address": w["address"], "class": w["class"],
+                                    "title": w["title"], "workspace": w.get("workspace")}
+                                   for w in windows]})
     return groups
 
 
@@ -2392,6 +2448,12 @@ APPLICATION_SETTLE_SECONDS = 5.0
 # exits again on its own within well under this, not minutes into running.
 RELAUNCH_CHECK_SECONDS = 1.5
 
+# How long reopened windows are watched for, to be put back on the workspaces
+# their originals were on. A browser restoring a session opens its windows
+# over a few seconds; one that comes back with fewer windows than it had is
+# not waited on past this.
+PLACEMENT_SECONDS = 10.0
+
 # How long an application is given to answer a close before it is asked again
 # with SIGTERM -- which GTK, Qt, Chromium and Electron all take as an ordinary
 # quit. An application with unsaved work answers by opening a window of its
@@ -2463,13 +2525,13 @@ def restart_stale_apps(state_dir, since=None, between=None):
                       "argv": relaunch_command(klass, cmdline, exe),
                       "cwd": process_cwd(pid) or str(Path.home()),
                       "env": relaunch_environment(pid),
-                      "addresses": group["addresses"]})
+                      "addresses": group["addresses"],
+                      "windows": group.get("windows") or []})
 
     # 1. Close, all at once.
     for plan in plans:
         for address in plan["addresses"]:
-            subprocess.run(["hyprctl", "dispatch", "closewindow", "address:" + address],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            close_window(address)
     deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
     asked = time.monotonic()
     while time.monotonic() < deadline and any(
@@ -2523,6 +2585,7 @@ def restart_stale_apps(state_dir, since=None, between=None):
         between()
 
     # 4. Relaunch, all at once, then watch them together.
+    before = {record["address"] for record in (open_window_records() or [])}
     launched = []
     for plan in closed:
         try:
@@ -2550,7 +2613,45 @@ def restart_stale_apps(state_dir, since=None, between=None):
                   f"own (status {proc.returncode}); not retried",
                   file=sys.stderr, flush=True)
             failed.append(plan["name"])
+
+    # 5. Back where they were: each new window to its original's workspace.
+    place_windows([plan for plan, proc in launched if proc.poll() is None], before)
     return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
+
+
+def place_windows(plans, before):
+    """Move each window a restarted application opens onto the workspace the
+    window it replaces was on, silently -- focus stays where the user is.
+
+    A new window is one that was not open when the relaunch began, of a class
+    one of the application's own windows had. It is matched to an original by
+    title first (a browser restoring its session reopens the same pages), and
+    otherwise to the next original in the order they were open. One already on
+    the right workspace is left; one whose original's workspace could not be
+    named safely is left where it opened."""
+    remaining = {id(plan): list(plan["windows"]) for plan in plans if plan.get("windows")}
+    handled = set(before)
+    deadline = time.monotonic() + PLACEMENT_SECONDS
+    while remaining and time.monotonic() < deadline:
+        records = open_window_records()
+        for record in records or []:
+            address = record["address"]
+            if address in handled:
+                continue
+            for plan in plans:
+                originals = remaining.get(id(plan))
+                if not originals or record["class"] not in {w["class"] for w in plan["windows"]}:
+                    continue
+                handled.add(address)
+                match = next((w for w in originals if w["title"] == record["title"]), originals[0])
+                originals.remove(match)
+                if not originals:
+                    del remaining[id(plan)]
+                if match.get("workspace") and match["workspace"] != record.get("workspace"):
+                    move_window_silently(address, match["workspace"])
+                break
+        if remaining:
+            time.sleep(0.25)
 
 
 # Any process with KColorScheme mapped reads the colors in kdeglobals and
