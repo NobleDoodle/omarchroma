@@ -2454,18 +2454,41 @@ def desktop_entries():
             if text is None:
                 continue
             klass = None
+            actions = set()
             for line in text.splitlines():
+                if line.startswith("[") and line.strip() != "[Desktop Entry]":
+                    break
                 if line.startswith("StartupWMClass="):
                     klass = line[len("StartupWMClass="):].strip().lower()
-                    break
+                elif line.startswith("Actions="):
+                    actions = {a for a in line[len("Actions="):].strip().split(";") if a}
             # The full file name, suffix and all: that suffix is how uwsm
             # tells a desktop entry id from a command name (main.py, "elif
             # arg.endswith('.desktop')"). Without it, it looks for a binary
             # called "com.github.th-ch.youtube-music" and fails.
             if klass:
                 entries.setdefault(klass, filename)
+            # On Wayland a window's app id is its desktop file's own name,
+            # which is how Nautilus, with no StartupWMClass, is found.
+            entries.setdefault(filename.removesuffix(".desktop").lower(), filename)
+            _DESKTOP_ACTIONS.setdefault(filename, actions)
     _DESKTOP_ENTRIES = entries
     return entries
+
+
+_DESKTOP_ACTIONS = {}
+
+
+def new_window_command(klass):
+    """How to open one more window of an application, or None: its desktop
+    entry's "new-window" action -- the conventional id, shipped by Vivaldi,
+    Chromium, Firefox, Nautilus and most others -- through uwsm, as the
+    launcher would. Used for windows an application did not bring back."""
+    uwsm = shutil.which("uwsm", path=trusted_path())
+    entry = uwsm and desktop_entries().get(klass)
+    if entry and "new-window" in _DESKTOP_ACTIONS.get(entry, ()):
+        return [uwsm, "app", "-s", "a", "--", f"{entry}:new-window"]
+    return None
 
 
 def relaunch_command(klass, cmdline, exe):
@@ -2531,6 +2554,53 @@ def running_binaries():
     return found
 
 
+# How long to keep watching for an application's windows once they have
+# stopped arriving: a browser restoring three windows opens them within a
+# second of each other, not ten seconds apart.
+WINDOW_SETTLE_SECONDS = 2.5
+
+
+def writing_user_files(exe):
+    """Files of the user's own that a process running exe has open for
+    writing: a download in progress (Chromium's .crdownload, Firefox's .part)
+    or the destination of a copy a file manager is making. Its configuration,
+    caches and profile -- anything under a dot-directory -- do not count, nor
+    does anything outside the home directory and removable or network mounts.
+    Restarting an application with one of these open would cut it short."""
+    home = os.path.realpath(str(Path.home())) + os.sep
+    mounts = ("/run/media/", "/media/", "/mnt/", f"/run/user/{os.getuid()}/gvfs/")
+    found = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit() or running_binary(int(entry.name)) != exe:
+            continue
+        fd_dir = f"/proc/{entry.name}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            if not target.startswith("/") or target.endswith(" (deleted)"):
+                continue
+            if target.startswith(home):
+                if any(part.startswith(".") for part in target[len(home):].split(os.sep)):
+                    continue
+            elif not target.startswith(mounts):
+                continue
+            try:
+                with open(f"/proc/{entry.name}/fdinfo/{fd}") as handle:
+                    flags = next((int(line.split()[1], 8) for line in handle
+                                  if line.startswith("flags:")), 0)
+            except (OSError, ValueError):
+                continue
+            if flags & os.O_ACCMODE in (os.O_WRONLY, os.O_RDWR):
+                found.append(target)
+    return found
+
+
 def restart_stale_apps(state_dir, since=None, between=None):
     """Close every window of each process still showing the previous theme,
     then launch each one again with the command, directory and environment it
@@ -2557,7 +2627,7 @@ def restart_stale_apps(state_dir, since=None, between=None):
        together. One that exits again on its own is reported failed, not
        restarted, and is not retried -- a second copy racing the same lock,
        or the same flag, would only do it again."""
-    restarted, pending, failed = [], [], []
+    restarted, pending, failed, busy = [], [], [], []
     plans = []
     for group in stale_window_groups(since):
         pid, name, klass = group["pid"], group["name"], group["class"]
@@ -2568,6 +2638,11 @@ def restart_stale_apps(state_dir, since=None, between=None):
             # safe to relaunch with, so the window is left rather than closed
             # with nothing to replace it.
             failed.append(name)
+            continue
+        if writing_user_files(exe):
+            # Mid-download or mid-copy: left open, and said so, rather than
+            # cut short. Reported with the applications still open.
+            busy.append(f"{name} (busy writing a file)")
             continue
         # relaunch_command names an installed launcher by this window's own
         # class where one exists -- the systemd scope and any wrapper a plain
@@ -2585,8 +2660,18 @@ def restart_stale_apps(state_dir, since=None, between=None):
                       "addresses": group["addresses"],
                       "windows": group.get("windows") or []})
 
-    # 1. Close, all at once.
+    # 1. Close, all at once. An application with several windows is quit as
+    # a whole instead (SIGTERM, an ordinary quit to the toolkits here): one
+    # whose windows are closed one by one keeps only the last in its own
+    # session -- a browser reopened with one window of the three it had.
     for plan in plans:
+        if len(plan["addresses"]) > 1:
+            plan["hurried"] = True
+            try:
+                os.kill(plan["pid"], signal.SIGTERM)
+            except OSError:
+                pass
+            continue
         for address in plan["addresses"]:
             close_window(address)
     deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
@@ -2628,7 +2713,7 @@ def restart_stale_apps(state_dir, since=None, between=None):
     closed = []
     for plan in plans:
         (pending if process_alive(plan["pid"]) else closed).append(plan)
-    pending = [plan["name"] for plan in pending]
+    pending = [plan["name"] for plan in pending] + busy
 
     # 2. Settle: the rest of each application follows its main process out.
     if closed:
@@ -2736,34 +2821,72 @@ def place_windows(plans, before):
     title first (a browser restoring its session reopens the same pages), and
     otherwise to the next original in the order they were open. One already on
     the right workspace is left; one whose original's workspace could not be
-    named safely is left where it opened. Returns the id() of every plan at
-    least one new window was matched to."""
+    named safely is left where it opened.
+
+    An application that comes back with fewer windows than it had -- a file
+    manager restores none of its own -- has the rest opened through its desktop
+    entry's "new-window" action, and those are placed the same way. Returns
+    the id() of every plan at least one new window was matched to."""
     remaining = {id(plan): list(plan["windows"]) for plan in plans if plan.get("windows")}
     reappeared = set()
     handled = set(before)
-    deadline = time.monotonic() + PLACEMENT_SECONDS
-    while remaining and time.monotonic() < deadline:
-        records = open_window_records()
-        for record in records or []:
-            address = record["address"]
-            if address in handled:
-                continue
-            for plan in plans:
-                originals = remaining.get(id(plan))
-                if not originals or record["class"] not in {w["class"] for w in plan["windows"]}:
+
+    def match_round(deadline):
+        arrived = {}
+        while remaining and time.monotonic() < deadline:
+            now = time.monotonic()
+            for record in open_window_records() or []:
+                address = record["address"]
+                if address in handled:
                     continue
-                handled.add(address)
-                reappeared.add(id(plan))
-                match = next((w for w in originals if w["title"] == record["title"]), originals[0])
-                originals.remove(match)
-                if not originals:
-                    del remaining[id(plan)]
-                if match.get("workspace") and match["workspace"] != record.get("workspace"):
-                    move_window_silently(address, match["workspace"])
+                for plan in plans:
+                    originals = remaining.get(id(plan))
+                    if not originals or record["class"] not in {w["class"] for w in plan["windows"]}:
+                        continue
+                    handled.add(address)
+                    reappeared.add(id(plan))
+                    arrived[id(plan)] = now
+                    match = next((w for w in originals if w["title"] == record["title"]), originals[0])
+                    originals.remove(match)
+                    if not originals:
+                        del remaining[id(plan)]
+                    if match.get("workspace") and match["workspace"] != record.get("workspace"):
+                        move_window_silently(address, match["workspace"])
+                    break
+            # Settled once every application still owed windows has brought
+            # some back and then none more for WINDOW_SETTLE_SECONDS; one that
+            # has brought none yet is waited for up to the deadline.
+            if remaining and all(key in arrived and now - arrived[key] >= WINDOW_SETTLE_SECONDS
+                                 for key in remaining):
                 break
-        if remaining:
-            time.sleep(0.25)
+            if remaining:
+                time.sleep(0.25)
+
+    match_round(time.monotonic() + PLACEMENT_SECONDS)
+    opened_more = False
+    for plan in plans:
+        originals = remaining.get(id(plan))
+        # Only for one that did come back: the action would otherwise start
+        # an application the relaunch could not.
+        if not originals or id(plan) not in reappeared:
+            continue
+        command = new_window_command(originals[0]["class"])
+        if not command:
+            continue
+        for _ in originals:
+            try:
+                subprocess.Popen(command, executable=command[0], cwd=str(Path.home()),
+                                 env=plan.get("env") or None, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            except OSError:
+                break
+            opened_more = True
+            time.sleep(0.3)
+    if opened_more:
+        match_round(time.monotonic() + PLACEMENT_SECONDS)
     return reappeared
+
 
 
 # Any process with KColorScheme mapped reads the colors in kdeglobals and

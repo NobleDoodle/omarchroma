@@ -102,11 +102,16 @@ With the bar widget:
 
   A restart works on every listed application at once, in four steps:
 
-  1. **Close.** Each window is asked to close, the way its own close button
-     would. An application that answers with a new window -- a "save
-     changes?" dialog -- is left alone and reported still open, so no unsaved
-     work is lost. One that opens nothing new within 1.5 seconds (some, like
-     YouTube Music, simply ignore the request) is told to quit.
+  1. **Close.** An application in the middle of a download or a file copy
+     -- writing to a file in your own folders or on a mounted drive -- is
+     left alone and reported still open. An application with one window has
+     it asked to close, the way its own close button would; one that answers
+     with a new window -- a "save changes?" dialog -- is left alone too, and
+     one that opens nothing new within 1.5 seconds is told to quit. An
+     application with several windows is told to quit as a whole instead, so
+     it keeps all of them in its own session (a browser closed one window at
+     a time remembers only the last) -- which also means one with unsaved
+     work in several windows gets no prompt of its own.
   2. **Settle.** It waits until every process of each application is gone,
      not just the one that owned the window.
   3. **Sync.** A sync runs while they are all closed, for what can only be
@@ -116,9 +121,11 @@ With the bar widget:
      one exists (the same systemd scope and wrapper script your launcher
      uses), with its own working directory and environment -- or the
      session's, for Chromium and Electron apps, which hide theirs.
-  5. **Place.** Each reopened window is moved back to the workspace its
-     original was on -- matched by title, else in order -- without taking
-     focus from where you are.
+  5. **Place.** Reopened windows open out of sight and are moved straight
+     to the workspace their originals were on -- matched by title, else in
+     order -- without taking focus from where you are. One that comes back
+     with fewer windows than it had (a file manager restores none) has the
+     rest opened through its own "new window" action.
 
   It is best-effort: a relaunch that exits again on its own -- most often an
   application deferring to another copy of itself -- is reported failed, not

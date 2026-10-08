@@ -159,8 +159,10 @@ try:
     st.stale_window_groups = lambda since=None: [
         {"pid": proc.pid, "name": "App", "class": "test-app", "addresses": ["0x111", "0x222"]}]
     restarted, pending, failed = st.restart_stale_apps(None)
-    chk("hyprctl is asked to close every window the group listed",
-        sorted(closed_addresses), ["address:0x111", "address:0x222"])
+    # Found live: closing a browser's windows one by one left only the last
+    # in its own session, so it came back with one window of several.
+    chk("an application with several windows is quit as a whole, not window by window",
+        sorted(closed_addresses), [])
     chk("the application is reported restarted", (restarted, pending, failed),
         (["App"], [], []))
     chk("the original process is actually gone", st.process_alive(proc.pid), False)
@@ -534,6 +536,91 @@ chk("...and the rule is switched off again even when relaunching fails",
 st.relaunch_and_place, st.open_window_records = real_relaunch, real_records
 st.stale_window_groups = pristine_stale_window_groups
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- one window: asked to close the way its close button would -------------
+real_records = st.open_window_records
+st.open_window_records = lambda: []
+proc = spawn_sleeper()
+st.stale_window_groups = lambda since=None: [
+    {"pid": proc.pid, "name": "Single", "class": "test-single", "addresses": ["0x71"]}]
+st.WINDOW_CLOSE_GRACE_SECONDS, st.CLOSE_ANSWER_SECONDS = 0.6, 0.2
+closed_addresses.clear()
+try:
+    st.restart_stale_apps(None)
+finally:
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait(timeout=2)
+    kill_sleepers()
+chk("a single-window application is asked to close its window first",
+    closed_addresses, ["address:0x71"])
+st.open_window_records = real_records
+st.stale_window_groups = pristine_stale_window_groups
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- mid-download or mid-copy: left open --------------------------------------
+# Found live: a restart closed a file manager mid-transfer and a browser
+# mid-download. A process writing to the user's own files is left alone.
+scratch_home = Path(tempfile.mkdtemp())
+real_home = st.Path.home
+st.Path.home = staticmethod(lambda: scratch_home)
+(scratch_home / "Downloads").mkdir()
+(scratch_home / ".config").mkdir()
+writer = subprocess.Popen([sys.executable, "-c",
+    "import sys, time; f = open(sys.argv[1], 'w'); f.write('x'); f.flush(); time.sleep(60)",
+    str(scratch_home / "Downloads" / "movie.mkv.crdownload")])
+cfg = subprocess.Popen([sys.executable, "-c",
+    "import sys, time; f = open(sys.argv[1], 'w'); time.sleep(60)", str(scratch_home / ".config" / "prefs")])
+reader = subprocess.Popen([sys.executable, "-c",
+    "import sys, time; open(sys.argv[1], 'w').close(); f = open(sys.argv[1]); time.sleep(60)",
+    str(scratch_home / "Downloads" / "read.txt")])
+time.sleep(0.4)
+exe = st.running_binary(writer.pid)
+found = st.writing_user_files(exe)
+chk("a file being written in the user's own folders marks the application busy",
+    any(f.endswith("movie.mkv.crdownload") for f in found), True)
+chk("...its own configuration (a dot-directory) does not, nor a file only being read",
+    any(f.endswith("prefs") or f.endswith("read.txt") for f in found), False)
+real_writing = st.writing_user_files
+st.writing_user_files = lambda e: ["/home/x/Downloads/a.crdownload"]
+st.stale_window_groups = lambda since=None: [
+    {"pid": writer.pid, "name": "Browser", "class": "test-browser", "addresses": ["0x81"]}]
+closed_addresses.clear()
+result = st.restart_stale_apps(None)
+chk("...and a busy application is left open, said so, and not closed",
+    (result, closed_addresses, writer.poll() is None),
+    (([], ["Browser (busy writing a file)"], []), [], True))
+st.writing_user_files = real_writing
+st.stale_window_groups = pristine_stale_window_groups
+st.Path.home = real_home
+for proc in (writer, cfg, reader):
+    proc.kill(); proc.wait(timeout=2)
+
+# -- missing windows are opened through the new-window action ---------------
+real_records, real_command = st.open_window_records, st.new_window_command
+launched_windows = []
+shown = [{"title": "Home", "class": "test-files", "pid": 5, "address": "0xf1", "workspace": "special:omarchroma-restart"}]
+st.open_window_records = lambda: list(shown)
+st.new_window_command = lambda klass: ["/bin/true", klass]
+real_popen = st.subprocess.Popen
+def fake_popen(argv, **kwargs):
+    if argv[:1] == ["/bin/true"]:
+        launched_windows.append(argv[1])
+        shown.append({"title": "Home", "class": "test-files", "pid": 5, "address": "0xf2",
+                      "workspace": "special:omarchroma-restart"})
+    return real_popen(["true"])
+st.subprocess.Popen = fake_popen
+st.PLACEMENT_SECONDS, st.WINDOW_SETTLE_SECONDS = 2.0, 0.3
+plan = {"windows": [{"address": "0xa1", "class": "test-files", "title": "Home", "workspace": "2"},
+                    {"address": "0xa2", "class": "test-files", "title": "Downloads", "workspace": "5"}]}
+dispatched.clear()
+st.place_windows([plan], before=set())
+st.subprocess.Popen = real_popen
+chk("an application that came back with fewer windows has the rest opened for it",
+    launched_windows, ["test-files"])
+chk("...and every window, old or new, goes back to its own workspace",
+    sorted(d.split('workspace = "')[1].split('"')[0] for d in dispatched), ["2", "5"])
+st.open_window_records, st.new_window_command = real_records, real_command
 
 # -- relaunch_environment: the session's, when the app's own reads empty ---
 # Found live: Chromium and Electron reuse /proc/<pid>/environ for their
