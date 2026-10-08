@@ -132,7 +132,8 @@ With the bar widget:
   editor kept showing the old colors until it was restarted. Each sync after
   a switch marks that generated theme for the editor to watch, so it re-reads
   the colors the moment they change. The editor picks the mark up the next
-  time it starts; every switch after that is live.
+  time it starts, whenever you next restart it, without any prompt; every
+  switch after that is live.
 
 ## Palette Sources
 

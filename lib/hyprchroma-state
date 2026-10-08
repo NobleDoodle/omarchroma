@@ -2657,12 +2657,39 @@ def place_windows(plans, before):
 # Where Omarchy's omarchy-theme-set-vscode installs the color theme it
 # generates for each editor it themes: VS Code, VS Code Insiders, VSCodium
 # and Cursor, in that script's own order.
+# Each paired with that editor's configuration directory, under ~/.config,
+# where it caches its scan of installed extensions.
 OMARCHY_EDITOR_THEME_EXTENSIONS = (
-    ".vscode/extensions/omarchy-theme",
-    ".vscode-insiders/extensions/omarchy-theme",
-    ".vscode-oss/extensions/omarchy-theme",
-    ".cursor/extensions/omarchy-theme",
+    (".vscode/extensions/omarchy-theme", "Code"),
+    (".vscode-insiders/extensions/omarchy-theme", "Code - Insiders"),
+    (".vscode-oss/extensions/omarchy-theme", "VSCodium"),
+    (".cursor/extensions/omarchy-theme", "Cursor"),
 )
+
+
+def forget_extension_scan(editor):
+    """Remove an editor's cached scan of the user's installed extensions.
+
+    An editor starts from that cache, re-scans the disk three seconds later,
+    and when the two differ deletes the cache itself and shows "Extensions
+    have been modified on disk. Please reload the window." -- an error prompt
+    for nothing but the theme flag below. Without a cache it simply scans,
+    and says nothing. Only the user-extension caches; the built-in ones are
+    the editor's own and never differ."""
+    profiles = Path.home() / ".config" / editor / "CachedProfilesData"
+    try:
+        caches = [cache for profile in profiles.iterdir() if profile.is_dir() and not profile.is_symlink()
+                  for cache in profile.glob("extensions.user*.cache")]
+    except OSError:
+        return
+    for cache in caches:
+        try:
+            # Through a verified descriptor for the profile directory, as
+            # every other removal here is: a symlink at the name is removed
+            # itself, never followed.
+            safe_unlink(cache)
+        except OSError:
+            continue
 
 
 def editor_live_themes():
@@ -2679,13 +2706,15 @@ def editor_live_themes():
     file the moment it changes, for any theme whose entry in package.json
     carries "_watch": true. Omarchy writes that package.json afresh on every
     switch, without it, so it is put back here on every sync; the editor
-    reads package.json when it starts, so the first one after this takes a
-    restart, and every switch after that is live.
+    reads package.json when it starts, so it takes effect from the editor's
+    next start on, whenever that is, and every switch after that is live.
+    Its cached scan of extensions goes with each change, so that start says
+    nothing about it (see forget_extension_scan).
 
     Only Omarchy's own generated extension is touched -- recognised by its
     name and publisher -- and only the _watch key on its theme entries."""
     changed = []
-    for relative in OMARCHY_EDITOR_THEME_EXTENSIONS:
+    for relative, editor in OMARCHY_EDITOR_THEME_EXTENSIONS:
         manifest = Path.home() / relative / "package.json"
         text = safe_read(manifest, 64 * 1024)
         if text is None:
@@ -2709,6 +2738,7 @@ def editor_live_themes():
             atomic_write(manifest, (json.dumps(package, indent=4) + "\n").encode())
         except OSError:
             continue
+        forget_extension_scan(editor)
         changed.append(str(manifest))
     return changed
 

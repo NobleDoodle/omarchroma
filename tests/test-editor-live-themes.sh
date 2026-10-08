@@ -61,6 +61,26 @@ omarchy_manifest "$CODE"
 state editor-live-themes >/dev/null
 chk "after Omarchy rewrites it on a switch, the next sync puts the flag back" "$(watch_of "$CODE")" "true"
 
+# The editor's cached scan of installed extensions goes with each change, so
+# its next start scans afresh instead of finding the cache stale and putting
+# up "Extensions have been modified on disk. Please reload the window."
+CACHE=$ROOT/.config/Code/CachedProfilesData
+mkdir -p "$CACHE/__default__profile__" "$CACHE/work-profile"
+for f in __default__profile__/extensions.user.en.cache work-profile/extensions.user.cache \
+         __default__profile__/extensions.builtin.en.cache; do echo '{}' > "$CACHE/$f"; done
+omarchy_manifest "$CODE"
+state editor-live-themes >/dev/null
+chk "a change drops the editor's cached scan of user extensions, in every profile" \
+  "$(ls "$CACHE/__default__profile__/extensions.user.en.cache" "$CACHE/work-profile/extensions.user.cache" 2>/dev/null | wc -l)" "0"
+chk "...never its built-in extension cache" \
+  "$([ -f "$CACHE/__default__profile__/extensions.builtin.en.cache" ] && echo kept || echo gone)" "kept"
+echo '{}' > "$CACHE/__default__profile__/extensions.user.en.cache"
+state editor-live-themes >/dev/null
+chk "...and a pass that changes nothing leaves the cache alone" \
+  "$([ -f "$CACHE/__default__profile__/extensions.user.en.cache" ] && echo kept || echo gone)" "kept"
+chk "...nor does Cursor's change touch VS Code's cache" \
+  "$(omarchy_manifest "$CURSOR"; state editor-live-themes >/dev/null; [ -f "$CACHE/__default__profile__/extensions.user.en.cache" ] && echo kept || echo gone)" "kept"
+
 # Not Omarchy's: someone else's extension that happens to sit at that path.
 OSS=$ROOT/.vscode-oss/extensions/omarchy-theme
 mkdir -p "$OSS"
