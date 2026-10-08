@@ -2372,10 +2372,19 @@ def relaunch_command(klass, cmdline, exe):
     return [exe] + cmdline[1:]
 
 
-# How long a window is given to close itself -- and show its own "save
+# How long every window is given to close itself -- and show its own "save
 # changes?" prompt, if it has one -- before a restart escalates to a signal,
-# the same way an idle application's own quit grace is bounded.
+# the same way an idle application's own quit grace is bounded. One deadline
+# shared by every application being restarted, not one each in turn: five
+# applications closing together take five seconds at most, not twenty-five.
 WINDOW_CLOSE_GRACE_SECONDS = 5.0
+
+# How long the rest of an application -- a browser's renderers, its GPU and
+# network processes -- is given to follow its main process out. Whatever has
+# to wait for an application to be closed (Dark Reader in a browser profile,
+# the additional browsers' theming, Qt/KDE) waits for every process running
+# its binary, not only the one that owned the window.
+APPLICATION_SETTLE_SECONDS = 5.0
 
 # How long a relaunch is watched before it is believed. Popen succeeding only
 # means the fork did; an application that notices another instance's lock it
@@ -2383,24 +2392,54 @@ WINDOW_CLOSE_GRACE_SECONDS = 5.0
 # exits again on its own within well under this, not minutes into running.
 RELAUNCH_CHECK_SECONDS = 1.5
 
+# How long an application is given to answer a close before it is asked again
+# with SIGTERM -- which GTK, Qt, Chromium and Electron all take as an ordinary
+# quit. An application with unsaved work answers by opening a window of its
+# own (the "save changes?" dialog); one that opened nothing new either ignored
+# the close -- YouTube Music keeps its window indefinitely -- or is only
+# taking its time, and neither is helped by the full WINDOW_CLOSE_GRACE_SECONDS.
+CLOSE_ANSWER_SECONDS = 1.5
 
-def restart_stale_apps(state_dir, since=None):
+
+def running_binaries():
+    """The canonical binary of every process this account can see, read once."""
+    found = set()
+    for entry in os.scandir("/proc"):
+        if entry.name.isdigit():
+            binary = running_binary(int(entry.name))
+            if binary:
+                found.add(binary)
+    return found
+
+
+def restart_stale_apps(state_dir, since=None, between=None):
     """Close every window of each process still showing the previous theme,
     then launch each one again with the command, directory and environment it
     already had. Returns (restarted, pending, failed) names, sorted.
 
-    Graceful first: hyprctl is asked to close each window the way its own
-    close button would, which gives a toolkit the chance to show its own
-    unsaved-changes prompt rather than losing work silently. Only a process
-    that is still here after WINDOW_CLOSE_GRACE_SECONDS is signalled directly,
-    SIGTERM then SIGKILL, same as quit_application. A process a signal cannot
-    move is left for the user rather than guessed at -- a dialog it is
-    waiting on, most likely -- and nothing at all is launched in its place, so
-    no duplicate instance is started next to one still running. A relaunch
-    that exits again on its own within RELAUNCH_CHECK_SECONDS is reported
-    failed, not restarted, and is not retried -- a second copy racing the
-    same lock, or the same flag, would only do it again."""
+    In four steps, each over every application at once:
+
+    1. Close. hyprctl is asked to close each window the way its own close
+       button would, which gives a toolkit the chance to show its own
+       unsaved-changes prompt rather than losing work silently. One that
+       answers with a window it did not have -- that prompt -- is never
+       signalled, and is reported pending: still open, waiting on the user.
+       One that opens nothing new within CLOSE_ANSWER_SECONDS gets SIGTERM, an
+       ordinary quit to every toolkit here, and SIGKILL only if that fails, as
+       in quit_application. Nothing is launched in place of one still
+       running, so no duplicate is started next to it.
+    2. Settle: wait for every other process running the same binary to go
+       too, for up to APPLICATION_SETTLE_SECONDS.
+    3. between(), if given: the sync that writes what could only be written
+       with these applications closed. Relaunching before it reopened a
+       browser on its old Dark Reader theme, the write still waiting for it to
+       close.
+    4. Relaunch, then watch every relaunch for RELAUNCH_CHECK_SECONDS
+       together. One that exits again on its own is reported failed, not
+       restarted, and is not retried -- a second copy racing the same lock,
+       or the same flag, would only do it again."""
     restarted, pending, failed = [], [], []
+    plans = []
     for group in stale_window_groups(since):
         pid, name, klass = group["pid"], group["name"], group["class"]
         exe = running_binary(pid)
@@ -2411,62 +2450,106 @@ def restart_stale_apps(state_dir, since=None):
             # with nothing to replace it.
             failed.append(name)
             continue
-        cwd = process_cwd(pid) or str(Path.home())
-        env = relaunch_environment(pid)
-        for address in group["addresses"]:
+        # relaunch_command names an installed launcher by this window's own
+        # class where one exists -- the systemd scope and any wrapper a plain
+        # re-exec of the binary would skip -- or falls back to the kernel's
+        # own record of the binary, exe, which cmdline[0] is never
+        # substituted for: a process started as "firefox" by name, left to
+        # PATH here, could come back running whatever a directory earlier in
+        # this account's PATH than the real one happened to hold. Either way
+        # argv[0] is already an absolute, verified path, so it is its own
+        # executable=. Captured now, while the process is still here to read.
+        plans.append({"pid": pid, "name": name, "exe": exe,
+                      "argv": relaunch_command(klass, cmdline, exe),
+                      "cwd": process_cwd(pid) or str(Path.home()),
+                      "env": relaunch_environment(pid),
+                      "addresses": group["addresses"]})
+
+    # 1. Close, all at once.
+    for plan in plans:
+        for address in plan["addresses"]:
             subprocess.run(["hyprctl", "dispatch", "closewindow", "address:" + address],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-        deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
-        while time.monotonic() < deadline and process_alive(pid):
-            time.sleep(0.1)
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            if not process_alive(pid):
-                break
+    deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
+    asked = time.monotonic()
+    while time.monotonic() < deadline and any(
+            process_alive(p["pid"]) and not p.get("dialog") for p in plans):
+        records = open_window_records()
+        now = time.monotonic()
+        for plan in plans:
+            pid = plan["pid"]
+            if records is None or plan.get("dialog") or not process_alive(pid):
+                continue
+            mine = {r["address"] for r in records if r["pid"] == pid}
+            if mine - set(plan["addresses"]):
+                # A window it did not have before: its answer to the close,
+                # almost always a prompt about unsaved work. Left to the user.
+                plan["dialog"] = True
+            elif now - asked >= CLOSE_ANSWER_SECONDS and not plan.get("hurried"):
+                plan["hurried"] = True
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+        time.sleep(0.2)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        # Never one that answered with a dialog: a signal there is exactly the
+        # lost work the dialog is asking about.
+        stragglers = [p for p in plans if process_alive(p["pid"]) and not p.get("dialog")]
+        if not stragglers:
+            break
+        for plan in stragglers:
             try:
-                os.kill(pid, sig)
+                os.kill(plan["pid"], sig)
             except OSError:
-                break
-            sig_deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
-            while time.monotonic() < sig_deadline and process_alive(pid):
-                time.sleep(0.05)
-        if process_alive(pid):
-            pending.append(name)
-            continue
+                pass
+        sig_deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+        while time.monotonic() < sig_deadline and any(process_alive(p["pid"]) for p in stragglers):
+            time.sleep(0.05)
+    closed = []
+    for plan in plans:
+        (pending if process_alive(plan["pid"]) else closed).append(plan)
+    pending = [plan["name"] for plan in pending]
+
+    # 2. Settle: the rest of each application follows its main process out.
+    if closed:
+        binaries = {plan["exe"] for plan in closed}
+        deadline = time.monotonic() + APPLICATION_SETTLE_SECONDS
+        while time.monotonic() < deadline and binaries & running_binaries():
+            time.sleep(0.2)
+
+    # 3. Whatever had to wait for these to close.
+    if closed and between is not None:
+        between()
+
+    # 4. Relaunch, all at once, then watch them together.
+    launched = []
+    for plan in closed:
         try:
-            # relaunch_command names an installed launcher by this window's
-            # own class where one exists -- the systemd scope and any
-            # wrapper a plain re-exec of the binary would skip -- or falls
-            # back to the kernel's own record of the binary, exe, which
-            # cmdline[0] is never substituted for: a process started as
-            # "firefox" by name, left to PATH here, could come back running
-            # whatever a directory earlier in this account's PATH than the
-            # real one happened to hold. Either way argv[0] is already an
-            # absolute, verified path, so it is its own executable=.
-            argv = relaunch_command(klass, cmdline, exe)
-            relaunched = subprocess.Popen(
-                argv, executable=argv[0], cwd=cwd, env=env,
+            launched.append((plan, subprocess.Popen(
+                plan["argv"], executable=plan["argv"][0], cwd=plan["cwd"], env=plan["env"],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True)
+                stderr=subprocess.DEVNULL, start_new_session=True)))
         except OSError as error:
-            print(f"Hyprchroma: could not relaunch {name}: {error}",
+            print(f"Hyprchroma: could not relaunch {plan['name']}: {error}",
                   file=sys.stderr, flush=True)
-            failed.append(name)
-            continue
-        # Watched, not just launched: a process that forked fine and then
-        # quit again on its own -- deferring to a lock it lost the race for,
-        # refusing a flag it was started with -- is not actually back, and
-        # reporting it restarted would have the user looking for a window
-        # that is never going to open.
-        deadline = time.monotonic() + RELAUNCH_CHECK_SECONDS
-        while time.monotonic() < deadline and relaunched.poll() is None:
-            time.sleep(0.1)
-        if relaunched.poll() is None:
-            restarted.append(name)
+            failed.append(plan["name"])
+    # Watched, not just launched: a process that forked fine and then quit
+    # again on its own -- deferring to a lock it lost the race for, refusing
+    # a flag it was started with -- is not actually back, and reporting it
+    # restarted would have the user looking for a window that is never going
+    # to open.
+    deadline = time.monotonic() + RELAUNCH_CHECK_SECONDS
+    while time.monotonic() < deadline and any(proc.poll() is None for _, proc in launched):
+        time.sleep(0.1)
+    for plan, proc in launched:
+        if proc.poll() is None:
+            restarted.append(plan["name"])
         else:
-            print(f"Hyprchroma: {name} relaunched and exited again on its "
-                  f"own (status {relaunched.returncode}); not retried",
+            print(f"Hyprchroma: {plan['name']} relaunched and exited again on its "
+                  f"own (status {proc.returncode}); not retried",
                   file=sys.stderr, flush=True)
-            failed.append(name)
+            failed.append(plan["name"])
     return sorted(set(restarted)), sorted(set(pending)), sorted(set(failed))
 
 
@@ -3626,7 +3709,10 @@ def main():
                        help="judge staleness against when the theme last changed (the default)")
     stale.add_argument("--record", action="store_true",
                        help="also keep the list in status.json, for the bar widget's count")
-    sub.add_parser("restart-stale-apps")
+    restart = sub.add_parser("restart-stale-apps")
+    # The hyprchroma entry point to run once everything is closed and before
+    # anything is relaunched; given by bin/hyprchroma as its own path.
+    restart.add_argument("--sync-command")
     sub.add_parser("kde-color-clients")
     kde_wait = sub.add_parser("watch-kde-exit")
     kde_wait.add_argument("--action", default="sync", choices=("sync", "revert"))
@@ -3709,8 +3795,22 @@ def main():
         for name in sorted(windows):
             print(stale_line(name, windows[name]))
     elif args.command == "restart-stale-apps":
+        between = None
+        if args.sync_command and os.path.isabs(args.sync_command):
+            def between():
+                # Forced, so anything an application rewrote on its way out
+                # (Pear's config.json) is put back too; HYPRCHROMA_NO_AUTO_RESTART
+                # keeps restartMode=force from starting a restart of its own
+                # from inside this one.
+                env = dict(os.environ, HYPRCHROMA_NO_AUTO_RESTART="1")
+                try:
+                    subprocess.run([args.sync_command, "--force", "--quiet"], env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, check=False, timeout=180)
+                except subprocess.TimeoutExpired:
+                    pass
         restarted, pending, failed = restart_stale_apps(
-            args.state_dir, stale_baseline(args.state_dir))
+            args.state_dir, stale_baseline(args.state_dir), between)
         for name in restarted:
             print(f"restarted {name}")
         for name in pending:

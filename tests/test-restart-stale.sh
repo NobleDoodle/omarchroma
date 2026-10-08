@@ -25,6 +25,25 @@ exec(compile(src.replace('if __name__ == "__main__":\n    raise SystemExit(main(
 # immediately preceding test happened to leave behind.
 pristine_stale_window_groups = st.stale_window_groups
 
+
+def spawn_sleeper():
+    """A `sleep 300` standing in for an open application, returned only once
+    /proc shows its command line: read the instant after it starts, that can
+    still be empty, which the restart rightly treats as a process it cannot
+    relaunch -- a real application has been running long past that moment."""
+    proc = subprocess.Popen(["sleep", "300"])
+    for _ in range(100):
+        if st.process_cmdline(proc.pid):
+            break
+        time.sleep(0.01)
+    return proc
+
+
+def kill_sleepers():
+    # Relaunches run as the kernel's own record of the binary, /usr/bin/sleep,
+    # so the pattern takes both spellings.
+    subprocess.run(["pkill", "-f", "^(/usr/bin/)?sleep 300$"], check=False)
+
 def chk(name, got, want):
     print(f"  {'PASS' if got == want else 'FAIL'} {name}"
           + ("" if got == want else f": got [{got}] want [{want}]"))
@@ -33,6 +52,7 @@ def chk(name, got, want):
 # final outcome, not how many seconds each rung is given in production.
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
 st.SIGNAL_GRACE_SECONDS = 0.3
+st.APPLICATION_SETTLE_SECONDS = 0.3
 
 closed_addresses = []
 real_subprocess_run = subprocess.run
@@ -309,6 +329,81 @@ chk("a class with no installed launcher falls back to the kernel's own exe",
     st.relaunch_command("no.such.class", ["firefox", "--new-window"], "/usr/bin/firefox"),
     ["/usr/bin/firefox", "--new-window"])
 
+# -- several at once: close all, sync while closed, relaunch all ------------
+# Found live: one application after another was too slow, and each came back
+# before the sync that could only run with it closed (Dark Reader writes to a
+# browser profile only while no process of that browser is left) had run, so
+# it reopened on its old theme.
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.3
+pair = [spawn_sleeper() for _ in range(2)]
+seen = {}
+def between():
+    seen["old_alive"] = [st.process_alive(p.pid) for p in pair]
+    def cmdline_of(name):
+        try:
+            return (Path("/proc") / name / "cmdline").read_bytes()
+        except OSError:
+            return b""
+    seen["sleeps_running"] = any(cmdline_of(e.name) == b"sleep\x00300\x00"
+                                 for e in os.scandir("/proc") if e.name.isdigit())
+st.stale_window_groups = lambda since=None: [
+    {"pid": p.pid, "name": f"Pair{i}", "class": "test-app", "addresses": [f"0x{i}"]}
+    for i, p in enumerate(pair)]
+started = time.monotonic()
+try:
+    restarted, pending, failed = st.restart_stale_apps(None, between=between)
+    elapsed = time.monotonic() - started
+    chk("every application is closed before the in-between sync runs",
+        seen.get("old_alive"), [False, False])
+    chk("...nothing relaunched yet when it does", seen.get("sleeps_running"), False)
+    chk("...then every one is relaunched", (restarted, pending, failed), (["Pair0", "Pair1"], [], []))
+    chk("...closing together, not one after another (under two close windows)",
+        elapsed < 2 * st.WINDOW_CLOSE_GRACE_SECONDS + 2 * st.SIGNAL_GRACE_SECONDS
+        + st.APPLICATION_SETTLE_SECONDS + st.RELAUNCH_CHECK_SECONDS, True)
+finally:
+    for p in pair:
+        if p.poll() is None:
+            p.kill(); p.wait(timeout=2)
+    kill_sleepers()
+st.stale_window_groups = pristine_stale_window_groups
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
+# -- ignoring a close is hurried; answering it with a dialog is respected -
+# Found live: YouTube Music keeps its window when asked to close and sat out
+# the whole close grace. An application with unsaved work answers with a new
+# window, its "save changes?" dialog -- and a signal there is the lost work
+# that dialog is asking about.
+real_records = st.open_window_records
+st.WINDOW_CLOSE_GRACE_SECONDS, st.CLOSE_ANSWER_SECONDS = 2.0, 0.3
+def timed_close(answers_with_dialog):
+    proc = spawn_sleeper()
+    windows = [{"title": "Main", "class": "test-app", "pid": proc.pid, "address": "0x7"}]
+    if answers_with_dialog:
+        windows.append({"title": "Save changes?", "class": "test-app", "pid": proc.pid, "address": "0x8"})
+    st.open_window_records = lambda: windows
+    st.stale_window_groups = lambda since=None: [
+        {"pid": proc.pid, "name": "Closer", "class": "test-app", "addresses": ["0x7"]}]
+    started, closed_at = time.monotonic(), {}
+    try:
+        result = st.restart_stale_apps(
+            None, between=lambda: closed_at.setdefault("t", time.monotonic()))
+        alive = proc.poll() is None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=2)
+        kill_sleepers()
+    return closed_at.get("t", time.monotonic()) - started, result, alive
+ignored, ignored_result, _ = timed_close(False)
+_, dialog_result, dialog_alive = timed_close(True)
+chk("an application ignoring the close is ended well before the full grace",
+    (ignored < st.WINDOW_CLOSE_GRACE_SECONDS, ignored_result[0]), (True, ["Closer"]))
+chk("...one answering with a save dialog is never signalled, and is reported still open",
+    (dialog_alive, dialog_result), (True, ([], ["Closer"], [])))
+st.open_window_records = real_records
+st.stale_window_groups = pristine_stale_window_groups
+st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
+
 # -- relaunch_environment: the session's, when the app's own reads empty ---
 # Found live: Chromium and Electron reuse /proc/<pid>/environ for their
 # process title, so Vivaldi and YouTube Music read back with no environment
@@ -336,7 +431,7 @@ import argparse, io, contextlib
 root = Path(tempfile.mkdtemp())
 (root / "status.json").write_text("{}")
 st.stale_window_groups = lambda since=None: []
-st.restart_stale_apps = lambda state_dir, since=None: (["Restarted1", "Restarted2"], ["Pending1"], ["Failed1"])
+st.restart_stale_apps = lambda state_dir, since=None, between=None: (["Restarted1", "Restarted2"], ["Pending1"], ["Failed1"])
 sys.argv = ["hyprchroma-state", "--state-dir", str(root), "--data-dir", str(root), "restart-stale-apps"]
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
@@ -425,13 +520,28 @@ settings["restartMode"] = "force"
 path.write_text(json.dumps(settings))
 PY
 : > "$ROOT/state-calls.log"
+# The restart is detached from the sync that starts it (its own inner sync
+# needs the lock that sync holds), so it is waited for here, not assumed done.
+settle_restart() {
+  for _ in $(seq 50); do
+    pgrep -f "$ROOT/bin/hyprchroma restart-stale" >/dev/null || return 0
+    sleep 0.1
+  done
+}
 sed -i 's/^background = .*/background = "#224466"/' "$HOME/.local/state/omarchy/current/theme/colors.toml"
-sync --force --quiet
+sync --force --quiet; sleep 0.3; settle_restart
 chk "restartMode=force: a real theme change calls it exactly once" \
   "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "1"
+chk "...detached, so its own inner sync is not left waiting on this one's lock" \
+  "$(grep -c 'setsid "$HYPRCHROMA_SELF" restart-stale' "$REPO/bin/hyprchroma")" "1"
 : > "$ROOT/state-calls.log"
-sync --force --quiet
+sync --force --quiet; sleep 0.3; settle_restart
 chk "...and a sync that changes nothing after that does not call it again" \
+  "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
+: > "$ROOT/state-calls.log"
+sed -i 's/^background = .*/background = "#336655"/' "$HOME/.local/state/omarchy/current/theme/colors.toml"
+HYPRCHROMA_NO_AUTO_RESTART=1 sync --force --quiet; sleep 0.3; settle_restart
+chk "...nor does the restart's own inner sync, even on a real change" \
   "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
 
 rm -rf "$ROOT"

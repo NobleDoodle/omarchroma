@@ -98,20 +98,29 @@ With the bar widget:
   a sync, with no prompt; **Confirm** asks first, in the same popup a global
   hotkey can open from anywhere (bind one to `restartStaleApps` in your own
   bindings.lua, the way the toggles above are bound); **Off**, the default,
-  does neither -- the list's own button is still there either way. A restart
-  closes each window the way its own close button would (so an application
-  with unsaved changes still gets to ask first) and launches it again with the
-  command and directory it already had and its own environment (or the
-  session's, for Chromium and Electron apps, which hide theirs), through the application's
-  own installed launcher where it names this window's class (the systemd scope
-  and any wrapper script Omarchy's own launching would use, not just a plain
-  re-exec of the binary, which is what one real GPU-sandboxed application did
-  not start back up under). It is best-effort: an application with state only
-  its original launcher had may not come back exactly as it was, and a
-  relaunch that exits again on its own -- most often an application deferring
-  to a lock another instance of it still holds -- is reported failed rather
-  than claimed as done, and is not retried. Steam is never listed: it draws
-  its own interface regardless of any theme, so there would be nothing to
+  does neither -- the list's own button is still there either way.
+
+  A restart works on every listed application at once, in four steps:
+
+  1. **Close.** Each window is asked to close, the way its own close button
+     would. An application that answers with a new window -- a "save
+     changes?" dialog -- is left alone and reported still open, so no unsaved
+     work is lost. One that opens nothing new within 1.5 seconds (some, like
+     YouTube Music, simply ignore the request) is told to quit.
+  2. **Settle.** It waits until every process of each application is gone,
+     not just the one that owned the window.
+  3. **Sync.** A sync runs while they are all closed, for what can only be
+     written then: Dark Reader in a browser profile, the additional browsers'
+     theming, Qt/KDE, and Pear's config if the app rewrote it on its way out.
+  4. **Relaunch.** Each comes back through its own installed launcher where
+     one exists (the same systemd scope and wrapper script your launcher
+     uses), with its own working directory and environment -- or the
+     session's, for Chromium and Electron apps, which hide theirs.
+
+  It is best-effort: a relaunch that exits again on its own -- most often an
+  application deferring to another copy of itself -- is reported failed, not
+  claimed as done, and is not retried. Steam is never listed: it draws its
+  own interface regardless of any theme, so there would be nothing to
   restart it for.
 
 ## Palette Sources
