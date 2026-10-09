@@ -234,9 +234,10 @@ Panel {
 
   readonly property string issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"
   readonly property string coffeeUrl: "https://buymeacoffee.com/nobledoodle"
+  readonly property string repoUrl: "https://github.com/NobleDoodle/omarchroma"
 
-  // About, on "?" and the help icon: what is installed, under what license,
-  // and the two links -- an issue or question, and a coffee.
+  // About, on "?" and the help icon: what is installed and under what
+  // license, then the links -- an issue or question, the source, a coffee.
   property bool aboutOpen: false
 
   function openAbout() {
@@ -553,9 +554,10 @@ Panel {
       }
       return
     }
-    // About: i for an issue or question, b for a coffee, ? back.
+    // About: i for an issue or question, g for the source, b for a coffee, ? back.
     if (root.aboutOpen) {
       if (key === "i") root.openLink(root.issuesUrl)
+      else if (key === "g") root.openLink(root.repoUrl)
       else if (key === "b") root.openLink(root.coffeeUrl)
       else if (key === "?") root.aboutOpen = false
       return
@@ -1090,8 +1092,8 @@ Panel {
           }
         }
 
-        // About: versions, license and source as plain read-outs, then the two
-        // links as buttons, each with its key.
+        // About: versions and license as plain read-outs, then the links as
+        // buttons, each with its key.
         Column {
           id: about
           visible: root.aboutOpen && !root.confirmRestartOpen
@@ -1103,8 +1105,7 @@ Panel {
               { label: "Plugin", value: root.expectedVersion ? root.expectedVersion : "unknown" },
               { label: "Service", value: root.installedVersion ? "hyprchroma " + root.installedVersion : "not installed" },
               { label: "License", value: (root.pluginLicense !== "" ? root.pluginLicense : "MIT")
-                  + (root.pluginAuthor !== "" ? " \u00b7 \u00a9 " + root.pluginAuthor : "") },
-              { label: "Source", value: "github.com/NobleDoodle/omarchroma" }
+                  + (root.pluginAuthor !== "" ? " \u00b7 \u00a9 " + root.pluginAuthor : "") }
             ]
             delegate: Item {
               id: fact
@@ -1145,10 +1146,18 @@ Panel {
 
           Button {
             width: about.width
-            text: "Report an issue or ask  (i)"
-            iconText: "\udb80\udea4"
+            text: "Open issue/ask for help  (i)"
+            iconText: "\udb81\ude25"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.openLink(root.issuesUrl)
+          }
+
+          Button {
+            width: about.width
+            text: "Source on GitHub  (g)"
+            iconText: "\udb80\udea4"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.openLink(root.repoUrl)
           }
 
           Button {

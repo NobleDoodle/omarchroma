@@ -799,8 +799,10 @@ chk "...and About shows versions and license, from the manifest" \
 about_block=$(awk '/id: about$/,/^        }$/' Panel.qml)
 chk "...as plain text, with i for issues, b for a coffee and ? back" \
   "$(grep -c 'textFormat: Text.PlainText' <<<"$about_block"),$(grep -c 'if (key === "i") root.openLink(root.issuesUrl)' Panel.qml),$(grep -c 'else if (key === "b") root.openLink(root.coffeeUrl)' Panel.qml),$(grep -c 'else if (key === "?") root.aboutOpen = false' Panel.qml)" "1,1,1,1"
-chk "...linking the repo's issues page and Buy Me a Coffee, and nothing else" \
-  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'coffeeUrl: "https://buymeacoffee.com/nobledoodle"' Panel.qml),$(grep -c 'Qt.openUrlExternally(' Panel.qml),$(grep -c 'Qt.openUrlExternally(url)' Panel.qml)" "1,1,1,1"
+chk "...linking the issues page, the source and Buy Me a Coffee, and nothing else" \
+  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'repoUrl: "https://github.com/NobleDoodle/omarchroma"' Panel.qml),$(grep -c 'coffeeUrl: "https://buymeacoffee.com/nobledoodle"' Panel.qml),$(grep -c 'Qt.openUrlExternally(' Panel.qml),$(grep -c 'Qt.openUrlExternally(url)' Panel.qml)" "1,1,1,1,1"
+chk "...each a button with its key: Open issue/ask for help (i), Source on GitHub (g)" \
+  "$(grep -c 'text: "Open issue/ask for help  (i)"' <<<"$about_block"),$(grep -c 'text: "Source on GitHub  (g)"' <<<"$about_block"),$(grep -c 'else if (key === "g") root.openLink(root.repoUrl)' Panel.qml),$(grep -c 'label: "Source"' Panel.qml)" "1,1,1,0"
 chk "...Esc backs out of About before closing the panel" \
   "$(grep -c 'else if (root.aboutOpen) root.aboutOpen = false' Panel.qml)" "1"
 chk "the main panel's list button: View N windows to close (/), or Nothing to close (/)" \

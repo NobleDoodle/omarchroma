@@ -75,6 +75,7 @@ With the bar widget:
 | `s` | Settings |
 | `?` | About: plugin and service versions, license, and links |
 | `i` (in About) | Open the issues page to report a problem or ask a question |
+| `g` (in About) | Open the source on GitHub |
 | `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
 | `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
