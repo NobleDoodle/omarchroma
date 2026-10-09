@@ -1,0 +1,45 @@
+name: Feature request
+description: An app to theme, or something Omarchroma could do better.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      placeholder: Theme the Thunderbird toolbar the way Additional browsers themes Firefox.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: What would it help with?
+      description: The problem it solves or how you'd use it.
+      placeholder: Thunderbird is the one app on my desktop that still looks out of place after a theme change.
+    validations:
+      required: true
+
+  - type: input
+    id: apps
+    attributes:
+      label: Apps involved
+      description: Include how they're installed (package, Flatpak, AppImage) if it matters.
+      placeholder: Thunderbird (Flatpak)
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you've tried instead?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and didn't find this one.
+          required: true

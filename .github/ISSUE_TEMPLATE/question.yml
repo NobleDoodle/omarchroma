@@ -1,0 +1,29 @@
+name: Question or help
+description: Ask how something works, or get help setting it up.
+title: "[Question]: "
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      placeholder: How do I keep Omarchroma from theming one particular app?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you've tried
+      description: Anything you've already checked, and what happened.
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Omarchroma version
+      description: Press `?` in the panel to see the plugin and service versions.
+      placeholder: Plugin 3.2.2, service hyprchroma 3.2.2
+    validations:
+      required: false

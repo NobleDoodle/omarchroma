@@ -1,0 +1,102 @@
+name: Bug report
+description: Something isn't themed, looks wrong, or doesn't work as described.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The more of the fields below you can fill in, the faster it can be fixed.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong, and in which app or apps.
+      placeholder: Okular's toolbar icons stay dark on a dark theme, even after restarting it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      placeholder: The icons should be light on a dark theme, like in GTK apps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Switch to the Tokyo Night theme
+        2. Open Okular
+        3. Look at the toolbar
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Omarchroma?
+      multiple: true
+      options:
+        - GTK and GNOME
+        - Qt and KDE
+        - Dark Reader
+        - Pear Desktop
+        - Flatpak apps
+        - Additional browsers
+        - Restarting apps
+        - Panel or bar icon
+        - Setup or update
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Omarchroma version
+      description: Press `?` in the panel to see the plugin and service versions.
+      placeholder: Plugin 3.2.2, service hyprchroma 3.2.2
+    validations:
+      required: true
+
+  - type: input
+    id: theme
+    attributes:
+      label: Omarchy theme
+      description: The theme you were on, and whether it's built in or installed from a repository.
+      placeholder: Tokyo Night (built in)
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Service log
+      description: |
+        The output of this command, run right after the problem happens:
+        `journalctl --user -u hyprchromad -n 100 --no-pager`
+        Check it for anything you'd rather not share before posting.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag images here if they help show the problem.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and didn't find this one.
+          required: true
