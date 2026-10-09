@@ -127,6 +127,29 @@ omarchy_icon_theme() {
   printf "%s" "$value"
 }
 
+# --icon-theme: only the GTK icon-theme setting. Qt applications here read
+# their icons through the gtk3 platform theme -- QT_QPA_PLATFORMTHEME=gtk3 on
+# Omarchy -- so the icon set in kdeglobals never reaches them; Okular kept the
+# light Yaru set Omarchy names, dark glyphs on a dark background (issue #3).
+# Replaced only when the setting holds exactly the light name of the set chosen
+# above, as Omarchy writes it: anything else, the user's own choice included,
+# is left alone. Run apart from the rest because unlike kdeglobals it does not
+# disturb a running application, so it does not wait for KDE apps to close.
+sync_icon_theme_setting() {
+  local chosen current
+  chosen=$(omarchy_icon_theme sync-qt-kde-theme) || return 0
+  current=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null) || return 0
+  current=${current//\'/}
+  if [[ $chosen == *-dark && $chosen == "$current-dark" ]]; then
+    gsettings set org.gnome.desktop.interface icon-theme "$chosen"
+  fi
+  return 0
+}
+if [[ ${1:-} == --icon-theme ]]; then
+  sync_icon_theme_setting
+  exit 0
+fi
+
 load_palette
 background=$(color background)
 dark_background=$(color dark_background)

@@ -3873,6 +3873,23 @@ def gsettings_reset(key):
     subprocess.run(["gsettings", "reset", "org.gnome.desktop.interface", key], check=False)
 
 
+def undo_dark_icon_theme():
+    """Put Omarchy's own icon set back where the Qt/KDE sync swapped in its
+    dark variant: only if the setting still holds exactly that variant of the
+    set the current Omarchy theme names, so nothing chosen since is undone."""
+    marker = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") \
+        / "omarchy/current/theme/icons.theme"
+    requested = (safe_read(marker, 256) or "").strip()
+    gsettings = shutil.which("gsettings", path=trusted_path())
+    if not requested or not gsettings or not WORKSPACE_NAME.match(requested):
+        return
+    result = subprocess.run([gsettings, "get", "org.gnome.desktop.interface", "icon-theme"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+    if result.returncode == 0 and result.stdout.strip().strip("'") == requested + "-dark":
+        subprocess.run([gsettings, "set", "org.gnome.desktop.interface", "icon-theme", requested],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+
 def reauthor_omarchy_gsettings():
     """Let Omarchy write the three interface keys it owns.
 
@@ -3950,6 +3967,7 @@ def restore_target_captured(snapshot_dir, manifest, target):
                           '@import url("hyprchroma.css");')
     elif target == "qt-kde":
         restore_app_color_schemes(manifest)
+        undo_dark_icon_theme()
     elif target == "flatpak":
         # No record means this never granted anything, so there is nothing of
         # its own to take back -- whatever is there is the user's.
@@ -3988,6 +4006,7 @@ def restore_target_stock(snapshot_dir, manifest, target):
         # offer. The recorded one is the app's own: Hyprchroma only ever deleted
         # these keys and never wrote them, so it cannot be Hyprchroma output.
         restore_app_color_schemes(manifest)
+        undo_dark_icon_theme()
         # Only if empty -- os.rmdir refuses otherwise -- and relative to a
         # verified descriptor, like every other removal.
         try:

@@ -319,7 +319,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.1.14"
+    echo "hyprchroma 3.1.15"
     exit 0
     ;;
 esac
@@ -822,6 +822,9 @@ if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   "$HYPRCHROMA_LIB/sync-gtk-theme"
 fi
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
+  # The icon set Qt applications actually read (the GTK setting, through the
+  # gtk3 platform theme), ahead of the wait below: it disturbs nothing running.
+  "$HYPRCHROMA_LIB/sync-qt-kde-theme" --icon-theme || true
   # kdeglobals and the generated color scheme are read by every running KDE
   # application, and rewriting them underneath one is what disturbs it. If any
   # process still has KColorScheme mapped, leave both files exactly as they are;
