@@ -49,4 +49,4 @@ chk "privileged block reads with O_NOFOLLOW" "$(count 'read_text\(\)' install.sh
 # built only from validated window classes (test-restart-stale.sh) -- is not
 # the shell or Python eval this guards against, and is the one form exempted.
 chk "no shell=True / eval / os.system" \
-  "$(grep -rhE 'shell=True|os\.system|\beval\b' bin/ lib/ install.sh uninstall.sh 2>/dev/null | grep -vF '["hyprctl", "eval", lua]' | wc -l)" "0"
+  "$(grep -rhE 'shell=True|os\.system|\beval\b' bin/ lib/ install.sh uninstall.sh 2>/dev/null | grep -vF 'hyprctl("eval", lua)' | wc -l)" "0"

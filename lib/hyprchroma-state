@@ -2018,15 +2018,31 @@ def process_started_at(pid):
     return boot + int(fields[19]) // os.sysconf("SC_CLK_TCK")
 
 
+HYPRCTL_TIMEOUT_SECONDS = 5
+
+
+def hyprctl(*args):
+    """hyprctl's output, or None if it failed or Hyprland did not answer within
+    HYPRCTL_TIMEOUT_SECONDS. A stalled compositor must not hang a sync holding
+    its lock, or a restart holding its own -- after which every later restart
+    would only report one already running."""
+    try:
+        result = subprocess.run(["hyprctl", *args], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, check=False,
+                                timeout=HYPRCTL_TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
 def open_windows():
     """(title, class, pid) per mapped window, or None if that cannot be read.
     None means nothing is reported rather than something being guessed."""
-    result = subprocess.run(["hyprctl", "-j", "clients"], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, check=False)
-    if result.returncode != 0:
+    output = hyprctl("-j", "clients")
+    if output is None:
         return None
     try:
-        clients = json.loads(result.stdout)
+        clients = json.loads(output)
     except json.JSONDecodeError:
         return None
     return [
@@ -2162,12 +2178,11 @@ def open_window_records():
     which closing one by name needs. A separate call rather than widening
     open_windows()'s tuple: four callers already unpack that one positionally,
     and nothing else here needs the address."""
-    result = subprocess.run(["hyprctl", "-j", "clients"], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, check=False)
-    if result.returncode != 0:
+    output = hyprctl("-j", "clients")
+    if output is None:
         return None
     try:
-        clients = json.loads(result.stdout)
+        clients = json.loads(output)
     except json.JSONDecodeError:
         return None
     return [
@@ -2207,10 +2222,8 @@ def window_dispatch(lua, legacy):
     True if Hyprland accepted either. The legacy form alone failed to parse
     under the Lua config, and its output went to /dev/null -- so for a whole
     release no window was ever actually asked to close."""
-    for args in (["hyprctl", "dispatch", lua], ["hyprctl", "dispatch", *legacy]):
-        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                text=True, check=False)
-        if result.returncode == 0 and (result.stdout or "").strip() == "ok":
+    for args in (["dispatch", lua], ["dispatch", *legacy]):
+        if (hyprctl(*args) or "").strip() == "ok":
             return True
     return False
 
@@ -2232,9 +2245,7 @@ WINDOW_CLASS = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 def hyprland_eval(lua):
     """Run Lua in Hyprland; True if it answered "ok". False on a Hyprland that
     has no Lua config -- where nothing below is attempted at all."""
-    result = subprocess.run(["hyprctl", "eval", lua], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, check=False)
-    return result.returncode == 0 and (result.stdout or "").strip() == "ok"
+    return (hyprctl("eval", lua) or "").strip() == "ok"
 
 
 def hide_new_windows(classes):
@@ -2262,10 +2273,8 @@ def show_new_windows():
 
 
 def active_workspace():
-    result = subprocess.run(["hyprctl", "-j", "activeworkspace"], stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, check=False)
     try:
-        return workspace_selector(json.loads(result.stdout))
+        return workspace_selector(json.loads(hyprctl("-j", "activeworkspace")))
     except (json.JSONDecodeError, TypeError):
         return None
 
@@ -2313,7 +2322,7 @@ def stale_window_groups(since=None):
         if started is None or started >= since:
             continue
         name = app_display_name(windows[0]["title"], windows[0]["class"])
-        groups.append({"pid": pid, "name": name, "class": windows[0]["class"],
+        groups.append({"pid": pid, "started": started, "name": name, "class": windows[0]["class"],
                        "addresses": [w["address"] for w in windows],
                        "windows": [{"address": w["address"], "class": w["class"],
                                     "title": w["title"], "workspace": w.get("workspace")}
@@ -2429,9 +2438,10 @@ _DESKTOP_ENTRIES = None
 
 def desktop_entries():
     """Every installed application's id, by the window class its own
-    StartupWMClass declares. A window's class is the one thing here that was
-    never attacker-chosen by this restart: Hyprland reports it from the
-    window itself, independent of anything this account controls."""
+    StartupWMClass declares. A window's class is the application's own claim,
+    so one can name another's class; all that buys it is which installed
+    launcher a restart the user confirmed starts -- an entry the launcher
+    would start the same way, never a command read from the window."""
     global _DESKTOP_ENTRIES
     if _DESKTOP_ENTRIES is not None:
         return _DESKTOP_ENTRIES
@@ -2645,9 +2655,13 @@ def restart_stale_apps(state_dir, since=None, between=None):
     plans = []
     for group in stale_window_groups(since):
         pid, name, klass = group["pid"], group["name"], group["class"]
+        # Every signal below goes through this, never the number: see open_pidfd.
+        descriptor = open_pidfd(pid, group.get("started"))
         exe = running_binary(pid)
         cmdline = process_cmdline(pid)
-        if not exe or not os.path.isabs(exe) or not cmdline:
+        if descriptor is None or not exe or not os.path.isabs(exe) or not cmdline:
+            if descriptor is not None:
+                os.close(descriptor)
             # Gone already between listing and acting, or unreadable: nothing
             # safe to relaunch with, so the window is left rather than closed
             # with nothing to replace it.
@@ -2657,6 +2671,7 @@ def restart_stale_apps(state_dir, since=None, between=None):
             # Mid-download or mid-copy: left open, and said so, rather than
             # cut short. Reported with the applications still open.
             busy.append(f"{name} (busy writing a file)")
+            os.close(descriptor)
             continue
         # relaunch_command names an installed launcher by this window's own
         # class where one exists -- the systemd scope and any wrapper a plain
@@ -2667,67 +2682,63 @@ def restart_stale_apps(state_dir, since=None, between=None):
         # this account's PATH than the real one happened to hold. Either way
         # argv[0] is already an absolute, verified path, so it is its own
         # executable=. Captured now, while the process is still here to read.
-        plans.append({"pid": pid, "name": name, "exe": exe,
+        plans.append({"pid": pid, "pidfd": descriptor, "name": name, "exe": exe,
                       "argv": relaunch_command(klass, cmdline, exe),
                       "cwd": process_cwd(pid) or str(Path.home()),
                       "env": relaunch_environment(pid),
                       "addresses": group["addresses"],
                       "windows": group.get("windows") or []})
 
-    # 1. Close, all at once. An application with several windows is quit as
-    # a whole instead (SIGTERM, an ordinary quit to the toolkits here): one
-    # whose windows are closed one by one keeps only the last in its own
-    # session -- a browser reopened with one window of the three it had.
-    for plan in plans:
-        if len(plan["addresses"]) > 1:
-            plan["hurried"] = True
-            try:
-                os.kill(plan["pid"], signal.SIGTERM)
-            except OSError:
-                pass
-            continue
-        for address in plan["addresses"]:
-            close_window(address)
-    deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
-    asked = time.monotonic()
-    while time.monotonic() < deadline and any(
-            process_alive(p["pid"]) and not p.get("dialog") for p in plans):
-        records = open_window_records()
-        now = time.monotonic()
+    # Every plan holds a pidfd until its process is closed or left open.
+    try:
+        # 1. Close, all at once. An application with several windows is quit as
+        # a whole instead (SIGTERM, an ordinary quit to the toolkits here): one
+        # whose windows are closed one by one keeps only the last in its own
+        # session -- a browser reopened with one window of the three it had.
         for plan in plans:
-            pid = plan["pid"]
-            if records is None or plan.get("dialog") or not process_alive(pid):
-                continue
-            mine = {r["address"] for r in records if r["pid"] == pid}
-            if mine - set(plan["addresses"]):
-                # A window it did not have before: its answer to the close,
-                # almost always a prompt about unsaved work. Left to the user.
-                plan["dialog"] = True
-            elif now - asked >= CLOSE_ANSWER_SECONDS and not plan.get("hurried"):
+            if len(plan["addresses"]) > 1:
                 plan["hurried"] = True
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except OSError:
-                    pass
-        time.sleep(0.2)
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        # Never one that answered with a dialog: a signal there is exactly the
-        # lost work the dialog is asking about.
-        stragglers = [p for p in plans if process_alive(p["pid"]) and not p.get("dialog")]
-        if not stragglers:
-            break
-        for plan in stragglers:
-            try:
-                os.kill(plan["pid"], sig)
-            except OSError:
-                pass
-        sig_deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
-        while time.monotonic() < sig_deadline and any(process_alive(p["pid"]) for p in stragglers):
-            time.sleep(0.05)
-    closed = []
-    for plan in plans:
-        (pending if process_alive(plan["pid"]) else closed).append(plan)
-    pending = [plan["name"] for plan in pending] + busy
+                pidfd_signal(plan["pidfd"], signal.SIGTERM)
+                continue
+            for address in plan["addresses"]:
+                close_window(address)
+        deadline = time.monotonic() + WINDOW_CLOSE_GRACE_SECONDS
+        asked = time.monotonic()
+        while time.monotonic() < deadline and any(
+                pidfd_alive(p["pidfd"]) and not p.get("dialog") for p in plans):
+            records = open_window_records()
+            now = time.monotonic()
+            for plan in plans:
+                pid = plan["pid"]
+                if records is None or plan.get("dialog") or not pidfd_alive(plan["pidfd"]):
+                    continue
+                mine = {r["address"] for r in records if r["pid"] == pid}
+                if mine - set(plan["addresses"]):
+                    # A window it did not have before: its answer to the close,
+                    # almost always a prompt about unsaved work. Left to the user.
+                    plan["dialog"] = True
+                elif now - asked >= CLOSE_ANSWER_SECONDS and not plan.get("hurried"):
+                    plan["hurried"] = True
+                    pidfd_signal(plan["pidfd"], signal.SIGTERM)
+            time.sleep(0.2)
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            # Never one that answered with a dialog: a signal there is exactly the
+            # lost work the dialog is asking about.
+            stragglers = [p for p in plans if pidfd_alive(p["pidfd"]) and not p.get("dialog")]
+            if not stragglers:
+                break
+            for plan in stragglers:
+                pidfd_signal(plan["pidfd"], sig)
+            sig_deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+            while time.monotonic() < sig_deadline and any(pidfd_alive(p["pidfd"]) for p in stragglers):
+                time.sleep(0.05)
+        closed = []
+        for plan in plans:
+            (pending if pidfd_alive(plan["pidfd"]) else closed).append(plan)
+        pending = [plan["name"] for plan in pending] + busy
+    finally:
+        for plan in plans:
+            os.close(plan["pidfd"])
 
     # 2. Settle: the rest of each application follows its main process out.
     if closed:
@@ -3129,6 +3140,39 @@ QUIT_GRACE_SECONDS = 1.0
 SIGNAL_GRACE_SECONDS = 1.0
 
 
+def open_pidfd(pid, started=None):
+    """A pidfd for pid, or None. A signal sent through it can only ever reach
+    that one process: by number, one that exits during a wait of seconds
+    could have its pid handed to something unrelated, which the SIGKILL at
+    the end of that wait would then reach. Given the start time a decision
+    was made on, it is checked again once the pidfd is open, so the process
+    held is the one that was judged -- not one that took its number since."""
+    try:
+        descriptor = os.pidfd_open(pid)
+    except OSError:
+        return None
+    if started is not None and process_started_at(pid) != started:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def pidfd_alive(descriptor):
+    """Whether the process behind a pidfd is still running. A pidfd turns
+    readable when its process exits, zombie or not, so this needs neither
+    /proc nor the pid -- nothing that could by now name another process."""
+    readable, _, _ = select.select([descriptor], [], [], 0)
+    return not readable
+
+
+def pidfd_signal(descriptor, sig):
+    try:
+        signal.pidfd_send_signal(descriptor, sig)
+        return True
+    except OSError:
+        return False
+
+
 def process_alive(pid):
     # kill(pid, 0) alone is not enough: a zombie still holds its pid until
     # whatever forked it reaps it, so it keeps answering this the same as a
@@ -3258,19 +3302,22 @@ def quit_application(pid, name, path):
                     return True
                 time.sleep(0.1)
 
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.kill(pid, sig)
-        except OSError:
-            # Already gone, or never ours to signal -- either way, nothing
-            # further to send it.
-            return not process_alive(pid)
-        deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
-        while time.monotonic() < deadline:
-            if not process_alive(pid):
-                return True
-            time.sleep(0.05)
-    return False
+    descriptor = open_pidfd(pid)
+    if descriptor is None:
+        # Already gone, or never ours to signal.
+        return not process_alive(pid)
+    try:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if not pidfd_signal(descriptor, sig):
+                return not pidfd_alive(descriptor)
+            deadline = time.monotonic() + SIGNAL_GRACE_SECONDS
+            while time.monotonic() < deadline:
+                if not pidfd_alive(descriptor):
+                    return True
+                time.sleep(0.05)
+        return False
+    finally:
+        os.close(descriptor)
 
 
 # (name, pid) pairs already asked and found to have no quit action, with when.

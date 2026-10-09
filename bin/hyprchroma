@@ -126,6 +126,24 @@ fail() {
   exit 1
 }
 
+# The lock is created by the state helper, relative to a directory descriptor
+# it has verified, following no symlink -- and then opened here read-only.
+# "exec 9>" truncated whatever the path resolved to and followed a symlink
+# planted at it, on every unattended sync; flock(2) needs no write access at
+# all, so opening read-only means nothing on this path can be truncated or
+# written through even if the entry were swapped between the two steps.
+# Once it exists as this user's own regular file -- every run after the first --
+# it is used as it is. The directory is this user's alone (the runtime dir, or
+# the state dir), so nobody else can have placed or swapped it, and a planted
+# symlink or fifo fails the check and goes to the helper to be replaced.
+prepare_lock_file() {
+  if [[ -L $1 || ! -f $1 || ! -O $1 ]]; then
+    "$HYPRCHROMA_LIB/hyprchroma-state" prepare-lock --path "$1" ||
+      fail "cannot prepare the lock file $1"
+    [[ -f $1 ]] || fail "lock file $1 was not created"
+  fi
+}
+
 target_key() {
   case "$1" in
     gtk) printf 'gtk' ;;
@@ -296,8 +314,19 @@ PY
         *) echo "hyprchroma restart-stale: unknown option: $argument" >&2; exit 2 ;;
       esac
     done
+    # One restart at a time: a second -- another monitor's panel, or this run
+    # by hand -- would find the same applications closing and launch each of
+    # them again beside the first one's. It leaves rather than waiting, since
+    # the one running is already restarting everything it would.
+    restart_lock="${XDG_RUNTIME_DIR:-$STATE_DIR}/hyprchroma-restart.lock"
+    prepare_lock_file "$restart_lock"
+    exec 7<"$restart_lock"
+    if ! flock -n 7; then
+      echo "Hyprchroma: a restart is already running" >&2
+      exit 0
+    fi
     out=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restart-stale-apps --sync-command "$HYPRCHROMA_SELF")
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restart-stale-apps --sync-command "$HYPRCHROMA_SELF" 7<&-)
     restarted=$(awk '$1=="restarted"{sub(/^restarted /,""); print}' <<<"$out")
     pending=$(awk '$1=="pending"{sub(/^pending /,""); print}' <<<"$out")
     failed=$(awk '$1=="failed"{sub(/^failed /,""); print}' <<<"$out")
@@ -319,7 +348,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.2.0"
+    echo "hyprchroma 3.2.1"
     exit 0
     ;;
 esac
@@ -591,23 +620,6 @@ PY
   exit 0
 fi
 
-# The lock is created by the state helper, relative to a directory descriptor
-# it has verified, following no symlink -- and then opened here read-only.
-# "exec 9>" truncated whatever the path resolved to and followed a symlink
-# planted at it, on every unattended sync; flock(2) needs no write access at
-# all, so opening read-only means nothing on this path can be truncated or
-# written through even if the entry were swapped between the two steps.
-# Once it exists as this user's own regular file -- every run after the first --
-# it is used as it is. The directory is this user's alone (the runtime dir, or
-# the state dir), so nobody else can have placed or swapped it, and a planted
-# symlink or fifo fails the check and goes to the helper to be replaced.
-prepare_lock_file() {
-  if [[ -L $1 || ! -f $1 || ! -O $1 ]]; then
-    "$HYPRCHROMA_LIB/hyprchroma-state" prepare-lock --path "$1" ||
-      fail "cannot prepare the lock file $1"
-    [[ -f $1 ]] || fail "lock file $1 was not created"
-  fi
-}
 prepare_lock_file "$LOCK_FILE"
 exec 9<"$LOCK_FILE"
 # Waited for, not skipped. A run that found another holding the lock used to

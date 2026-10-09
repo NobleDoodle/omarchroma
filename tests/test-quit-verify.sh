@@ -83,8 +83,12 @@ st.has_quit_action = lambda name, path, pid=None: True
 # whether it tried. Faking a target that survives every signal -- a D-state
 # kernel task -- is not something a test can construct, so the survival
 # itself is stood in for directly.
-real_process_alive = st.process_alive
-st.process_alive = lambda pid: True if pid == holdout.pid else real_process_alive(pid)
+def pidfd_pid(fd):
+    for line in open(f"/proc/self/fdinfo/{fd}"):
+        if line.startswith("Pid:"):
+            return int(line.split()[1])
+real_signal = st.pidfd_signal
+st.pidfd_signal = lambda fd, sig: True if pidfd_pid(fd) == holdout.pid else real_signal(fd, sig)
 out = io.StringIO()
 with contextlib.redirect_stdout(out):
     st.refresh_idle_apps(since=10**9)
@@ -93,7 +97,7 @@ chk("a confirmed quit is reported as closed",
     "closed idle test.Stale" in text, True)
 chk("a target signals cannot reach is reported as not done",
     "test.Kept did not quit" in text and "closed idle test.Kept" not in text, True)
-st.process_alive = real_process_alive
+st.pidfd_signal = real_signal
 for p in (holdout, gone):
     if p.poll() is None:
         p.kill()

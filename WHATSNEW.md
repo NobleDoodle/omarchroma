@@ -1,4 +1,4 @@
-# What's new in 3.2.0
+# What's new in 3.2.1
 
 - Restart apps: press / to see which apps are still on the old theme, then
   Ctrl+Enter to review and Ctrl+Enter again to restart them. They come back

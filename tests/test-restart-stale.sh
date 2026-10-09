@@ -178,25 +178,31 @@ finally:
 
 # -- a process that ignores every signal is left, not duplicated ------------
 # SIGKILL cannot actually be ignored by any process, so a process a restart
-# truly cannot move is not something a test can spawn. os.kill is patched
-# instead, to a no-op for this one pid, standing in for one -- a D-state
+# truly cannot move is not something a test can spawn. pidfd_signal is patched
+# instead, to a no-op for this one process, standing in for one -- a D-state
 # kernel task, most plainly -- no signal reaches; the process stays alive on
 # its own merits, which is genuinely true of it throughout.
+def pidfd_pid(fd):
+    """The pid a pidfd holds, as the kernel reports it."""
+    for line in open(f"/proc/self/fdinfo/{fd}"):
+        if line.startswith("Pid:"):
+            return int(line.split()[1])
+
 stubborn = subprocess.Popen([sys.executable, "-c",
     "import signal, time\n"
     "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
     "time.sleep(100)\n"])
 time.sleep(0.2)
 try:
-    real_kill = st.os.kill
-    st.os.kill = lambda pid, sig: None if pid == stubborn.pid else real_kill(pid, sig)
+    real_signal = st.pidfd_signal
+    st.pidfd_signal = lambda fd, sig: True if pidfd_pid(fd) == stubborn.pid else real_signal(fd, sig)
     closed_addresses.clear()
     st.stale_window_groups = lambda since=None: [
         {"pid": stubborn.pid, "name": "Stubborn", "class": "test-app", "addresses": ["0x999"]}]
     restarted, pending, failed = st.restart_stale_apps(None)
     chk("a process nothing can close is reported pending, not restarted",
         (restarted, pending, failed), ([], ["Stubborn"], []))
-    st.os.kill = real_kill
+    st.pidfd_signal = real_signal
 finally:
     if stubborn.poll() is None:
         stubborn.kill(); stubborn.wait(timeout=2)
