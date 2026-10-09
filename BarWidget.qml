@@ -97,8 +97,7 @@ BarWidget {
     function toggleBrowsers(): void { root.toggleFramework("browsers") }
     function refresh(): void { root.refreshEnabled() }
     // Opens the same confirmation the guide's own "Restart All" button leads
-    // to. Bind this to the same key you give the panel's own "a" in your own
-    // bindings.lua, so the two stay in step. Opens the panel too: unlike a
+    // to, for a key of your own in bindings.lua. Opens the panel too: unlike a
     // toggle, this has something to show.
     function restartStaleApps(): void {
       var panel = panelLoader.item

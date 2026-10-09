@@ -762,15 +762,17 @@ rm -rf "$ROOT"
 # -- the panel and bar widget: the shared key, the always-present button ----
 cd -- "$REPO" || exit 1
 
-chk "\"a\" in the list only opens the confirmation; no single key restarts" \
-  "$(grep -c 'key === "a"' Panel.qml),$(grep -A1 'key === "a" && root.staleWindowCount > 0' Panel.qml | grep -c 'openRestartConfirm()'),$(grep -c 'root.runRestart()' Panel.qml)" "1,1,1"
+chk "Restart All is Ctrl+Enter: in the list it only opens the confirmation; no single key restarts" \
+  "$(grep -c 'key === "a"' Panel.qml),$(grep -c 'onActivated: root.confirmRestartOpen ? root.confirmRestart() : root.openRestartConfirm()' Panel.qml),$(grep -c 'enabled: (root.confirmRestartOpen || root.guideOpen) && root.staleWindowCount > 0' Panel.qml),$(grep -c 'root.runRestart()' Panel.qml)" "0,1,1,1"
+chk "...a double press or a held key cannot run both steps" \
+  "$(grep -c 'autoRepeat: false' Panel.qml),$(grep -c '!root.restartArmed' Panel.qml),$(grep -c 'if (root.confirmRestartOpen) restartArmTimer.restart()' Panel.qml)" "1,1,1"
 chk "the global hotkey opens the same popup the guide's button does, via IPC" \
   "$(grep -c 'function restartStaleApps(): void' BarWidget.qml)" "1"
 chk "...setting confirmRestartOpen and opening the panel" \
   "$(awk '/function restartStaleApps\(\)/,/^    }/' BarWidget.qml | grep -cE 'confirmRestartOpen = true|root.open\(\)')" "2"
 guide_block=$(awk '/id: guide$/,/^        }$/' Panel.qml)
 chk "Restart All in the list opens the confirmation rather than restarting" \
-  "$(grep -c -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block"),$(grep -A3 -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block" | grep -c 'onClicked: root.openRestartConfirm()')" "1,1"
+  "$(grep -c -F 'text: "Restart All\u2026  (Ctrl+Enter)"' <<<"$guide_block"),$(grep -A3 -F 'text: "Restart All\u2026  (Ctrl+Enter)"' <<<"$guide_block" | grep -c 'onClicked: root.openRestartConfirm()')" "1,1"
 chk "...and nowhere does it gate on restartMode -- it is offered in every mode" \
   "$(grep -c 'visible:.*restartMode' <<<"$guide_block")" "0"
 chk "two modes, Confirm and Off -- no Force -- one switch between them, written through the CLI flag" \

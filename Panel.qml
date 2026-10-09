@@ -314,6 +314,19 @@ Panel {
   // should be the only way in. Mutually exclusive with the guide: each is the
   // whole panel body while it is showing, the way the guide already is.
   property bool confirmRestartOpen: false
+  // Ctrl+Enter both opens the confirmation from the list and confirms it, so
+  // the confirmation ignores it until it has been on screen a moment: a
+  // double press must not skip the list of what will close.
+  property bool restartArmed: false
+  onConfirmRestartOpenChanged: {
+    root.restartArmed = false
+    if (root.confirmRestartOpen) restartArmTimer.restart()
+  }
+  Timer {
+    id: restartArmTimer
+    interval: 600
+    onTriggered: root.restartArmed = true
+  }
 
   // However many are open, the panel stays a readable size and says how many
   // it did not name.
@@ -451,13 +464,13 @@ Panel {
   // restart that takes a moment is not shown behind a popup still claiming to
   // be asking.
   function confirmRestart() {
-    if (!root.confirmRestartOpen || root.staleWindowCount === 0) return
+    if (!root.confirmRestartOpen || !root.restartArmed || root.staleWindowCount === 0) return
     root.confirmRestartOpen = false
     root.runRestart()
   }
 
   // Every way to a restart leads here first -- the guide's Restart All, its
-  // "a", the global hotkey and Confirm mode alike -- so nothing restarts
+  // Ctrl+Enter, the global hotkey and Confirm mode alike -- so nothing restarts
   // without the user having seen what will close and what it can cost.
   function openRestartConfirm() {
     root.refreshStaleApps()
@@ -506,16 +519,9 @@ Panel {
       root.settingsOpen = !root.settingsOpen
       return
     }
-    // While the guide is up, a digit means one of the removed frameworks listed
-    // there -- not one of the toggles, whose rows are not on screen.
-    if (root.guideOpen) {
-      // Opens the confirmation, never restarts on its own.
-      if (key === "a" && root.staleWindowCount > 0) {
-        root.openRestartConfirm()
-        return
-      }
-      return
-    }
+    // While the guide is up, its only key is Ctrl+Enter (the Shortcut), which
+    // opens the confirmation; letters and digits do nothing there.
+    if (root.guideOpen) return
     // Settings: c flips the restart mode, and a digit removes or adds back the
     // framework shown beside it.
     if (root.settingsOpen) {
@@ -681,15 +687,16 @@ Panel {
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) { root.handleKey(text) }
-      // The only key that confirms a restart: a combination, so it cannot be
+      // Restart All is always Ctrl+Enter: from the list it opens the
+      // confirmation, and there it confirms -- a combination, so it cannot be
       // pressed by accident. PanelKeyCatcher reports Enter the same with or
       // without Ctrl held, so this is a Shortcut, which Qt matches before key
-      // handling -- and only while the confirmation is up, with something to
-      // restart.
+      // handling. No auto-repeat, so holding it cannot run both steps.
       Shortcut {
         sequences: ["Ctrl+Return", "Ctrl+Enter"]
-        enabled: root.confirmRestartOpen && root.staleWindowCount > 0
-        onActivated: root.confirmRestart()
+        autoRepeat: false
+        enabled: (root.confirmRestartOpen || root.guideOpen) && root.staleWindowCount > 0
+        onActivated: root.confirmRestartOpen ? root.confirmRestart() : root.openRestartConfirm()
       }
 
       Column {
@@ -894,7 +901,7 @@ Panel {
           Button {
             visible: root.staleWindowCount > 0
             width: guide.width
-            text: "Restart All\u2026  (a)"
+            text: "Restart All\u2026  (Ctrl+Enter)"
             iconText: "\udb81\udf09"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.openRestartConfirm()

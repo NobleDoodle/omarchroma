@@ -70,7 +70,7 @@ With the bar widget:
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme |
-| `a` (in that list) | Review a restart of them: lists what will close, then Ctrl+Enter to go ahead |
+| `Ctrl+Enter` (in that list) | Restart All: lists what will close, then Ctrl+Enter again to go ahead |
 | `Ctrl+Enter` (in that review) | Close and relaunch them |
 | `s` | Settings |
 | `?` | Help: open the issues page to report a problem or ask a question |
