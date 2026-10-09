@@ -114,6 +114,15 @@ desktop is built from. The rest are optional, and this asks about them now so
 you are not left with a panel offering things you do not use.
 INTRO
 
+# What changed in this version, read from the checkout's own WHATSNEW.md -- the
+# same file the repository shows -- so it is written once per release and
+# cannot drift from what is being installed. Its "# " title becomes a heading;
+# a checkout without it just skips this.
+if [[ -f $here/WHATSNEW.md ]]; then
+  head2 "$(sed -n 's/^# //p' "$here/WHATSNEW.md" | head -1)"
+  sed '/^# /d' "$here/WHATSNEW.md"
+fi
+
 # --- the optional frameworks ----------------------------------------------
 head2 "Pear Desktop"
 cat <<'PEAR'
@@ -193,6 +202,30 @@ It changes files inside your browser profiles, which is why it is off unless
 you say so. Switching it off removes exactly what it added.
 BROWSERS
   if ask "Include additional browsers"; then want_browsers=yes; fi
+fi
+
+# --- restarting apps after a theme change ---------------------------------
+# Off unless said otherwise, like every other question here. On an update where
+# it is already on, the question is whether to turn it off -- so holding return
+# through this keeps what was chosen before rather than quietly switching it off.
+head2 "Restart apps at theme change"
+cat <<'RESTART'
+Most apps only pick up a new theme when they are restarted. Hyprchroma can
+bring up the list of apps still on the old theme by itself after you change
+it. Nothing closes until you have seen the list and pressed Ctrl+Enter, and
+Restart All in the panel works either way.
+
+Restarting closes apps: save your work first. An app may offer to save
+unsaved changes, but that is up to the app and cannot be guaranteed, and an
+app with several windows is closed without being asked.
+RESTART
+current_restart=$(jq -r '.restartMode // "off"' "${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma/settings.json" 2>/dev/null || echo off)
+want_restart=off
+if [[ $current_restart == confirm || $current_restart == force ]]; then
+  note "It is on now."
+  ask "Turn it off" || want_restart=confirm
+else
+  if ask "Turn it on"; then want_restart=confirm; fi
 fi
 
 # --- what those choices need ----------------------------------------------
@@ -343,6 +376,8 @@ if [[ $want_browsers == yes ]]; then
 else
   hyprchroma framework remove browsers
 fi
+hyprchroma --restart-mode="$want_restart" >/dev/null ||
+  note "Could not save the restart setting; it can be set in the panel: press s."
 
 # Restarted, not only started. "enable --now" starts the service only when it
 # is not already running -- on an update it was, so it went on executing the
@@ -374,6 +409,6 @@ your terminal: omarchy restart shell
 RESTARTINFO
 
 head2 "Done"
-say "Anything you left out can be put back from the panel: press / and then its number."
+say "Anything you left out can be put back from the panel: press s for Settings, then its number."
 say ""
 read -r -p "Press return to close this window. "

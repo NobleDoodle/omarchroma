@@ -20,8 +20,9 @@ bar widget for convenience.
 omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 ```
 
-Open the panel and press **i**. A setup terminal will prompt you to select
-optional frameworks, then verify the dependencies those need. Type
+Open the panel and press **i**. A setup terminal shows what is new in this
+version, prompts you to select optional frameworks and whether to restart apps
+at theme change, then verifies the dependencies those need. Type
 `I understand` to build.
 
 **Standalone (service only):**

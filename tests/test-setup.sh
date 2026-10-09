@@ -221,3 +221,39 @@ chk "removals are read from settings" "$(grep -c 'parsed.removed' Panel.qml)" "1
 chk "Settings lists the optional frameworks, and anything removed" "$(grep -c 'model: root.settingsFrameworks' Panel.qml),$(grep -c 'entry.optional === true || root.frameworkRemoved(entry.target)' Panel.qml)" "1,1"
 chk "with a number key and a switch to remove each one or add it back" "$(grep -c 'text: String(shown.index + 1)' Panel.qml),$(grep -c 'root.toggleRemoved(root.settingsFrameworks\[back\].target)' Panel.qml),$(grep -c 'onToggled: root.toggleRemoved(shown.modelData.target)' Panel.qml)" "1,1,1"
 chk "and both actions behind it, mirrored" "$(grep -c 'framework", "restore"' Panel.qml),$(grep -c 'framework", "remove"' Panel.qml)" "1,1"
+
+# --- what's new ------------------------------------------------------------
+# Read from the checkout's WHATSNEW.md so it cannot drift from what is being
+# installed; a stale title would announce the wrong release.
+chk "WHATSNEW.md is titled with this version" \
+  "$(sed -n 's/^# What.s new in //p' WHATSNEW.md | head -1)" "$(cat VERSION)"
+chk "the installer shows it before the first framework question" \
+  "$(awk '/WHATSNEW.md/{seen=1} /ask "Include Pear Desktop"/{print (seen?"before":"after"); exit}' $S)" "before"
+chk "its title is shown as a heading" \
+  "$(grep -c "What's new in $(cat VERSION)" <<<"$out")" "1"
+
+# --- restarting apps after a theme change ----------------------------------
+# Default No either way: off on a fresh install, and on an update where it is
+# already on, holding return keeps it on rather than quietly switching it off.
+restart_answer(){ # <recorded mode or ""> <y|n> -> the mode setup would apply
+  local h; h=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/setup-restart-XXXXXX")
+  mkdir -p "$h/hyprchroma"
+  [[ -n $1 ]] && printf '{"restartMode":"%s"}\n' "$1" >"$h/hyprchroma/settings.json"
+  ( XDG_STATE_HOME=$h
+    head2(){ :; }; note(){ :; }; ask(){ [[ $answer == y ]]; }
+    answer=$2
+    eval "$(sed -n '/^# --- restarting apps/,/^# --- what those choices need/p' $S)" >/dev/null
+    echo "$want_restart" )
+  rm -rf "$h"
+}
+chk "fresh install, default answer: off" "$(restart_answer '' n)" "off"
+chk "fresh install, turned on: confirm" "$(restart_answer '' y)" "confirm"
+chk "already on, default answer: stays on" "$(restart_answer confirm n)" "confirm"
+chk "already on, turned off: off" "$(restart_answer confirm y)" "off"
+chk "a legacy force setting counts as on" "$(restart_answer force n)" "confirm"
+chk "the question names the risk" \
+  "$(grep -c 'save your work first' $S)" "1"
+chk "the choice is applied after the build" \
+  "$(awk '/makepkg -si --needed/{seen=1} /hyprchroma --restart-mode="\$want_restart"/{print (seen?"after":"before")}' $S)" "after"
+chk "the closing hint points at Settings" \
+  "$(grep -c 'press s for Settings, then its number' $S)" "1"
