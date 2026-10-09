@@ -638,7 +638,7 @@ Panel {
 
         Text {
           text: root.confirmRestartOpen
-            ? "Save your work first"
+            ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
             : root.guideOpen
               ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                           : "Applications to close")
