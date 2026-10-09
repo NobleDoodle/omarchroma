@@ -233,26 +233,34 @@ chk "its title is shown as a heading" \
   "$(grep -c "What's new in $(cat VERSION)" <<<"$out")" "1"
 
 # --- restarting apps after a theme change ----------------------------------
-# Default No either way: off on a fresh install, and on an update where it is
-# already on, holding return keeps it on rather than quietly switching it off.
-restart_answer(){ # <recorded mode or ""> <y|n> -> the mode setup would apply
+# Yes always means on; return keeps whatever is recorded. It once asked "Turn
+# it off" when on, and a habitual yes switched it off on its own author.
+restart_answer(){ # <recorded mode or ""> <typed answer> -> the mode applied
   local h; h=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/setup-restart-XXXXXX")
   mkdir -p "$h/hyprchroma"
   [[ -n $1 ]] && printf '{"restartMode":"%s"}\n' "$1" >"$h/hyprchroma/settings.json"
   ( XDG_STATE_HOME=$h
-    head2(){ :; }; note(){ :; }; ask(){ [[ $answer == y ]]; }
-    answer=$2
-    eval "$(sed -n '/^# --- restarting apps/,/^# --- what those choices need/p' $S)" >/dev/null
+    head2(){ :; }; note(){ :; }
+    eval "$(sed -n '/^ask() {/,/^}/p' $S)"
+    eval "$(sed -n '/^# --- restarting apps/,/^# --- what those choices need/p' $S)" >/dev/null 2>&1 <<<"$2"
     echo "$want_restart" )
   rm -rf "$h"
 }
-chk "fresh install, default answer: off" "$(restart_answer '' n)" "off"
-chk "fresh install, turned on: confirm" "$(restart_answer '' y)" "confirm"
-chk "already on, default answer: stays on" "$(restart_answer confirm n)" "confirm"
-chk "already on, turned off: off" "$(restart_answer confirm y)" "off"
-chk "a legacy force setting counts as on" "$(restart_answer force n)" "confirm"
+chk "fresh install, return: off" "$(restart_answer '' '')" "off"
+chk "fresh install, y: on" "$(restart_answer '' y)" "confirm"
+chk "fresh install, Y: on" "$(restart_answer '' Y)" "confirm"
+chk "already on, return: stays on" "$(restart_answer confirm '')" "confirm"
+chk "already on, y: stays on" "$(restart_answer confirm y)" "confirm"
+chk "already on, n: off" "$(restart_answer confirm n)" "off"
+chk "a legacy force setting counts as on" "$(restart_answer force '')" "confirm"
+chk "yes always means on: no question asks to turn it off" \
+  "$(grep -v '^[[:space:]]*#' $S | grep -ci 'ask "turn it off')" "0"
+chk "only the restart question can default to yes" \
+  "$(grep -E 'ask "[^"]*" "' $S | grep -c .)" "1"
 chk "the question names the risk" \
   "$(grep -c 'save your work first' $S)" "1"
+chk "it leads with what yes does" \
+  "$(grep -A1 "^cat <<'RESTART'" $S | tail -1 | cut -c1-4)" "Yes:"
 chk "the choice is applied after the build" \
   "$(awk '/makepkg -si --needed/{seen=1} /hyprchroma --restart-mode="\$want_restart"/{print (seen?"after":"before")}' $S)" "after"
 chk "the closing hint points at Settings" \

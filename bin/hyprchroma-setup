@@ -46,11 +46,17 @@ head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
 note() { printf '%s%s%s\n' "$dim" "$*" "$reset"; }
 
 # Default no. Someone holding return through this should end up with less
-# installed, not more.
+# installed, not more. A second argument of "yes" makes return mean yes, for a
+# question about something already on: keeping it must not take a keypress.
 ask() {
-  local prompt=$1 answer
-  read -r -p "$prompt [y/N]: " answer
-  [[ ${answer,,} == y || ${answer,,} == yes ]]
+  local prompt=$1 default=${2:-no} answer
+  if [[ $default == yes ]]; then
+    read -r -p "$prompt [Y/n]: " answer
+    [[ ${answer,,} != n && ${answer,,} != no ]]
+  else
+    read -r -p "$prompt [y/N]: " answer
+    [[ ${answer,,} == y || ${answer,,} == yes ]]
+  fi
 }
 
 # sudo's own credential cache (five minutes by default) is what every later
@@ -205,27 +211,27 @@ BROWSERS
 fi
 
 # --- restarting apps after a theme change ---------------------------------
-# Off unless said otherwise, like every other question here. On an update where
-# it is already on, the question is whether to turn it off -- so holding return
-# through this keeps what was chosen before rather than quietly switching it off.
+# Yes always means on. It used to ask "Turn it off" when it was already on,
+# and a yes typed out of habit switched it off. Instead the default follows
+# what is recorded, so holding return keeps the current choice either way.
 head2 "Restart apps at theme change"
 cat <<'RESTART'
-Most apps only pick up a new theme when they are restarted. Hyprchroma can
-bring up the list of apps still on the old theme by itself after you change
-it. Nothing closes until you have seen the list and pressed Ctrl+Enter, and
-Restart All in the panel works either way.
+Yes: after each theme change, the panel opens with the apps still on the old
+theme, ready to restart. Nothing closes until you press Ctrl+Enter.
+No: restart them yourself when you want, from the panel (/ then a).
 
-Restarting closes apps: save your work first. An app may offer to save
-unsaved changes, but that is up to the app and cannot be guaranteed, and an
-app with several windows is closed without being asked.
+Restarting closes apps, so save your work first. An app may not offer to
+save, and an app with several windows closes without asking.
 RESTART
 current_restart=$(jq -r '.restartMode // "off"' "${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma/settings.json" 2>/dev/null || echo off)
-want_restart=off
+restart_default=no
 if [[ $current_restart == confirm || $current_restart == force ]]; then
+  restart_default=yes
   note "It is on now."
-  ask "Turn it off" || want_restart=confirm
-else
-  if ask "Turn it on"; then want_restart=confirm; fi
+fi
+want_restart=off
+if ask "Show the restart list after each theme change" "$restart_default"; then
+  want_restart=confirm
 fi
 
 # --- what those choices need ----------------------------------------------
