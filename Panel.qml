@@ -697,20 +697,53 @@ Panel {
         width: parent.width
         spacing: Style.space(4)
 
-        Text {
-          text: root.confirmRestartOpen
-            ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
-            : root.settingsOpen
-              ? "Settings"
-              : root.guideOpen
-              ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
-                                          : "Nothing to close")
+        // The title, with Settings and Help as icons at its right on the main
+        // view: out of the list of controls, where they are always to hand.
+        Item {
+          width: content.width
+          height: Math.max(heading.implicitHeight, headerIcons.visible ? headerIcons.implicitHeight : 0)
 
-              : "Omarchroma"
-          color: root.bar ? root.bar.foreground : Color.popups.text
-          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-          font.pixelSize: Style.font.body
-          font.bold: true
+          Text {
+            id: heading
+            text: root.confirmRestartOpen
+              ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
+              : root.settingsOpen
+                ? "Settings"
+                : root.guideOpen
+                  ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
+                                              : "Nothing to close")
+                  : "Omarchroma"
+            color: root.bar ? root.bar.foreground : Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.body
+            font.bold: true
+            anchors.left: parent.left
+            anchors.right: headerIcons.visible ? headerIcons.left : parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
+          }
+
+          Row {
+            id: headerIcons
+            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(2)
+
+            Button {
+              iconText: "\udb81\udc93"
+              tooltipText: "Settings  (s)"
+              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              onClicked: root.settingsOpen = true
+            }
+
+            Button {
+              iconText: "\udb81\ude25"
+              tooltipText: "Help: report an issue or ask a question  (?)"
+              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              onClicked: root.openHelp()
+            }
+          }
         }
 
         // The same confirmation the global hotkey opens -- bound to a key of
@@ -1151,44 +1184,19 @@ Panel {
           onClicked: root.refresh("all")
         }
 
-        // The list on "/", with Settings and Help beside it as icons alone --
-        // one row, not three. Reachable by mouse as well as by key; each icon
-        // names itself and its key in its tooltip.
-        Row {
-          id: bottomRow
+        // Reachable by mouse as well as by "/", and carries the count so the
+        // number of windows waiting is visible without opening it.
+        Button {
           visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           width: content.width
-          spacing: Style.space(4)
-          readonly property real iconWidth: Style.spacing.controlHeight
-
-          Button {
-            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
-            width: bottomRow.width - 2 * (bottomRow.iconWidth + bottomRow.spacing)
-            text: root.staleWindowCount > 0
-              ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
-              : "Nothing to close  (/)"
-            iconText: "󰖯"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: {
-              root.refreshStaleApps()
-              root.guideOpen = true
-            }
-          }
-
-          Button {
-            width: bottomRow.iconWidth
-            iconText: "\udb81\udc93"
-            tooltipText: "Settings  (s)"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: root.settingsOpen = true
-          }
-
-          Button {
-            width: bottomRow.iconWidth
-            iconText: "\udb81\ude25"
-            tooltipText: "Help: report an issue or ask a question  (?)"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: root.openHelp()
+          text: root.staleWindowCount > 0
+            ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
+            : "Nothing to close  (/)"
+          iconText: "󰖯"
+          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          onClicked: {
+            root.refreshStaleApps()
+            root.guideOpen = true
           }
         }
       }
