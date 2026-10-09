@@ -30,7 +30,9 @@ for suite in tests/test-*.sh; do
   # the crash silently never ran. Two did exactly that when the Dark Reader
   # helper went from one browser to all of them -- each still printed a PASS or
   # two first, so the rule below could not see it.
-  if grep -q 'Traceback (most recent call last)' <<<"$output"; then
+  # A Python section that does not even parse prints no traceback at all --
+  # just SyntaxError -- and every check in it vanished unnoticed (3.1.12).
+  if grep -qE 'Traceback \(most recent call last\)|^(SyntaxError|IndentationError|TabError): ' <<<"$output"; then
     failed=$((failed + 1))
     printf '%-26s crashed partway\n' "$(basename "$suite")"
     grep -E '^[A-Za-z]+(Error|Exception)' <<<"$output" | head -2 | sed 's/^/    /'

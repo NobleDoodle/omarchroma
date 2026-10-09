@@ -69,8 +69,8 @@ With the bar widget:
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, and Settings |
-| `c` / `o` (in Settings) | Restart mode: Confirm / Off |
-| `1` – `4` (in Settings) | Remove an optional framework, or add it back |
+| `c` (in Settings) | Ask to restart after a theme change: on / off |
+| `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
 | `?` (in Settings) | Help: open the issues page to report a problem or ask a question |
 | `a` (in that list) | Review a restart of them: lists what will close, then Ctrl+Enter to go ahead |
 | `Ctrl+Enter` (in that review) | Close and relaunch them |
@@ -85,8 +85,8 @@ With the bar widget:
   in that color until it is run.
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely and reverts it. Settings (`/`)
-  lists the optional frameworks, and anything removed, each with a number that
-  removes it or adds it back.
+  lists the optional frameworks, and anything removed, each with a switch and a
+  number key that removes it or adds it back.
 * GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and
   Additional browsers are optional. Install the Dark Reader browser extension
   manually for it to theme on the next sync.

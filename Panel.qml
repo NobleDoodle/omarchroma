@@ -211,6 +211,10 @@ Panel {
     restoreProcess.running = true
   }
 
+  function toggleRestartMode() {
+    root.setRestartMode(root.restartMode === "confirm" ? "off" : "confirm")
+  }
+
   function frameworkRemoved(target) {
     return root.removedTargets.indexOf(root.targetKey(target)) !== -1
   }
@@ -498,10 +502,9 @@ Panel {
         root.openRestartConfirm()
         return
       }
-      // Settings: c and o pick the restart mode, ? opens help, and a digit
-      // removes or adds back the framework shown beside it.
-      if (key === "c") { root.setRestartMode("confirm"); return }
-      if (key === "o") { root.setRestartMode("off"); return }
+      // Settings: c flips the restart mode, ? opens help, and a digit removes
+      // or adds back the framework shown beside it.
+      if (key === "c") { root.toggleRestartMode(); return }
       if (key === "?") { root.openHelp(); return }
       var back = parseInt(key, 10) - 1
       if (back >= 0 && back < root.settingsFrameworks.length) {
@@ -680,7 +683,7 @@ Panel {
             ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
             : root.guideOpen
               ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
-                                          : "Applications to close")
+                                          : "Settings")
 
               : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
@@ -843,72 +846,133 @@ Panel {
             onClicked: root.openRestartConfirm()
           }
 
+          // Settings, drawn like the framework rows in the panel itself --
+          // icon, label, the key that flips it, a switch -- so it reads as the
+          // same kind of thing rather than a page of buttons and prose.
+          PanelSeparator {
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+          }
+
           Text {
-            width: guide.width
-            text: "After a theme change leaves apps to restart:"
+            text: "Restart"
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
-            topPadding: Style.space(6)
           }
 
-          Row {
+          Item {
             width: guide.width
-            spacing: Style.space(6)
+            height: Math.max(Style.spacing.controlHeight, askLabel.implicitHeight)
 
-            Repeater {
-              model: [
-                { mode: "confirm", label: "Confirm  (c)" },
-                { mode: "off", label: "Off  (o)" }
-              ]
-              delegate: Button {
-                id: modeButton
-                required property var modelData
-                width: (guide.width - Style.space(6)) / 2
-                text: modelData.label
-                selected: root.restartMode === modelData.mode
-                bordered: true
-                foreground: root.bar ? root.bar.foreground : Color.popups.text
-                onClicked: root.setRestartMode(modelData.mode)
-              }
+            Text {
+              id: askIcon
+              text: "\udb81\udf09"
+              color: root.bar ? root.bar.foreground : Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              id: askLabel
+              text: "Ask after a theme change"
+              color: root.bar ? root.bar.foreground : Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              anchors.left: askIcon.right
+              anchors.leftMargin: Style.space(10)
+              anchors.right: askKey.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              elide: Text.ElideRight
+            }
+
+            Text {
+              id: askKey
+              text: "c"
+              color: Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              anchors.right: askSwitch.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            ToggleSwitch {
+              id: askSwitch
+              checked: root.restartMode === "confirm"
+              busy: modeProcess.running
+              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              onToggled: root.toggleRestartMode()
             }
           }
 
           Text {
-            width: guide.width
-            text: root.restartMode === "confirm"
-              ? "Opens the confirmation on its own, listing what it would close. Nothing restarts until you press Ctrl+Enter."
-              : "Nothing on its own. Restart All above still asks first."
+            text: "Show in panel"
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+            topPadding: Style.space(4)
           }
 
-          Text {
-            width: guide.width
-            text: "Optional frameworks \u2014 press the number to remove or add back:"
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            topPadding: Style.space(6)
-            wrapMode: Text.WordWrap
-          }
-
+          // Off removes the framework from the panel (reverting it), on puts it
+          // back: the same switch and the same key both ways.
           Repeater {
             model: root.settingsFrameworks
-            delegate: Button {
+            delegate: Item {
+              id: shown
               required property var modelData
               required property int index
               width: guide.width
-              leftAlign: true
-              iconText: modelData.icon
-              text: modelData.label + "  \u2014  "
-                + (root.frameworkRemoved(modelData.target) ? "Add back" : "Remove")
-                + "  (" + (index + 1) + ")"
-              foreground: root.frameworkRemoved(modelData.target)
-                ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
-              onClicked: root.toggleRemoved(modelData.target)
+              height: Math.max(Style.spacing.controlHeight, shownLabel.implicitHeight)
+
+              Text {
+                id: shownIcon
+                text: shown.modelData.icon
+                color: root.frameworkRemoved(shown.modelData.target) ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: shownLabel
+                text: shown.modelData.label
+                color: root.frameworkRemoved(shown.modelData.target) ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: shownIcon.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: shownKey.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: shownKey
+                text: String(shown.index + 1)
+                color: Color.muted
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.right: shownSwitch.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              ToggleSwitch {
+                id: shownSwitch
+                checked: !root.frameworkRemoved(shown.modelData.target)
+                busy: restoreProcess.running
+                foreground: root.bar ? root.bar.foreground : Color.popups.text
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                onToggled: root.toggleRemoved(shown.modelData.target)
+              }
             }
           }
 
@@ -916,21 +980,26 @@ Panel {
             foreground: root.bar ? root.bar.foreground : Color.popups.text
           }
 
-          Button {
+          Row {
             width: guide.width
-            text: "Help & report an issue  (?)"
-            iconText: "\udb81\ude25"
-            tooltipText: root.issuesUrl
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: root.openHelp()
-          }
+            spacing: Style.space(6)
 
-          Button {
-            width: guide.width
-            text: "Back  (/)"
-            iconText: "\udb80\udf0d"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: root.guideOpen = false
+            Button {
+              width: (guide.width - Style.space(6)) / 2
+              text: "Help  (?)"
+              iconText: "\udb81\ude25"
+              tooltipText: "Report an issue or ask a question: " + root.issuesUrl
+              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              onClicked: root.openHelp()
+            }
+
+            Button {
+              width: (guide.width - Style.space(6)) / 2
+              text: "Back  (/)"
+              iconText: "\udb80\udf0d"
+              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              onClicked: root.guideOpen = false
+            }
           }
         }
 

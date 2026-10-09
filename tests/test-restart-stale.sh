@@ -622,6 +622,17 @@ chk("...and every window, old or new, goes back to its own workspace",
     sorted(d.split('workspace = "')[1].split('"')[0] for d in dispatched), ["2", "5"])
 st.open_window_records, st.new_window_command = real_records, real_command
 
+# -- an application is named as its own desktop entry names it ------------
+# Found live: the list read "Vivaldi-stable" and "Vscode", window class names.
+real_entries, real_names = st._DESKTOP_ENTRIES, dict(st._DESKTOP_NAMES)
+st._DESKTOP_ENTRIES = {"vivaldi-stable": "vivaldi-stable.desktop", "evil": "evil.desktop"}
+st._DESKTOP_NAMES.update({"vivaldi-stable.desktop": "Vivaldi", "evil.desktop": "<b>Evil</b> & Co"})
+chk("an application is named by its desktop entry, cleaned; otherwise by its window",
+    [st.app_display_name("t", "vivaldi-stable"), st.app_display_name("t", "evil"),
+     st.app_display_name("t", "org.example.notes")],
+    ["Vivaldi", "bEvilb  Co", "Notes"])
+st._DESKTOP_ENTRIES = real_entries; st._DESKTOP_NAMES.clear(); st._DESKTOP_NAMES.update(real_names)
+
 # -- relaunch_environment: the session's, when the app's own reads empty ---
 # Found live: Chromium and Electron reuse /proc/<pid>/environ for their
 # process title, so Vivaldi and YouTube Music read back with no environment
@@ -762,8 +773,8 @@ chk "Restart All in the list opens the confirmation rather than restarting" \
   "$(grep -c -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block"),$(grep -A3 -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block" | grep -c 'onClicked: root.openRestartConfirm()')" "1,1"
 chk "...and nowhere does it gate on restartMode -- it is offered in every mode" \
   "$(grep -c 'visible:.*restartMode' <<<"$guide_block")" "0"
-chk "two modes, Confirm and Off -- no Force -- written through the CLI flag" \
-  "$(grep -c 'mode: "force"' Panel.qml),$(grep -c 'mode: "confirm", label: "Confirm  (c)"' Panel.qml),$(grep -c 'mode: "off", label: "Off  (o)"' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "0,1,1,1"
+chk "two modes, Confirm and Off -- no Force -- one switch between them, written through the CLI flag" \
+  "$(grep -c 'readonly property var restartModes: \["confirm", "off"\]' Panel.qml),$(grep -c 'checked: root.restartMode === "confirm"' Panel.qml),$(grep -c 'root.setRestartMode(root.restartMode === "confirm" ? "off" : "confirm")' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "1,1,1,1"
 chk "only Ctrl+Enter confirms -- not Enter, Space or a letter" \
   "$(grep -c 'sequences: \["Ctrl+Return", "Ctrl+Enter"\]' Panel.qml),$(grep -c 'onReturnRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'onActivateRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'text: "Restart  (Ctrl+Enter)"' Panel.qml)" "1,0,0,1"
 confirm_block=$(awk '/id: confirmRestart$/,/^        }$/' Panel.qml)
@@ -771,10 +782,10 @@ chk "the confirmation says to save first, and lists every window it will close" 
   "$(grep -c '"Save your work first"' Panel.qml),$(grep -c 'model: root.confirmRestartOpen ? root.staleApps : \[\]' <<<"$confirm_block")" "1,1"
 chk "...and states the risks briefly, at body size: lost work, prompts up to each app, no prompt for several windows" \
   "$(grep -cE 'Unsaved work may be lost|Save prompts are up to each app|Multi-window apps close without asking' <<<"$confirm_block"),$(grep -A6 'Multi-window apps close without asking' <<<"$confirm_block" | grep -c 'font.pixelSize: Style.font.body')" "3,1"
-chk "Settings: c and o pick the restart mode, ? opens help" \
-  "$(grep -c 'key === "c") { root.setRestartMode("confirm")' Panel.qml),$(grep -c 'key === "o") { root.setRestartMode("off")' Panel.qml),$(grep -c 'key === "?") { root.openHelp()' Panel.qml)" "1,1,1"
+chk "Settings: c flips the restart mode, ? opens help" \
+  "$(grep -c 'key === "c") { root.toggleRestartMode()' Panel.qml),$(grep -c 'key === "?") { root.openHelp()' Panel.qml)" "1,1"
 chk "...and Help opens the repo's issues page" \
-  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'Qt.openUrlExternally(root.issuesUrl)' Panel.qml),$(grep -c 'text: "Help & report an issue  (?)"' Panel.qml)" "1,1,1"
+  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'Qt.openUrlExternally(root.issuesUrl)' Panel.qml),$(grep -c 'text: "Help  (?)"' Panel.qml)" "1,1,1"
 chk "the list's button names both things: View N windows to close, Open Settings" \
   "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"' Panel.qml),$(grep -cF ': "Open Settings  (/)"' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \

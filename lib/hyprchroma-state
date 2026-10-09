@@ -2152,8 +2152,7 @@ def stale_open_windows(since=None):
             continue
         if klass in UNTHEMED_CLASSES:
             continue
-        name = window_display_name(title, klass)
-        name = name[:1].upper() + name[1:]
+        name = app_display_name(title, klass)
         counts[name] = counts.get(name, 0) + 1
     return counts
 
@@ -2313,8 +2312,7 @@ def stale_window_groups(since=None):
         started = process_started_at(pid)
         if started is None or started >= since:
             continue
-        name = window_display_name(windows[0]["title"], windows[0]["class"])
-        name = name[:1].upper() + name[1:]
+        name = app_display_name(windows[0]["title"], windows[0]["class"])
         groups.append({"pid": pid, "name": name, "class": windows[0]["class"],
                        "addresses": [w["address"] for w in windows],
                        "windows": [{"address": w["address"], "class": w["class"],
@@ -2462,6 +2460,8 @@ def desktop_entries():
                     klass = line[len("StartupWMClass="):].strip().lower()
                 elif line.startswith("Actions="):
                     actions = {a for a in line[len("Actions="):].strip().split(";") if a}
+                elif line.startswith("Name=") and filename not in _DESKTOP_NAMES:
+                    _DESKTOP_NAMES[filename] = line[len("Name="):].strip()
             # The full file name, suffix and all: that suffix is how uwsm
             # tells a desktop entry id from a command name (main.py, "elif
             # arg.endswith('.desktop')"). Without it, it looks for a binary
@@ -2477,6 +2477,20 @@ def desktop_entries():
 
 
 _DESKTOP_ACTIONS = {}
+_DESKTOP_NAMES = {}
+
+
+def app_display_name(title, klass):
+    """What to call a window's application: its own name, from its desktop
+    entry ("Vivaldi", "Visual Studio Code"), where one names this class, and
+    otherwise what the window itself says (window_display_name). Cleaned
+    either way: a desktop entry in ~/.local/share is this account's to write."""
+    entry = desktop_entries().get(klass)
+    name = _DESKTOP_NAMES.get(entry) if entry else None
+    if name:
+        return display_name(name)
+    name = window_display_name(title, klass)
+    return name[:1].upper() + name[1:]
 
 
 def new_window_command(klass):

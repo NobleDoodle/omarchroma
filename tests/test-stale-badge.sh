@@ -20,6 +20,10 @@ helper = REPO + "/lib/hyprchroma-state"
 st = types.ModuleType("st")
 st.__dict__["__file__"] = helper
 exec(compile(open(helper).read(), "st", "exec"), st.__dict__)
+# No installed desktop entries: names come from the windows themselves, the
+# same on every machine whatever it has installed (app_display_name prefers an
+# entry's Name when there is one -- covered in test-restart-stale.sh).
+st._DESKTOP_ENTRIES = {}
 
 def chk(name, got, want):
     print(f"  {'PASS' if got == want else 'FAIL'} {name}"
@@ -145,6 +149,7 @@ helper = REPO + "/lib/hyprchroma-state"
 st = types.ModuleType("st")
 st.__dict__["__file__"] = helper
 exec(compile(open(helper).read(), "st", "exec"), st.__dict__)
+st._DESKTOP_ENTRIES = {}
 
 def chk(name, got, want):
     print(f"  {'PASS' if got == want else 'FAIL'} {name}"

@@ -219,5 +219,5 @@ chk "the panel renders only what was not removed" \
   "$(grep -c 'model: root.visibleFrameworks' Panel.qml)" "1"
 chk "removals are read from settings" "$(grep -c 'parsed.removed' Panel.qml)" "1"
 chk "Settings lists the optional frameworks, and anything removed" "$(grep -c 'model: root.settingsFrameworks' Panel.qml),$(grep -c 'entry.optional === true || root.frameworkRemoved(entry.target)' Panel.qml)" "1,1"
-chk "with a number key to remove each one or add it back" "$(grep -c 'press the number to remove or add back' Panel.qml),$(grep -c 'root.toggleRemoved(root.settingsFrameworks\[back\].target)' Panel.qml)" "1,1"
+chk "with a number key and a switch to remove each one or add it back" "$(grep -c 'text: String(shown.index + 1)' Panel.qml),$(grep -c 'root.toggleRemoved(root.settingsFrameworks\[back\].target)' Panel.qml),$(grep -c 'onToggled: root.toggleRemoved(shown.modelData.target)' Panel.qml)" "1,1,1"
 chk "and both actions behind it, mirrored" "$(grep -c 'framework", "restore"' Panel.qml),$(grep -c 'framework", "remove"' Panel.qml)" "1,1"
