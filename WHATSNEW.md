@@ -7,6 +7,7 @@
   change. Nothing closes until you press Ctrl+Enter.
 - Settings (s): turn the auto-prompt on or off, and choose which frameworks
   the panel shows.
-- Help (?): report a problem or ask a question.
+- About (?): versions and license, a link to report a problem or ask a
+  question, and one to buy me a coffee.
 - Readable KDE icons: Okular and other KDE apps now show clear icons on dark
   themes.

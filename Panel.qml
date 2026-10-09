@@ -51,6 +51,9 @@ Panel {
   // lag behind the checkout and this is what notices.
   property string expectedVersion: ""
   property string installedVersion: ""
+  // For About, from the same manifest, so it cannot disagree with it.
+  property string pluginLicense: ""
+  property string pluginAuthor: ""
   readonly property bool outdated: dependencyPresent && installedVersion !== ""
     && expectedVersion !== "" && root.olderThan(installedVersion, expectedVersion)
 
@@ -64,7 +67,10 @@ Panel {
     onFileChanged: reload()
     onLoaded: {
       try {
-        root.expectedVersion = String(JSON.parse(text()).version || "")
+        var manifest = JSON.parse(text())
+        root.expectedVersion = String(manifest.version || "")
+        root.pluginLicense = String(manifest.license || "")
+        root.pluginAuthor = String(manifest.author || "")
       } catch (error) {
         root.expectedVersion = ""
       }
@@ -227,11 +233,22 @@ Panel {
   }
 
   readonly property string issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"
+  readonly property string coffeeUrl: "https://buymeacoffee.com/nobledoodle"
 
-  function openHelp() {
-    Qt.openUrlExternally(root.issuesUrl)
+  // About, on "?" and the help icon: what is installed, under what license,
+  // and the two links -- an issue or question, and a coffee.
+  property bool aboutOpen: false
+
+  function openAbout() {
     root.guideOpen = false
     root.settingsOpen = false
+    root.aboutOpen = true
+  }
+
+  // Opens a link in the browser and gets the panel out of its way.
+  function openLink(url) {
+    Qt.openUrlExternally(url)
+    root.aboutOpen = false
     root.close()
   }
 
@@ -457,6 +474,7 @@ Panel {
     // on without the panel, and reports through its notification.
     root.guideOpen = false
     root.settingsOpen = false
+    root.aboutOpen = false
     root.close()
   }
 
@@ -476,6 +494,7 @@ Panel {
     root.refreshStaleApps()
     root.guideOpen = false
     root.settingsOpen = false
+    root.aboutOpen = false
     root.confirmRestartOpen = true
   }
 
@@ -510,12 +529,14 @@ Panel {
     // reason the framework rows are numbered.
     if (key === "/") {
       root.settingsOpen = false
+      root.aboutOpen = false
       root.guideOpen = !root.guideOpen
       if (root.guideOpen) root.refreshStaleApps()
       return
     }
     if (key === "s") {
       root.guideOpen = false
+      root.aboutOpen = false
       root.settingsOpen = !root.settingsOpen
       return
     }
@@ -532,8 +553,15 @@ Panel {
       }
       return
     }
+    // About: i for an issue or question, b for a coffee, ? back.
+    if (root.aboutOpen) {
+      if (key === "i") root.openLink(root.issuesUrl)
+      else if (key === "b") root.openLink(root.coffeeUrl)
+      else if (key === "?") root.aboutOpen = false
+      return
+    }
     if (key === "?") {
-      root.openHelp()
+      root.openAbout()
       return
     }
     if (key === "r") {
@@ -683,6 +711,7 @@ Panel {
         if (root.confirmRestartOpen) root.confirmRestartOpen = false
         else if (root.guideOpen) root.guideOpen = false
         else if (root.settingsOpen) root.settingsOpen = false
+        else if (root.aboutOpen) root.aboutOpen = false
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -716,6 +745,8 @@ Panel {
               ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
               : root.settingsOpen
                 ? "Settings"
+                : root.aboutOpen
+                ? "About"
                 : root.guideOpen
                   ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                               : "Nothing to close")
@@ -732,7 +763,7 @@ Panel {
 
           Row {
             id: headerIcons
-            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+            visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
@@ -746,9 +777,9 @@ Panel {
 
             Button {
               iconText: "\udb81\ude25"
-              tooltipText: "Help: report an issue or ask a question  (?)"
+              tooltipText: "About and help  (?)"
               foreground: root.bar ? root.bar.foreground : Color.popups.text
-              onClicked: root.openHelp()
+              onClicked: root.openAbout()
             }
           }
         }
@@ -1059,8 +1090,86 @@ Panel {
           }
         }
 
+        // About: versions, license and source as plain read-outs, then the two
+        // links as buttons, each with its key.
+        Column {
+          id: about
+          visible: root.aboutOpen && !root.confirmRestartOpen
+          width: content.width
+          spacing: Style.space(4)
+
+          Repeater {
+            model: [
+              { label: "Plugin", value: root.expectedVersion ? root.expectedVersion : "unknown" },
+              { label: "Service", value: root.installedVersion ? "hyprchroma " + root.installedVersion : "not installed" },
+              { label: "License", value: (root.pluginLicense !== "" ? root.pluginLicense : "MIT")
+                  + (root.pluginAuthor !== "" ? " \u00b7 \u00a9 " + root.pluginAuthor : "") },
+              { label: "Source", value: "github.com/NobleDoodle/omarchroma" }
+            ]
+            delegate: Item {
+              id: fact
+              required property var modelData
+              width: about.width
+              height: Math.max(factLabel.implicitHeight, factValue.implicitHeight)
+
+              Text {
+                id: factLabel
+                text: fact.modelData.label
+                color: Color.muted
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: factValue
+                text: fact.modelData.value
+                textFormat: Text.PlainText
+                color: root.bar ? root.bar.foreground : Color.popups.text
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                horizontalAlignment: Text.AlignRight
+                anchors.left: factLabel.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideLeft
+              }
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+          }
+
+          Button {
+            width: about.width
+            text: "Report an issue or ask  (i)"
+            iconText: "\udb80\udea4"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.openLink(root.issuesUrl)
+          }
+
+          Button {
+            width: about.width
+            text: "Buy me a coffee  (b)"
+            iconText: "\udb80\udd76"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.openLink(root.coffeeUrl)
+          }
+
+          Button {
+            width: about.width
+            text: "Back  (?)"
+            iconText: "\udb80\udf0d"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.aboutOpen = false
+          }
+        }
+
         Text {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
@@ -1082,7 +1191,7 @@ Panel {
         // is real only once the service is; each is gated on root.ready for
         // the same reason this replaces the old descriptive sentence.
         Button {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.dependencyChecked && !root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.dependencyChecked && !root.ready
           width: content.width
           enabled: !root.installing
           text: root.installing
@@ -1116,7 +1225,7 @@ Panel {
 
           delegate: Item {
             id: row
-            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+            visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
             required property var modelData
             required property int index
             width: content.width
@@ -1176,13 +1285,13 @@ Panel {
         // enabled" and "Nothing to close" over an otherwise empty panel --
         // controls for a thing that does not exist yet.
         PanelSeparator {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
           foreground: root.bar ? root.bar.foreground : Color.popups.text
         }
 
 
         Button {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
@@ -1194,7 +1303,7 @@ Panel {
         // Reachable by mouse as well as by "/", and carries the count so the
         // number of windows waiting is visible without opening it.
         Button {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: root.staleWindowCount > 0
             ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"

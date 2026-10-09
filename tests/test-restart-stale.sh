@@ -792,10 +792,17 @@ chk "...and states the risks briefly, at body size: lost work, prompts up to eac
   "$(grep -cE 'Unsaved work may be lost|Save prompts are up to each app|Multi-window apps close without asking' <<<"$confirm_block"),$(grep -A6 'Multi-window apps close without asking' <<<"$confirm_block" | grep -c 'font.pixelSize: Style.font.body')" "3,1"
 chk "Settings has its own view and key (s), apart from the list on /" \
   "$(grep -c 'id: settings$' Panel.qml),$(grep -c 'if (key === "s") {' Panel.qml),$(grep -c 'text: "Back  (s)"' Panel.qml),$(grep -c 'tooltipText: "Settings  (s)"' Panel.qml)" "1,1,1,1"
-chk "...where c flips the restart mode; Help (?) is on the main panel" \
-  "$(awk '/if \(root.settingsOpen\) \{/,/^    \}/' Panel.qml | grep -c 'key === "c") { root.toggleRestartMode()'),$(grep -A2 'if (key === "?") {' Panel.qml | grep -c 'root.openHelp()')" "1,1"
-chk "...and Help opens the repo's issues page" \
-  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'Qt.openUrlExternally(root.issuesUrl)' Panel.qml),$(grep -c 'tooltipText: "Help: report an issue or ask a question  (?)"' Panel.qml)" "1,1,1"
+chk "...where c flips the restart mode; About (?) is on the main panel" \
+  "$(awk '/if \(root.settingsOpen\) \{/,/^    \}/' Panel.qml | grep -c 'key === "c") { root.toggleRestartMode()'),$(grep -A2 'if (key === "?") {' Panel.qml | grep -c 'root.openAbout()')" "1,1"
+chk "...and About shows versions and license, from the manifest" \
+  "$(grep -c 'id: about$' Panel.qml),$(grep -c 'root.pluginLicense = String(manifest.license' Panel.qml),$(grep -c 'label: "Plugin", value: root.expectedVersion' Panel.qml),$(grep -c 'label: "Service", value: root.installedVersion' Panel.qml)" "1,1,1,1"
+about_block=$(awk '/id: about$/,/^        }$/' Panel.qml)
+chk "...as plain text, with i for issues, b for a coffee and ? back" \
+  "$(grep -c 'textFormat: Text.PlainText' <<<"$about_block"),$(grep -c 'if (key === "i") root.openLink(root.issuesUrl)' Panel.qml),$(grep -c 'else if (key === "b") root.openLink(root.coffeeUrl)' Panel.qml),$(grep -c 'else if (key === "?") root.aboutOpen = false' Panel.qml)" "1,1,1,1"
+chk "...linking the repo's issues page and Buy Me a Coffee, and nothing else" \
+  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'coffeeUrl: "https://buymeacoffee.com/nobledoodle"' Panel.qml),$(grep -c 'Qt.openUrlExternally(' Panel.qml),$(grep -c 'Qt.openUrlExternally(url)' Panel.qml)" "1,1,1,1"
+chk "...Esc backs out of About before closing the panel" \
+  "$(grep -c 'else if (root.aboutOpen) root.aboutOpen = false' Panel.qml)" "1"
 chk "the main panel's list button: View N windows to close (/), or Nothing to close (/)" \
   "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"' Panel.qml),$(grep -cF ': "Nothing to close  (/)"' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \

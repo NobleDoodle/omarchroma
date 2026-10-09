@@ -22,7 +22,7 @@ chk "PKGBUILD pkgver matches VERSION" \
 chk "the service reports that version" \
   "$(./bin/hyprchroma --version | awk '{print $2}')" "$version"
 chk "the panel reads the manifest rather than hardcoding a number" \
-  "$(grep -c 'JSON.parse(text()).version' Panel.qml)" "1"
+  "$(grep -A1 'var manifest = JSON.parse(text())' Panel.qml | grep -c 'String(manifest.version')" "1"
 chk "no hand-maintained minimum is left" \
   "$(grep -c 'minimumVersion\|requiredVersion' Panel.qml manifest.json | grep -v ':0$' | wc -l)" "0"
 

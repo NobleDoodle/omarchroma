@@ -73,7 +73,9 @@ With the bar widget:
 | `Ctrl+Enter` (in that list) | Restart All: lists what will close, then Ctrl+Enter again to go ahead |
 | `Ctrl+Enter` (in that review) | Close and relaunch them |
 | `s` | Settings |
-| `?` | Help: open the issues page to report a problem or ask a question |
+| `?` | About: plugin and service versions, license, and links |
+| `i` (in About) | Open the issues page to report a problem or ask a question |
+| `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
 | `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
 | `i` | Install, update, or start hyprchroma when prompted |
