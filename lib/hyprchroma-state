@@ -2358,24 +2358,17 @@ def process_cwd(pid):
         return None
 
 
-def process_environ(pid):
-    """The process's own environment, name to value, or {} if it cannot be
-    read. Handed back to it unchanged on restart: this is not new trust being
-    extended, since it is exactly what the process already had."""
+def runs_confined(pid):
+    """Whether a process runs in a mount or user namespace other than this
+    helper's: a Flatpak, bubblewrap, a snap, firejail. True too when that
+    cannot be told -- failing closed. Such a process is on the far side of a
+    sandbox, so nothing it controls -- its argv, its working directory, the
+    binary path it reports -- may decide what a restart runs on the host."""
     try:
-        raw = Path(f"/proc/{pid}/environ").read_bytes()
+        return any(os.stat(f"/proc/{pid}/ns/{kind}").st_ino != os.stat(f"/proc/self/ns/{kind}").st_ino
+                   for kind in ("mnt", "user"))
     except OSError:
-        return {}
-    env = {}
-    for entry in raw.split(b"\0"):
-        if not entry or b"=" not in entry:
-            continue
-        key, _, value = entry.partition(b"=")
-        try:
-            env[key.decode()] = value.decode()
-        except UnicodeDecodeError:
-            continue
-    return env
+        return True
 
 
 _SESSION_ENVIRONMENT = None
@@ -2384,23 +2377,20 @@ _SESSION_ENVIRONMENT = None
 def session_environment():
     """The graphical session's environment, as the systemd user manager holds
     it -- what uwsm finalized and what every application the launcher starts
-    is given. {} if it cannot be read.
-
-    Needed because a process's own /proc/<pid>/environ is not always its
-    environment: Chromium and every Electron application (Vivaldi, YouTube
-    Music, VS Code) reuse that memory for their process title, and it reads
-    back empty. Relaunching one with what was read there started it with no
-    WAYLAND_DISPLAY, no session bus and no runtime directory, and it exited
-    at once."""
+    is given. {} if it cannot be read. What every relaunch is given: see
+    launch_environment."""
     global _SESSION_ENVIRONMENT
     if _SESSION_ENVIRONMENT is not None:
         return _SESSION_ENVIRONMENT
     systemctl = shutil.which("systemctl", path=trusted_path())
     env = {}
-    if systemctl:
+    try:
         result = subprocess.run([systemctl, "--user", "show-environment"],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                check=False, timeout=10)
+                                check=False, timeout=10) if systemctl else None
+    except (OSError, subprocess.TimeoutExpired):
+        result = None
+    if result is not None:
         for line in result.stdout.split(b"\n") if result.returncode == 0 else []:
             key, sep, value = line.partition(b"=")
             if not sep or not key or not key.replace(b"_", b"").isalnum():
@@ -2418,14 +2408,23 @@ def session_environment():
     return env
 
 
-def relaunch_environment(pid):
-    """The environment a restarted application is given: its own, when it can
-    be read and is evidently a real session environment, otherwise the
-    session's -- the same one its launcher would have handed it."""
-    own = process_environ(pid)
-    if own.get("XDG_RUNTIME_DIR") and (own.get("WAYLAND_DISPLAY") or own.get("DISPLAY")):
-        return own
-    return session_environment() or own
+def launch_environment():
+    """The environment every relaunch is given: the session's, exactly what the
+    launcher hands any application -- never the closed process's own.
+
+    A process's /proc/<pid>/environ is memory it can rewrite, and a sandboxed
+    one controls it outright: a Flatpak app setting PYTHONPATH to its own
+    writable data had that handed to the host's uwsm, a Python program, and
+    so ran code outside its sandbox the moment the user confirmed a restart.
+    Without a session environment to read, this helper's own -- the user's,
+    from the shell that started it -- minus ELECTRON_RUN_AS_NODE, which an
+    editor's terminal sets and which turns every Electron app into Node."""
+    env = session_environment()
+    if env:
+        return dict(env)
+    env = dict(os.environ)
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    return env
 
 
 # Scanned once per run of this helper, the same reasoning as executable_index
@@ -2515,7 +2514,7 @@ def new_window_command(klass):
     return None
 
 
-def relaunch_command(klass, cmdline, exe):
+def relaunch_command(klass, cmdline, exe, confined=True):
     """How to bring an application back: by the application's own installed
     launcher where one names this window class, which is what actually
     starts it the way the desktop would -- in the systemd scope Omarchy
@@ -2524,11 +2523,18 @@ def relaunch_command(klass, cmdline, exe):
     least one real, GPU-sandboxed application was observed exiting silently
     within its first second there, never reaching a window. Falls back to a
     plain relaunch of the kernel's own record of the binary where no entry
-    names this class, or uwsm itself is not installed."""
+    names this class, or uwsm itself is not installed.
+
+    That fallback is the process's own argv and binary, so it is taken only
+    for one sharing this helper's namespaces. A confined one with no
+    installed launcher gets None: it is left open rather than closed with
+    nothing safe to bring it back with."""
     uwsm = shutil.which("uwsm", path=trusted_path())
     entry = uwsm and desktop_entries().get(klass)
     if entry:
         return [uwsm, "app", "-s", "a", "--", entry]
+    if confined:
+        return None
     return [exe] + cmdline[1:]
 
 
@@ -2627,8 +2633,8 @@ def writing_user_files(exe):
 
 def restart_stale_apps(state_dir, since=None, between=None):
     """Close every window of each process still showing the previous theme,
-    then launch each one again with the command, directory and environment it
-    already had. Returns (restarted, pending, failed) names, sorted.
+    then launch each one again the way the launcher would, in the session's
+    environment. Returns (restarted, pending, failed) names, sorted.
 
     In four steps, each over every application at once:
 
@@ -2667,6 +2673,14 @@ def restart_stale_apps(state_dir, since=None, between=None):
             # with nothing to replace it.
             failed.append(name)
             continue
+        confined = runs_confined(pid)
+        argv = relaunch_command(klass, cmdline, exe, confined)
+        if argv is None:
+            # Sandboxed, and no installed launcher names its class: nothing
+            # safe to relaunch it with, so it is not closed.
+            failed.append(name)
+            os.close(descriptor)
+            continue
         if writing_user_files(exe):
             # Mid-download or mid-copy: left open, and said so, rather than
             # cut short. Reported with the applications still open.
@@ -2683,9 +2697,11 @@ def restart_stale_apps(state_dir, since=None, between=None):
         # argv[0] is already an absolute, verified path, so it is its own
         # executable=. Captured now, while the process is still here to read.
         plans.append({"pid": pid, "pidfd": descriptor, "name": name, "exe": exe,
-                      "argv": relaunch_command(klass, cmdline, exe),
-                      "cwd": process_cwd(pid) or str(Path.home()),
-                      "env": relaunch_environment(pid),
+                      "argv": argv,
+                      # A confined process's working directory is its own
+                      # choice too; the launcher starts everything at home.
+                      "cwd": (None if confined else process_cwd(pid)) or str(Path.home()),
+                      "env": launch_environment(),
                       "addresses": group["addresses"],
                       "windows": group.get("windows") or []})
 

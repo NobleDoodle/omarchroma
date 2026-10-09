@@ -1,4 +1,4 @@
-# What's new in 3.2.1
+# What's new in 3.2.2
 
 - Restart apps: press / to see which apps are still on the old theme, then
   Ctrl+Enter to review and Ctrl+Enter again to restart them. They come back
@@ -11,3 +11,4 @@
   help, see the source, and buy me a coffee.
 - Readable KDE icons: Okular and other KDE apps now show clear icons on dark
   themes.
+- Security fixes.

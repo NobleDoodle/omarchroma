@@ -146,8 +146,9 @@ With the bar widget:
      theming, Qt/KDE, and Pear's config if the app rewrote it on its way out.
   4. **Relaunch.** Each comes back through its own installed launcher where
      one exists (the same systemd scope and wrapper script your launcher
-     uses), with its own working directory and environment -- or the
-     session's, for Chromium and Electron apps, which hide theirs.
+     uses), in your session's environment. An app with no launcher is
+     started again from its own program, unless it runs in a sandbox
+     (Flatpak and the like): then it is left open rather than closed.
   5. **Place.** Reopened windows open out of sight and are moved straight
      to the workspace their originals were on -- matched by title, else in
      order -- without taking focus from where you are. One that comes back

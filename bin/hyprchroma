@@ -302,8 +302,8 @@ PY
     ;;
   restart-stale)
     # Closes every window of each application still showing the previous
-    # theme, then launches it again with the command, directory and
-    # environment it already had. Reached only through the panel's
+    # theme, then launches it again the way the launcher would, in the
+    # session's environment. Reached only through the panel's
     # confirmation, after the user has seen what will close and pressed
     # Ctrl+Enter -- nothing runs it on its own.
     shift
@@ -348,7 +348,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.2.1"
+    echo "hyprchroma 3.2.2"
     exit 0
     ;;
 esac

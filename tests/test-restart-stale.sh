@@ -109,7 +109,7 @@ chk("a process Omarchy re-themes live is excluded, window and all",
 chk("a file-chooser portal is excluded the same way stale_open_windows excludes it",
     any(g["pid"] == 404 for g in groups), False)
 
-# -- process_cmdline / process_cwd / process_environ: real /proc reads ------
+# -- process_cmdline / process_cwd: real /proc reads ------------------------
 marker = tempfile.mkstemp()[1]
 scratch = tempfile.mkdtemp()
 probe = subprocess.Popen(
@@ -122,13 +122,13 @@ try:
         cmdline[-1] if cmdline else None, "--probe-arg")
     chk("process_cwd reads the real working directory",
         st.process_cwd(probe.pid), os.path.realpath(scratch))
-    chk("process_environ reads the real environment",
-        st.process_environ(probe.pid).get("HYPRCHROMA_TEST_MARKER"), marker)
 finally:
     probe.kill(); probe.wait(timeout=2)
-chk("a pid already gone reads as None / {} rather than raising",
-    (st.process_cmdline(999999), st.process_cwd(999999), st.process_environ(999999)),
-    (None, None, {}))
+chk("a pid already gone reads as None rather than raising",
+    (st.process_cmdline(999999), st.process_cwd(999999)), (None, None))
+chk("no process's own environment is read anywhere",
+    ('/environ"' in src or "/environ'" in src, hasattr(st, "process_environ")),
+    (False, False))
 
 # -- restart_stale_apps: closes, waits, escalates, then relaunches ----------
 # A real application standing in for one with an open window: it writes its
@@ -216,13 +216,12 @@ finally:
 # a process that forks fine and exits of its own accord right after.
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.05
 real_process_cmdline, real_running_binary = st.process_cmdline, st.running_binary
-real_process_cwd, real_process_environ = st.process_cwd, st.process_environ
+real_process_cwd = st.process_cwd
 quitter = subprocess.Popen(["sleep", "100"])
 quit_cmdline = ["sh", "-c", "exit 0"]
 st.process_cmdline = lambda pid: quit_cmdline if pid == quitter.pid else real_process_cmdline(pid)
 st.running_binary = lambda pid: shutil.which("sh") if pid == quitter.pid else real_running_binary(pid)
 st.process_cwd = lambda pid: "/tmp" if pid == quitter.pid else real_process_cwd(pid)
-st.process_environ = lambda pid: dict(os.environ) if pid == quitter.pid else real_process_environ(pid)
 try:
     closed_addresses.clear()
     st.stale_window_groups = lambda since=None: [
@@ -234,7 +233,7 @@ finally:
     if quitter.poll() is None:
         quitter.kill(); quitter.wait(timeout=2)
     st.process_cmdline, st.running_binary = real_process_cmdline, real_running_binary
-    st.process_cwd, st.process_environ = real_process_cwd, real_process_environ
+    st.process_cwd = real_process_cwd
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
 
 # -- Steam: its own interface regardless of any theme, never flagged --------
@@ -346,8 +345,12 @@ if uwsm_path:
 else:
     print("  SKIP relaunch_command via uwsm: uwsm is not installed here")
 chk("a class with no installed launcher falls back to the kernel's own exe",
-    st.relaunch_command("no.such.class", ["firefox", "--new-window"], "/usr/bin/firefox"),
+    st.relaunch_command("no.such.class", ["firefox", "--new-window"], "/usr/bin/firefox", confined=False),
     ["/usr/bin/firefox", "--new-window"])
+chk("...but never for a sandboxed process, whose argv and exe are its own to choose",
+    (st.relaunch_command("no.such.class", ["python3", "-c", "x"], "/usr/bin/python3", confined=True),
+     st.relaunch_command("no.such.class", ["python3", "-c", "x"], "/usr/bin/python3")),
+    (None, None))
 
 # -- several at once: close all, sync while closed, relaunch all ------------
 # Found live: one application after another was too slow, and each came back
@@ -639,23 +642,25 @@ chk("an application is named by its desktop entry, cleaned; otherwise by its win
     ["Vivaldi", "bEvilb  Co", "Notes"])
 st._DESKTOP_ENTRIES = real_entries; st._DESKTOP_NAMES.clear(); st._DESKTOP_NAMES.update(real_names)
 
-# -- relaunch_environment: the session's, when the app's own reads empty ---
-# Found live: Chromium and Electron reuse /proc/<pid>/environ for their
-# process title, so Vivaldi and YouTube Music read back with no environment
-# at all, and were relaunched with no display, no session bus and no runtime
-# directory -- and exited at once.
-real_environ, real_session = st.process_environ, st.session_environment
+# -- launch_environment: always the session's, never the app's own ----------
+# A process's /proc/<pid>/environ is memory it can rewrite; a Flatpak app
+# setting PYTHONPATH there had it handed to the host's uwsm, a Python program
+# (marketplace review of eb2614a). Every relaunch now gets what the launcher
+# gives any app: the session's environment.
+real_session = st.session_environment
 session = {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1",
            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
 st.session_environment = lambda: session
-st.process_environ = lambda pid: {}
-chk("an application whose environment reads back empty gets the session's",
-    st.relaunch_environment(1), session)
-own = {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1", "MY_FLAG": "1"}
-st.process_environ = lambda pid: own
-chk("...one whose own environment is real keeps exactly that",
-    st.relaunch_environment(1), own)
-st.process_environ, st.session_environment = real_environ, real_session
+chk("every relaunch gets the session's environment", st.launch_environment(), session)
+chk("...as a copy, so one launch cannot change the next's",
+    st.launch_environment() is not session, True)
+st.session_environment = lambda: {}
+os.environ["ELECTRON_RUN_AS_NODE"] = "1"
+fallback = st.launch_environment()
+del os.environ["ELECTRON_RUN_AS_NODE"]
+chk("without one, the helper's own, minus ELECTRON_RUN_AS_NODE",
+    ("ELECTRON_RUN_AS_NODE" in fallback, fallback.get("HOME") == os.environ.get("HOME")), (False, True))
+st.session_environment = real_session
 chk("the session environment parses bash's $'...' quoting systemctl uses",
     __import__("codecs").escape_decode(b"wayland,x11,*")[0].decode()
     + "|" + __import__("codecs").escape_decode(b"sh -c \\'col -bx\\'")[0].decode(),
