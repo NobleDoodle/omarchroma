@@ -869,7 +869,7 @@ Panel {
 
             Text {
               id: askLabel
-              text: "Restart apps at theme change"
+              text: "Restart apps at\ntheme change"
               color: root.bar ? root.bar.foreground : Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
@@ -878,7 +878,8 @@ Panel {
               anchors.right: askKey.left
               anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
-              elide: Text.ElideRight
+              // Two lines, broken by hand: wider than the panel in its own
+              // font, and a word wrap left "change" alone on the second.
             }
 
             Text {
@@ -908,7 +909,7 @@ Panel {
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
-            topPadding: Style.space(4)
+            topPadding: Style.space(8)
           }
 
           // Off removes the framework from the panel (reverting it), on puts it
