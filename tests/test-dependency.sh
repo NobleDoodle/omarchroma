@@ -98,10 +98,11 @@ chk "the only AUR calls that exist are for Pear Desktop, not hyprchroma" \
   "$(countcode 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
 chk "it runs in a terminal the user can see" \
   "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
-# Three: this one, the Escape handler that has always been there, and the
-# restart, which closes the panel out of the way of the windows it reopens.
+# Four: this one, the Escape handler that has always been there, the
+# restart, which closes the panel out of the way of the windows it reopens,
+# and Help, which hands over to the browser.
 chk "the panel closes before the terminal opens" \
-  "$(countcode 'root.close\(\)' Panel.qml)" "3"
+  "$(countcode 'root.close\(\)' Panel.qml)" "4"
 chk "the service is enabled after building" \
   "$(grep -c '^systemctl --user enable hyprchromad.service' bin/hyprchroma-setup)" "1"
 # Restarted, so an update runs at once: "enable --now" left a running service

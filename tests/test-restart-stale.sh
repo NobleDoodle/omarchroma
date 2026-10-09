@@ -763,14 +763,18 @@ chk "Restart All in the list opens the confirmation rather than restarting" \
 chk "...and nowhere does it gate on restartMode -- it is offered in every mode" \
   "$(grep -c 'visible:.*restartMode' <<<"$guide_block")" "0"
 chk "two modes, Confirm and Off -- no Force -- written through the CLI flag" \
-  "$(grep -c 'mode: "force"' Panel.qml),$(grep -c 'mode: "confirm", label: "Confirm"' Panel.qml),$(grep -c 'mode: "off", label: "Off"' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "0,1,1,1"
+  "$(grep -c 'mode: "force"' Panel.qml),$(grep -c 'mode: "confirm", label: "Confirm  (c)"' Panel.qml),$(grep -c 'mode: "off", label: "Off  (o)"' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "0,1,1,1"
 chk "only Ctrl+Enter confirms -- not Enter, Space or a letter" \
   "$(grep -c 'sequences: \["Ctrl+Return", "Ctrl+Enter"\]' Panel.qml),$(grep -c 'onReturnRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'onActivateRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'text: "Restart  (Ctrl+Enter)"' Panel.qml)" "1,0,0,1"
 confirm_block=$(awk '/id: confirmRestart$/,/^        }$/' Panel.qml)
 chk "the confirmation says to save first, and lists every window it will close" \
   "$(grep -c '"Save your work first"' Panel.qml),$(grep -c 'model: root.confirmRestartOpen ? root.staleApps : \[\]' <<<"$confirm_block")" "1,1"
-chk "...and states the risks plainly: lost work, prompts not guaranteed, no prompt for several windows" \
-  "$(grep -cE 'Unsaved changes can be lost|cannot be guaranteed|quit without being asked|left open' <<<"$confirm_block")" "4"
+chk "...and states the risks briefly, at body size: lost work, prompts up to each app, no prompt for several windows" \
+  "$(grep -cE 'Unsaved work may be lost|Save prompts are up to each app|Multi-window apps close without asking' <<<"$confirm_block"),$(grep -A6 'Multi-window apps close without asking' <<<"$confirm_block" | grep -c 'font.pixelSize: Style.font.body')" "3,1"
+chk "Settings: c and o pick the restart mode, ? opens help" \
+  "$(grep -c 'key === "c") { root.setRestartMode("confirm")' Panel.qml),$(grep -c 'key === "o") { root.setRestartMode("off")' Panel.qml),$(grep -c 'key === "?") { root.openHelp()' Panel.qml)" "1,1,1"
+chk "...and Help opens the repo's issues page" \
+  "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'Qt.openUrlExternally(root.issuesUrl)' Panel.qml),$(grep -c 'text: "Help & report an issue  (?)"' Panel.qml)" "1,1,1"
 chk "the list's button names both things: View N windows to close, Open Settings" \
   "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"' Panel.qml),$(grep -cF ': "Open Settings  (/)"' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \

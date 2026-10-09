@@ -203,6 +203,33 @@ Panel {
     restoreProcess.running = true
   }
 
+  // The mirror of restoreFramework: the service reverts it first, while it is
+  // still listed, then takes it out of the panel.
+  function removeFramework(target) {
+    if (restoreProcess.running) return
+    restoreProcess.command = [ "/usr/bin/hyprchroma", "framework", "remove", target ]
+    restoreProcess.running = true
+  }
+
+  function frameworkRemoved(target) {
+    return root.removedTargets.indexOf(root.targetKey(target)) !== -1
+  }
+
+  // Remove or add back, by the same key in Settings: one list, one action that
+  // flips, so taking a framework out and putting it back are the same gesture.
+  function toggleRemoved(target) {
+    if (root.frameworkRemoved(target)) root.restoreFramework(target)
+    else root.removeFramework(target)
+  }
+
+  readonly property string issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"
+
+  function openHelp() {
+    Qt.openUrlExternally(root.issuesUrl)
+    root.guideOpen = false
+    root.close()
+  }
+
   Process {
     id: startDaemonProcess
     command: [ "systemctl", "--user", "enable", "--now", "hyprchromad.service" ]
@@ -306,14 +333,21 @@ Panel {
     allFrameworks.filter(function(entry) {
       return root.removedTargets.indexOf(root.targetKey(entry.target)) !== -1
     })
+  // What Settings offers to remove or add back: the optional frameworks, and
+  // any other that was removed anyway (the CLI can remove GTK too), so whatever
+  // is gone can always be brought back from here. Numbered in this order.
+  readonly property var settingsFrameworks:
+    allFrameworks.filter(function(entry) {
+      return entry.optional === true || root.frameworkRemoved(entry.target)
+    })
 
   readonly property var allFrameworks: [
     { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
     { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
-    { target: "dark-reader", label: "Dark Reader", icon: "󰈈" },
-    { target: "pear", label: "Pear Desktop", icon: "󰎆" },
-    { target: "flatpak", label: "Flatpak apps", icon: "󰏗" },
-    { target: "browsers", label: "Additional browsers", icon: "󰖟" }
+    { target: "dark-reader", label: "Dark Reader", icon: "󰈈", optional: true },
+    { target: "pear", label: "Pear Desktop", icon: "󰎆", optional: true },
+    { target: "flatpak", label: "Flatpak apps", icon: "󰏗", optional: true },
+    { target: "browsers", label: "Additional browsers", icon: "󰖟", optional: true }
   ]
 
   // Flatpak and additional browsers are opt-in -- one widens what every
@@ -464,9 +498,14 @@ Panel {
         root.openRestartConfirm()
         return
       }
+      // Settings: c and o pick the restart mode, ? opens help, and a digit
+      // removes or adds back the framework shown beside it.
+      if (key === "c") { root.setRestartMode("confirm"); return }
+      if (key === "o") { root.setRestartMode("off"); return }
+      if (key === "?") { root.openHelp(); return }
       var back = parseInt(key, 10) - 1
-      if (back >= 0 && back < root.hiddenFrameworks.length) {
-        root.restoreFramework(root.hiddenFrameworks[back].target)
+      if (back >= 0 && back < root.settingsFrameworks.length) {
+        root.toggleRemoved(root.settingsFrameworks[back].target)
       }
       return
     }
@@ -642,7 +681,7 @@ Panel {
             : root.guideOpen
               ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                           : "Applications to close")
-                + (root.hiddenFrameworks.length > 0 ? ", and what you removed" : "")
+
               : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -694,14 +733,12 @@ Panel {
             visible: root.staleWindowCount > 0
             width: confirmRestart.width
             topPadding: Style.space(4)
-            text: "Unsaved changes can be lost. An app asked to close may offer to save "
-              + "first, but that is up to the app and cannot be guaranteed, and an app "
-              + "with several windows is quit without being asked. Apps in the middle of "
-              + "a download or a file copy are left open. A reopened app may not restore "
-              + "everything it had open: tabs, folders, documents."
+            text: "\u2022 Unsaved work may be lost\n"
+              + "\u2022 Save prompts are up to each app\n"
+              + "\u2022 Multi-window apps close without asking"
             color: root.bar ? root.bar.urgent : Color.urgent
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
+            font.pixelSize: Style.font.body
             wrapMode: Text.WordWrap
           }
 
@@ -738,71 +775,6 @@ Panel {
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
-          }
-
-          // Removing a framework takes its row out of the panel, so this is the only
-          // place it still exists to be put back. Kept behind the same key as the
-          // close list rather than given a view of its own: both are things you deal
-          // with occasionally, and neither belongs in the panel body.
-          Text {
-            visible: root.hiddenFrameworks.length > 0
-            width: guide.width
-            text: "Removed — press the number to put one back"
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            topPadding: Style.space(6)
-          }
-
-          Repeater {
-            model: root.hiddenFrameworks
-            delegate: Item {
-              id: gone
-              required property var modelData
-              required property int index
-              width: guide.width
-              height: Math.max(Style.spacing.controlHeight, goneLabel.implicitHeight)
-
-              Text {
-                id: goneIcon
-                text: gone.modelData.icon
-                color: Color.muted
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.body
-                anchors.left: parent.left
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              Text {
-                id: goneLabel
-                text: gone.modelData.label
-                color: root.bar ? root.bar.foreground : Color.popups.text
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.body
-                anchors.left: goneIcon.right
-                anchors.leftMargin: Style.space(10)
-                anchors.right: goneKey.left
-                anchors.rightMargin: Style.space(10)
-                anchors.verticalCenter: parent.verticalCenter
-                elide: Text.ElideRight
-              }
-
-              Text {
-                id: goneKey
-                text: String(gone.index + 1)
-                color: Color.muted
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.caption
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.restoreFramework(gone.modelData.target)
-              }
-            }
           }
 
           Repeater {
@@ -886,8 +858,8 @@ Panel {
 
             Repeater {
               model: [
-                { mode: "confirm", label: "Confirm" },
-                { mode: "off", label: "Off" }
+                { mode: "confirm", label: "Confirm  (c)" },
+                { mode: "off", label: "Off  (o)" }
               ]
               delegate: Button {
                 id: modeButton
@@ -911,6 +883,46 @@ Panel {
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
+          }
+
+          Text {
+            width: guide.width
+            text: "Optional frameworks \u2014 press the number to remove or add back:"
+            color: Color.muted
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            topPadding: Style.space(6)
+            wrapMode: Text.WordWrap
+          }
+
+          Repeater {
+            model: root.settingsFrameworks
+            delegate: Button {
+              required property var modelData
+              required property int index
+              width: guide.width
+              leftAlign: true
+              iconText: modelData.icon
+              text: modelData.label + "  \u2014  "
+                + (root.frameworkRemoved(modelData.target) ? "Add back" : "Remove")
+                + "  (" + (index + 1) + ")"
+              foreground: root.frameworkRemoved(modelData.target)
+                ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
+              onClicked: root.toggleRemoved(modelData.target)
+            }
+          }
+
+          PanelSeparator {
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+          }
+
+          Button {
+            width: guide.width
+            text: "Help & report an issue  (?)"
+            iconText: "\udb81\ude25"
+            tooltipText: root.issuesUrl
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.openHelp()
           }
 
           Button {

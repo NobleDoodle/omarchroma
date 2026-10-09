@@ -218,6 +218,6 @@ chk "the panel embeds no build command of its own" \
 chk "the panel renders only what was not removed" \
   "$(grep -c 'model: root.visibleFrameworks' Panel.qml)" "1"
 chk "removals are read from settings" "$(grep -c 'parsed.removed' Panel.qml)" "1"
-chk "the guide lists what was removed" "$(grep -c 'model: root.hiddenFrameworks' Panel.qml)" "1"
-chk "with a key to put it back" "$(grep -c 'press the number to put one back' Panel.qml)" "1"
-chk "and an action behind it" "$(grep -c 'framework", "restore"' Panel.qml)" "1"
+chk "Settings lists the optional frameworks, and anything removed" "$(grep -c 'model: root.settingsFrameworks' Panel.qml),$(grep -c 'entry.optional === true || root.frameworkRemoved(entry.target)' Panel.qml)" "1,1"
+chk "with a number key to remove each one or add it back" "$(grep -c 'press the number to remove or add back' Panel.qml),$(grep -c 'root.toggleRemoved(root.settingsFrameworks\[back\].target)' Panel.qml)" "1,1"
+chk "and both actions behind it, mirrored" "$(grep -c 'framework", "restore"' Panel.qml),$(grep -c 'framework", "remove"' Panel.qml)" "1,1"
