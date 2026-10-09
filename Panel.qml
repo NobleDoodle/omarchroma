@@ -232,7 +232,7 @@ Panel {
     else root.removeFramework(target)
   }
 
-  readonly property string issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"
+  readonly property string issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues/new/choose"
   readonly property string coffeeUrl: "https://buymeacoffee.com/nobledoodle"
   readonly property string repoUrl: "https://github.com/NobleDoodle/omarchroma"
 

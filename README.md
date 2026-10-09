@@ -74,7 +74,7 @@ With the bar widget:
 | `Ctrl+Enter` (in that review) | Close and relaunch them |
 | `s` | Settings |
 | `?` | About: plugin and service versions, license, and links |
-| `i` (in About) | Open the issues page to report a problem or ask a question |
+| `i` (in About) | Open a new issue: a bug report, a feature request, or a question |
 | `g` (in About) | Open the source on GitHub |
 | `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
