@@ -705,12 +705,11 @@ sync() { bash "$ROOT/bin/hyprchroma" "$@" >/dev/null 2>&1; }
 
 chk "no setting yet: the default is off" \
   "$(bash "$ROOT/bin/hyprchroma" restart-stale >/dev/null 2>&1; jq -r '.restartMode // "unset"' "$SETTINGS" 2>/dev/null || echo unset)" "unset"
-sync --restart-mode=force
-chk "--restart-mode=force is recorded" "$(jq -r .restartMode "$SETTINGS")" "force"
-chk "...and does not run a sync to do it" \
-  "$(grep -c '^event-pass$' "$ROOT/state-calls.log")" "0"
+bash "$ROOT/bin/hyprchroma" --restart-mode=force >/dev/null 2>&1; rc=$?
+chk "--restart-mode=force no longer exists: refused, and nothing recorded" \
+  "$rc,$(jq -r '.restartMode // "unset"' "$SETTINGS" 2>/dev/null || echo unset)" "2,unset"
 sync --restart-mode=confirm
-chk "--restart-mode=confirm is recorded over it" "$(jq -r .restartMode "$SETTINGS")" "confirm"
+chk "--restart-mode=confirm is recorded" "$(jq -r .restartMode "$SETTINGS")" "confirm"
 sync --restart-mode=off
 chk "--restart-mode=off is recorded the same way" "$(jq -r .restartMode "$SETTINGS")" "off"
 
@@ -722,66 +721,58 @@ chk "...and its report is in the output" "$(grep -c 'restarted: Stale1' "$ROOT/r
 chk "...then re-records the stale list so the panel's count is current" \
   "$(grep -c '^report-stale-apps$' "$ROOT/state-calls.log")" "1"
 
-# -- the force hook: fires only on a real change, with restartMode=force ----
-: > "$ROOT/state-calls.log"
-sed -i 's/"restartMode": *"[a-z]*"/"restartMode": "off"/' "$SETTINGS" 2>/dev/null || true
-sync --force --quiet
-chk "restartMode=off: a theme change does not call restart-stale-apps on its own" \
-  "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
-
-python3 - "$SETTINGS" <<'PY'
+# -- nothing ever restarts on its own, in any mode -------------------------
+# Force mode restarted every stale application right after a sync; removed as
+# too risky, since unsaved work can be lost. A setting left from it means the
+# confirmation now.
+chk "a restartMode left as \"force\" is read as the confirmation" "$(
+  SETTINGS_FILE=$ROOT/legacy.json; echo '{"restartMode":"force"}' > "$SETTINGS_FILE"
+  eval "$(sed -n '/^restart_mode() {/,/^}/p' "$REPO/bin/hyprchroma")"; restart_mode)" "confirm"
+for mode in confirm off; do
+  python3 - "$SETTINGS" "$mode" <<'PY'
 import json, sys
 from pathlib import Path
 path = Path(sys.argv[1])
 settings = json.loads(path.read_text()) if path.exists() else {}
-settings["restartMode"] = "force"
+settings["restartMode"] = sys.argv[2]
 path.write_text(json.dumps(settings))
 PY
-: > "$ROOT/state-calls.log"
-# The restart is detached from the sync that starts it (its own inner sync
-# needs the lock that sync holds), so it is waited for here, not assumed done.
-settle_restart() {
-  for _ in $(seq 50); do
-    pgrep -f "$ROOT/bin/hyprchroma restart-stale" >/dev/null || return 0
-    sleep 0.1
-  done
-}
-sed -i 's/^background = .*/background = "#224466"/' "$HOME/.local/state/omarchy/current/theme/colors.toml"
-sync --force --quiet; sleep 0.3; settle_restart
-chk "restartMode=force: a real theme change calls it exactly once" \
-  "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "1"
-chk "...detached, so its own inner sync is not left waiting on this one's lock" \
-  "$(grep -c 'setsid "$HYPRCHROMA_SELF" restart-stale' "$REPO/bin/hyprchroma")" "1"
-: > "$ROOT/state-calls.log"
-sync --force --quiet; sleep 0.3; settle_restart
-chk "...and a sync that changes nothing after that does not call it again" \
-  "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
-: > "$ROOT/state-calls.log"
-sed -i 's/^background = .*/background = "#336655"/' "$HOME/.local/state/omarchy/current/theme/colors.toml"
-HYPRCHROMA_NO_AUTO_RESTART=1 sync --force --quiet; sleep 0.3; settle_restart
-chk "...nor does the restart's own inner sync, even on a real change" \
-  "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
+  : > "$ROOT/state-calls.log"
+  sed -i "s/^background = .*/background = \"#$(openssl rand -hex 3)\"/" "$HOME/.local/state/omarchy/current/theme/colors.toml"
+  sync --force --quiet; sleep 0.3
+  chk "restartMode=$mode: a real theme change starts no restart by itself" \
+    "$(grep -c '^restart-stale-apps$' "$ROOT/state-calls.log")" "0"
+done
+chk "...and no restart is started from the sync at all" \
+  "$(grep -c 'restart-stale' "$REPO/bin/hyprchroma" | tr -d ' '),$(grep -c 'setsid "$HYPRCHROMA_SELF" restart-stale' "$REPO/bin/hyprchroma")" "$(grep -c 'restart-stale' "$REPO/bin/hyprchroma" | tr -d ' '),0"
 
 rm -rf "$ROOT"
 
 # -- the panel and bar widget: the shared key, the always-present button ----
 cd -- "$REPO" || exit 1
 
-chk "the guide's own key and the global hotkey's are the same one" \
-  "$(grep -c 'key === "a" && root.staleWindowCount > 0' Panel.qml),$(grep -c 'key === "a"' Panel.qml)" "1,2"
+chk "\"a\" in the list only opens the confirmation; no single key restarts" \
+  "$(grep -c 'key === "a"' Panel.qml),$(grep -A1 'key === "a" && root.staleWindowCount > 0' Panel.qml | grep -c 'openRestartConfirm()'),$(grep -c 'root.runRestart()' Panel.qml)" "1,1,1"
 chk "the global hotkey opens the same popup the guide's button does, via IPC" \
   "$(grep -c 'function restartStaleApps(): void' BarWidget.qml)" "1"
 chk "...setting confirmRestartOpen and opening the panel" \
   "$(awk '/function restartStaleApps\(\)/,/^    }/' BarWidget.qml | grep -cE 'confirmRestartOpen = true|root.open\(\)')" "2"
 guide_block=$(awk '/id: guide$/,/^        }$/' Panel.qml)
-chk "Restart All's own button exists, gated only on there being something to restart" \
-  "$(grep -c -F 'text: "Restart All  (a)"' <<<"$guide_block" || true),$(grep -B2 -F 'text: "Restart All  (a)"' <<<"$guide_block" | grep -c 'visible: root.staleWindowCount > 0' || true)" "1,1"
+chk "Restart All in the list opens the confirmation rather than restarting" \
+  "$(grep -c -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block"),$(grep -A3 -F 'text: "Restart All\u2026  (a)"' <<<"$guide_block" | grep -c 'onClicked: root.openRestartConfirm()')" "1,1"
 chk "...and nowhere does it gate on restartMode -- it is offered in every mode" \
   "$(grep -c 'visible:.*restartMode' <<<"$guide_block")" "0"
-chk "all three modes are offered, and the write goes through the CLI flag" \
-  "$(grep -c 'setRestartMode(mode)' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "1,1"
-chk "the popup can be answered with the same key, or Enter, or Space" \
-  "$(grep -c 'onReturnRequested: if (root.confirmRestartOpen) root.confirmRestart()' Panel.qml),$(grep -c 'onActivateRequested: if (root.confirmRestartOpen) root.confirmRestart()' Panel.qml)" "1,1"
+chk "two modes, Confirm and Off -- no Force -- written through the CLI flag" \
+  "$(grep -c 'mode: "force"' Panel.qml),$(grep -c 'mode: "confirm", label: "Confirm"' Panel.qml),$(grep -c 'mode: "off", label: "Off"' Panel.qml),$(grep -cF -- '"--restart-mode=" + mode' Panel.qml)" "0,1,1,1"
+chk "only Ctrl+Enter confirms -- not Enter, Space or a letter" \
+  "$(grep -c 'sequences: \["Ctrl+Return", "Ctrl+Enter"\]' Panel.qml),$(grep -c 'onReturnRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'onActivateRequested: if (root.confirmRestartOpen)' Panel.qml),$(grep -c 'text: "Restart  (Ctrl+Enter)"' Panel.qml)" "1,0,0,1"
+confirm_block=$(awk '/id: confirmRestart$/,/^        }$/' Panel.qml)
+chk "the confirmation says to save first, and lists every window it will close" \
+  "$(grep -c '"Save your work first"' Panel.qml),$(grep -c 'model: root.confirmRestartOpen ? root.staleApps : \[\]' <<<"$confirm_block")" "1,1"
+chk "...and states the risks plainly: lost work, prompts not guaranteed, no prompt for several windows" \
+  "$(grep -cE 'Unsaved changes can be lost|cannot be guaranteed|quit without being asked|left open' <<<"$confirm_block")" "4"
+chk "the list's button names both things: View N windows to close, Open Settings" \
+  "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"' Panel.qml),$(grep -cF ': "Open Settings  (/)"' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \
   "$(awk '/onCloseRequested: \{/,/^      \}/' Panel.qml | grep -c 'confirmRestartOpen')" "1"
 chk "restartMode=confirm opens the panel's own confirmation once the list is recorded" \

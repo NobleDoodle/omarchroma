@@ -58,7 +58,7 @@ hyprchroma framework restore pear # put it back and sync
 hyprchroma palette --capture      # pin the current palette to a file
 hyprchroma restore --stock        # revert everything to stock defaults
 hyprchroma restart-stale          # close and relaunch every stale application
-hyprchroma --restart-mode=confirm # force | confirm | off -- see below
+hyprchroma --restart-mode=confirm # confirm | off -- see below
 ```
 
 With the bar widget:
@@ -69,7 +69,8 @@ With the bar widget:
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, restart settings, and any removed frameworks |
-| `a` (in that list) | Restart every one of them: close, then relaunch |
+| `a` (in that list) | Review a restart of them: lists what will close, then Ctrl+Enter to go ahead |
+| `Ctrl+Enter` (in that review) | Close and relaunch them |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
 
@@ -93,12 +94,22 @@ With the bar widget:
 * Additional browsers is off until you switch it on: it writes into your browser
   profiles (see below). Each browser picks it up on its next start. Chromium,
   Chrome, Brave and Helium are not included; Omarchy colors those itself.
-* The applications-to-close list has a Restart All button, in every mode, and a
-  restart mode below it: **Force** restarts every stale application right after
-  a sync, with no prompt; **Confirm** opens a popup after each theme switch that leaves apps on the old theme -- press `a` (or Enter) to restart them, Esc to leave them -- the same popup a global
-  hotkey can open from anywhere (bind one to `restartStaleApps` in your own
-  bindings.lua, the way the toggles above are bound); **Off**, the default,
-  does neither -- the list's own button is still there either way.
+* The applications-to-close list has a Restart All button, and a restart
+  setting below it. Nothing ever restarts on its own: every restart goes
+  through a confirmation that lists each window it will close, warns you to
+  save your work first, and spells out what can go wrong. It only goes ahead
+  on **Ctrl+Enter** (or its Restart button); Esc leaves everything as it is.
+  **Confirm** opens that confirmation by itself after a theme switch that
+  leaves apps on the old theme; **Off**, the default, waits for Restart All.
+  A global hotkey can open it from anywhere too (bind one to
+  `restartStaleApps` in your own bindings.lua, the way the toggles above are
+  bound).
+
+  **The risks, plainly:** a restart closes applications, and unsaved changes
+  can be lost. An app asked to close may offer to save first, but that is up
+  to the app and cannot be guaranteed -- and an app with several windows is
+  quit as a whole, without being asked. A reopened app may not bring back
+  everything it had open.
 
   A restart works on every listed application at once, in four steps:
 

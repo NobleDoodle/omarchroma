@@ -265,16 +265,14 @@ Panel {
   // per application would push the frameworks off the screen.
   property bool guideOpen: false
 
-  // What happens to the applications the guide lists, on its own, once a sync
-  // finds any of them stale: restart every one without asking ("force"), ask
-  // first ("confirm", the popup the global hotkey also opens), or do nothing
-  // and leave the guide's own button as the only way ("off", the default --
-  // restarting a window is exactly the kind of thing an install or an update
-  // may not decide on the user's behalf). The mode governs only what happens
-  // automatically; the guide's button and the popup both restart the same way
-  // regardless of which mode is set.
+  // What happens once a theme change leaves applications on the old theme:
+  // open the confirmation on its own ("confirm"), or nothing, leaving the
+  // guide's Restart All as the way in ("off", the default -- restarting a
+  // window is exactly the kind of thing an install or an update may not decide
+  // on the user's behalf). There is no mode that restarts without asking: a
+  // restart can lose unsaved work, and only the user can say it is safe.
   property string restartMode: "off"
-  readonly property var restartModes: ["force", "confirm", "off"]
+  readonly property var restartModes: ["confirm", "off"]
 
   // The same confirmation the global hotkey opens, reachable with the panel
   // already open too -- there is no reason the one reachable from outside it
@@ -410,8 +408,18 @@ Panel {
   // restart that takes a moment is not shown behind a popup still claiming to
   // be asking.
   function confirmRestart() {
+    if (!root.confirmRestartOpen || root.staleWindowCount === 0) return
     root.confirmRestartOpen = false
     root.runRestart()
+  }
+
+  // Every way to a restart leads here first -- the guide's Restart All, its
+  // "a", the global hotkey and Confirm mode alike -- so nothing restarts
+  // without the user having seen what will close and what it can cost.
+  function openRestartConfirm() {
+    root.refreshStaleApps()
+    root.guideOpen = false
+    root.confirmRestartOpen = true
   }
 
   Process {
@@ -436,14 +444,10 @@ Panel {
     // toggle without the service. A key that would open it is ignored rather
     // than opening an always-empty screen.
     if (!root.ready) return
-    // The confirmation popup owns every key while it is up: the same "a" that
-    // opened it (the global hotkey, bound in bindings.lua) or that restarts
-    // directly from the guide also answers it, so one key does both jobs
-    // everywhere it appears.
-    if (root.confirmRestartOpen) {
-      if (key === "a") root.confirmRestart()
-      return
-    }
+    // The confirmation takes no single key as a yes -- only Ctrl+Enter (the
+    // Shortcut beside it), so a stray keypress can never close the user's
+    // applications. Every other key is ignored while it is up.
+    if (root.confirmRestartOpen) return
     // "/" rather than "?" so no shift is needed, and rather than "h" because
     // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
     // reason the framework rows are numbered.
@@ -455,12 +459,9 @@ Panel {
     // While the guide is up, a digit means one of the removed frameworks listed
     // there -- not one of the toggles, whose rows are not on screen.
     if (root.guideOpen) {
-      // Direct, no popup: being in the list already is the confirmation the
-      // popup asks for everywhere else. The global hotkey (bound in
-      // bindings.lua) reads the same key to open that popup, so the two stay
-      // in step without the plugin writing the binding itself.
+      // Opens the confirmation, never restarts on its own.
       if (key === "a" && root.staleWindowCount > 0) {
-        root.runRestart()
+        root.openRestartConfirm()
         return
       }
       var back = parseInt(key, 10) - 1
@@ -556,8 +557,9 @@ Panel {
           flatpak: frameworks.flatpak === true,
           browsers: frameworks.browsers === true
         }
-        root.restartMode = root.restartModes.indexOf(parsed.restartMode) !== -1
-          ? parsed.restartMode : "off"
+        // "force", from before it was removed, now means the confirmation.
+        var mode = parsed.restartMode === "force" ? "confirm" : parsed.restartMode
+        root.restartMode = root.restartModes.indexOf(mode) !== -1 ? mode : "off"
       } catch (error) {
         root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
         root.restartMode = "off"
@@ -618,10 +620,16 @@ Panel {
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) { root.handleKey(text) }
-      // Enter and Space reach nothing else in this panel, so the popup takes
-      // them as a second way to say yes, beside the key that opened it.
-      onReturnRequested: if (root.confirmRestartOpen) root.confirmRestart()
-      onActivateRequested: if (root.confirmRestartOpen) root.confirmRestart()
+      // The only key that confirms a restart: a combination, so it cannot be
+      // pressed by accident. PanelKeyCatcher reports Enter the same with or
+      // without Ctrl held, so this is a Shortcut, which Qt matches before key
+      // handling -- and only while the confirmation is up, with something to
+      // restart.
+      Shortcut {
+        sequences: ["Ctrl+Return", "Ctrl+Enter"]
+        enabled: root.confirmRestartOpen && root.staleWindowCount > 0
+        onActivated: root.confirmRestart()
+      }
 
       Column {
         id: content
@@ -630,7 +638,7 @@ Panel {
 
         Text {
           text: root.confirmRestartOpen
-            ? "Restart now?"
+            ? "Save your work first"
             : root.guideOpen
               ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                           : "Applications to close")
@@ -656,9 +664,42 @@ Panel {
           Text {
             width: confirmRestart.width
             text: root.staleWindowCount > 0
-              ? "Close and relaunch " + root.windowsPhrase(root.staleWindowCount) + "?"
+              ? "These will be closed and reopened on the new theme:"
               : "Nothing is showing the previous theme."
             color: root.bar ? root.bar.foreground : Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+          }
+
+          // Exactly what will close, by application and window count -- the
+          // same list the guide shows, so nothing closes unnamed.
+          Repeater {
+            model: root.confirmRestartOpen ? root.staleApps : []
+            delegate: Text {
+              required property var modelData
+              width: confirmRestart.width
+              text: "\u2022 " + modelData + " \u2014 " + root.windowsPhrase(root.windowsOf(modelData))
+              textFormat: Text.PlainText
+              color: root.bar ? root.bar.foreground : Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
+          // The risks, stated plainly rather than played down: nothing here
+          // can promise an application will ask before discarding work.
+          Text {
+            visible: root.staleWindowCount > 0
+            width: confirmRestart.width
+            topPadding: Style.space(4)
+            text: "Unsaved changes can be lost. An app asked to close may offer to save "
+              + "first, but that is up to the app and cannot be guaranteed, and an app "
+              + "with several windows is quit without being asked. Apps in the middle of "
+              + "a download or a file copy are left open. A reopened app may not restore "
+              + "everything it had open: tabs, folders, documents."
+            color: root.bar ? root.bar.urgent : Color.urgent
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
@@ -667,8 +708,8 @@ Panel {
           Button {
             visible: root.staleWindowCount > 0
             width: confirmRestart.width
-            text: "Restart  (a)"
-            iconText: "󰜉"
+            text: "Restart  (Ctrl+Enter)"
+            iconText: "\udb81\udf09"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.confirmRestart()
           }
@@ -824,15 +865,15 @@ Panel {
           Button {
             visible: root.staleWindowCount > 0
             width: guide.width
-            text: "Restart All  (a)"
+            text: "Restart All\u2026  (a)"
             iconText: "\udb81\udf09"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
-            onClicked: root.runRestart()
+            onClicked: root.openRestartConfirm()
           }
 
           Text {
             width: guide.width
-            text: "When a sync leaves applications stale:"
+            text: "After a theme change leaves apps to restart:"
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
@@ -845,14 +886,13 @@ Panel {
 
             Repeater {
               model: [
-                { mode: "force", label: "Force" },
                 { mode: "confirm", label: "Confirm" },
                 { mode: "off", label: "Off" }
               ]
               delegate: Button {
                 id: modeButton
                 required property var modelData
-                width: (guide.width - Style.space(12)) / 3
+                width: (guide.width - Style.space(6)) / 2
                 text: modelData.label
                 selected: root.restartMode === modelData.mode
                 bordered: true
@@ -864,11 +904,9 @@ Panel {
 
           Text {
             width: guide.width
-            text: root.restartMode === "force"
-              ? "Restarts every one on its own, right after a sync."
-              : root.restartMode === "confirm"
-                ? "Asks first \u2014 the same popup the global hotkey (a) opens."
-                : "Nothing on its own; the button above still works."
+            text: root.restartMode === "confirm"
+              ? "Opens the confirmation on its own, listing what it would close. Nothing restarts until you press Ctrl+Enter."
+              : "Nothing on its own. Restart All above still asks first."
             color: Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
@@ -1023,8 +1061,8 @@ Panel {
           visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: root.staleWindowCount > 0
-            ? root.windowsPhrase(root.staleWindowCount) + " to close, and settings  (/)"
-            : "Settings  (/)"
+            ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"
+            : "Open Settings  (/)"
           iconText: "󰖯"
           foreground: root.bar ? root.bar.foreground : Color.popups.text
           onClicked: {

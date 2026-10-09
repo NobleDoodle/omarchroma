@@ -285,9 +285,9 @@ PY
   restart-stale)
     # Closes every window of each application still showing the previous
     # theme, then launches it again with the command, directory and
-    # environment it already had. One path for all three ways of reaching
-    # it: the window list's own button, the confirmation popup's "yes", and
-    # restartMode=force running it on its own right after a sync.
+    # environment it already had. Reached only through the panel's
+    # confirmation, after the user has seen what will close and pressed
+    # Ctrl+Enter -- nothing runs it on its own.
     shift
     want_notify=0
     for argument in "$@"; do
@@ -319,7 +319,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.1.10"
+    echo "hyprchroma 3.1.11"
     exit 0
     ;;
 esac
@@ -345,7 +345,6 @@ for argument in "$@"; do
     --target=browsers) target="browsers" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
-    --restart-mode=force) restart_mode="force" ;;
     --restart-mode=confirm) restart_mode="confirm" ;;
     --restart-mode=off) restart_mode="off" ;;
     -h|--help)
@@ -358,7 +357,7 @@ Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
        hyprchroma palette [--all|--capture|--template|--source]
        hyprchroma stale-apps       list apps still showing the old theme, and their windows
        hyprchroma restart-stale [--notify]   close and relaunch every one of them
-       hyprchroma --restart-mode=force|confirm|off   when that happens on its own
+       hyprchroma --restart-mode=confirm|off   ask after a theme change, or not
        hyprchroma restore [--stock|--captured]
        hyprchroma --version
 USAGE
@@ -521,7 +520,9 @@ restart_mode() {
   local mode
   mode=$(jq -r '.restartMode // "off"' "$SETTINGS_FILE" 2>/dev/null) || mode="off"
   case "$mode" in
-    force|confirm) echo "$mode" ;;
+    # "force" restarted without asking; removed as too risky (unsaved work
+    # can be lost), and a setting left from it now means the confirmation.
+    force|confirm) echo confirm ;;
     *) echo "off" ;;
   esac
 }
@@ -1194,24 +1195,6 @@ fi
 # when there is something new for their next launch to read.
 if (( theme_changed )); then
   recycle_idle_apps
-  # restartMode=force: nothing is left stale for the user to deal with by
-  # hand. Gated on theme_changed for the same reason recycling is -- a quiet
-  # pass that changed nothing must not restart windows that merely happened
-  # to be open -- and notifies only when this run itself would, so the
-  # daemon's own background passes stay as quiet as they already are.
-  #
-  # Detached, not waited on: the restart runs a sync of its own once every
-  # application is closed (what only a closed browser can take, Dark Reader
-  # among it), and that sync needs the lock this run holds until it ends --
-  # waited on here, the two would wait on each other for good. 9>&- for the
-  # reason the Qt/KDE waiter has it. HYPRCHROMA_NO_AUTO_RESTART is that inner
-  # sync, which must not start another restart from inside this one.
-  if [[ -z ${HYPRCHROMA_NO_AUTO_RESTART:-} && $(restart_mode) == force ]]; then
-    restart_flags=()
-    (( notify )) && restart_flags=(--notify)
-    setsid "$HYPRCHROMA_SELF" restart-stale "${restart_flags[@]}" \
-      >/dev/null 2>&1 </dev/null 9>&- &
-  fi
 fi
 report_stale_apps
 # restartMode=confirm: once the list is recorded -- the panel reads it from
