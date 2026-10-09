@@ -112,6 +112,18 @@ omarchy_icon_theme() {
       "$1" "$value" >&2
     return 0
   }
+  # Omarchy's themes name the light variant of their icon set -- Yaru-blue,
+  # Yaru-red -- dark themes included. GTK 4 recolors symbolic icons to the text
+  # color, so GTK apps never showed it; KDE recolors only Breeze's, so a KDE app
+  # (Okular, issue #3) drew dark monochrome icons on a dark background. On a dark
+  # theme, the set's own dark variant is used where one is installed. Light
+  # themes, and a theme already naming a dark set, keep exactly what they ask for.
+  local dark=$value-dark
+  if [[ $value != *-dark && $(omarchy-theme-color mode 2>/dev/null) == dark ]] &&
+     [[ -d "/usr/share/icons/$dark" || \
+        -d "${XDG_DATA_HOME:-$HOME/.local/share}/icons/$dark" ]]; then
+    value=$dark
+  fi
   printf "%s" "$value"
 }
 

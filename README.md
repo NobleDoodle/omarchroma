@@ -88,6 +88,9 @@ With the bar widget:
 * Removing one hides it from the panel entirely and reverts it. Settings (`s`)
   lists the optional frameworks, and anything removed, each with a switch and a
   number key that removes it or adds it back.
+* Qt and KDE apps get your Omarchy theme's icon set too -- its dark variant on a
+  dark theme (`Yaru-red` becomes `Yaru-red-dark`), since KDE recolors only Breeze's
+  icons and a light set left monochrome icons dark on a dark background.
 * GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and
   Additional browsers are optional. Install the Dark Reader browser extension
   manually for it to theme on the next sync.
