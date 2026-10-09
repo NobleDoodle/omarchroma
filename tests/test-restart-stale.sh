@@ -782,12 +782,14 @@ chk "the confirmation says to save first, and lists every window it will close" 
   "$(grep -c '"Save your work first"' Panel.qml),$(grep -c 'model: root.confirmRestartOpen ? root.staleApps : \[\]' <<<"$confirm_block")" "1,1"
 chk "...and states the risks briefly, at body size: lost work, prompts up to each app, no prompt for several windows" \
   "$(grep -cE 'Unsaved work may be lost|Save prompts are up to each app|Multi-window apps close without asking' <<<"$confirm_block"),$(grep -A6 'Multi-window apps close without asking' <<<"$confirm_block" | grep -c 'font.pixelSize: Style.font.body')" "3,1"
-chk "Settings: c flips the restart mode, ? opens help" \
-  "$(grep -c 'key === "c") { root.toggleRestartMode()' Panel.qml),$(grep -c 'key === "?") { root.openHelp()' Panel.qml)" "1,1"
+chk "Settings has its own view and key (s), apart from the list on /" \
+  "$(grep -c 'id: settings$' Panel.qml),$(grep -c 'if (key === "s") {' Panel.qml),$(grep -c 'text: "Back  (s)"' Panel.qml),$(grep -c 'text: "Settings  (s)"' Panel.qml)" "1,1,1,1"
+chk "...where c flips the restart mode; Help (?) is on the main panel" \
+  "$(awk '/if \(root.settingsOpen\) \{/,/^    \}/' Panel.qml | grep -c 'key === "c") { root.toggleRestartMode()'),$(grep -A2 'if (key === "?") {' Panel.qml | grep -c 'root.openHelp()')" "1,1"
 chk "...and Help opens the repo's issues page" \
   "$(grep -c 'issuesUrl: "https://github.com/NobleDoodle/omarchroma/issues"' Panel.qml),$(grep -c 'Qt.openUrlExternally(root.issuesUrl)' Panel.qml),$(grep -c 'text: "Help  (?)"' Panel.qml)" "1,1,1"
-chk "the list's button names both things: View N windows to close, Open Settings" \
-  "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"' Panel.qml),$(grep -cF ': "Open Settings  (/)"' Panel.qml)" "1,1"
+chk "the main panel's list button: View N windows to close (/), or Nothing to close (/)" \
+  "$(grep -cF '? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"' Panel.qml),$(grep -cF ': "Nothing to close  (/)"' Panel.qml)" "1,1"
 chk "Escape backs out of the popup before the guide, and the guide before the panel" \
   "$(awk '/onCloseRequested: \{/,/^      \}/' Panel.qml | grep -c 'confirmRestartOpen')" "1"
 chk "restartMode=confirm opens the panel's own confirmation once the list is recorded" \

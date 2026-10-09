@@ -231,6 +231,7 @@ Panel {
   function openHelp() {
     Qt.openUrlExternally(root.issuesUrl)
     root.guideOpen = false
+    root.settingsOpen = false
     root.close()
   }
 
@@ -295,6 +296,9 @@ Panel {
   // is as long as the user has windows open, and growing the panel by one row
   // per application would push the frameworks off the screen.
   property bool guideOpen: false
+  // Settings is a view of its own, on "s" with a gear, apart from the list of
+  // windows to close on "/": each is the whole panel body while showing.
+  property bool settingsOpen: false
 
   // What happens once a theme change leaves applications on the old theme:
   // open the confirmation on its own ("confirm"), or nothing, leaving the
@@ -439,6 +443,7 @@ Panel {
     // Out of the way of what is about to close and reopen: the restart runs
     // on without the panel, and reports through its notification.
     root.guideOpen = false
+    root.settingsOpen = false
     root.close()
   }
 
@@ -457,6 +462,7 @@ Panel {
   function openRestartConfirm() {
     root.refreshStaleApps()
     root.guideOpen = false
+    root.settingsOpen = false
     root.confirmRestartOpen = true
   }
 
@@ -490,8 +496,14 @@ Panel {
     // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
     // reason the framework rows are numbered.
     if (key === "/") {
+      root.settingsOpen = false
       root.guideOpen = !root.guideOpen
       if (root.guideOpen) root.refreshStaleApps()
+      return
+    }
+    if (key === "s") {
+      root.guideOpen = false
+      root.settingsOpen = !root.settingsOpen
       return
     }
     // While the guide is up, a digit means one of the removed frameworks listed
@@ -502,14 +514,20 @@ Panel {
         root.openRestartConfirm()
         return
       }
-      // Settings: c flips the restart mode, ? opens help, and a digit removes
-      // or adds back the framework shown beside it.
+      return
+    }
+    // Settings: c flips the restart mode, and a digit removes or adds back the
+    // framework shown beside it.
+    if (root.settingsOpen) {
       if (key === "c") { root.toggleRestartMode(); return }
-      if (key === "?") { root.openHelp(); return }
       var back = parseInt(key, 10) - 1
       if (back >= 0 && back < root.settingsFrameworks.length) {
         root.toggleRemoved(root.settingsFrameworks[back].target)
       }
+      return
+    }
+    if (key === "?") {
+      root.openHelp()
       return
     }
     if (key === "r") {
@@ -658,6 +676,7 @@ Panel {
       onCloseRequested: {
         if (root.confirmRestartOpen) root.confirmRestartOpen = false
         else if (root.guideOpen) root.guideOpen = false
+        else if (root.settingsOpen) root.settingsOpen = false
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -681,9 +700,11 @@ Panel {
         Text {
           text: root.confirmRestartOpen
             ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
-            : root.guideOpen
+            : root.settingsOpen
+              ? "Settings"
+              : root.guideOpen
               ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
-                                          : "Settings")
+                                          : "Nothing to close")
 
               : "Omarchroma"
           color: root.bar ? root.bar.foreground : Color.popups.text
@@ -846,15 +867,30 @@ Panel {
             onClicked: root.openRestartConfirm()
           }
 
+          Button {
+            width: guide.width
+            text: "Back  (/)"
+            iconText: "\udb80\udf0d"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.guideOpen = false
+          }
+        }
+
+        // Settings: the restart switch and which optional frameworks the panel
+        // shows. Its own view, on "s", so the list of windows to close on "/"
+        // stays just that.
+        Column {
+          id: settings
+          visible: root.settingsOpen && !root.confirmRestartOpen
+          width: content.width
+          spacing: Style.space(6)
+
           // Settings, drawn like the framework rows in the panel itself --
           // icon, label, the key that flips it, a switch -- so it reads as the
           // same kind of thing rather than a page of buttons and prose.
-          PanelSeparator {
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
-          }
 
           Item {
-            width: guide.width
+            width: settings.width
             height: Math.max(Style.spacing.controlHeight, askLabel.implicitHeight)
 
             Text {
@@ -920,7 +956,7 @@ Panel {
               id: shown
               required property var modelData
               required property int index
-              width: guide.width
+              width: settings.width
               height: Math.max(Style.spacing.controlHeight, shownLabel.implicitHeight)
 
               Text {
@@ -974,31 +1010,17 @@ Panel {
             foreground: root.bar ? root.bar.foreground : Color.popups.text
           }
 
-          Row {
-            width: guide.width
-            spacing: Style.space(6)
-
-            Button {
-              width: (guide.width - Style.space(6)) / 2
-              text: "Help  (?)"
-              iconText: "\udb81\ude25"
-              tooltipText: "Report an issue or ask a question: " + root.issuesUrl
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
-              onClicked: root.openHelp()
-            }
-
-            Button {
-              width: (guide.width - Style.space(6)) / 2
-              text: "Back  (/)"
-              iconText: "\udb80\udf0d"
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
-              onClicked: root.guideOpen = false
-            }
+          Button {
+            width: settings.width
+            text: "Back  (s)"
+            iconText: "\udb80\udf0d"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.settingsOpen = false
           }
         }
 
         Text {
-          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           text: refreshProcess.running
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
@@ -1020,7 +1042,7 @@ Panel {
         // is real only once the service is; each is gated on root.ready for
         // the same reason this replaces the old descriptive sentence.
         Button {
-          visible: !root.guideOpen && !root.confirmRestartOpen && root.dependencyChecked && !root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.dependencyChecked && !root.ready
           width: content.width
           enabled: !root.installing
           text: root.installing
@@ -1054,7 +1076,7 @@ Panel {
 
           delegate: Item {
             id: row
-            visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
+            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
             required property var modelData
             required property int index
             width: content.width
@@ -1114,13 +1136,13 @@ Panel {
         // enabled" and "Nothing to close" over an otherwise empty panel --
         // controls for a thing that does not exist yet.
         PanelSeparator {
-          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           foreground: root.bar ? root.bar.foreground : Color.popups.text
         }
 
 
         Button {
-          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
@@ -1130,19 +1152,41 @@ Panel {
         }
 
         // Reachable by mouse as well as by "/", and carries the count so the
-        // number of windows waiting is visible without opening it. Named for
-        // both things it holds: the list, and the restart settings below it.
+        // number of windows waiting is visible without opening it.
         Button {
-          visible: !root.guideOpen && !root.confirmRestartOpen && root.ready
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           width: content.width
           text: root.staleWindowCount > 0
-            ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close,\nOpen Settings  (/)"
-            : "Open Settings  (/)"
+            ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
+            : "Nothing to close  (/)"
           iconText: "󰖯"
           foreground: root.bar ? root.bar.foreground : Color.popups.text
           onClicked: {
             root.refreshStaleApps()
             root.guideOpen = true
+          }
+        }
+
+        Row {
+          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+          width: content.width
+          spacing: Style.space(6)
+
+          Button {
+            width: (content.width - Style.space(6)) / 2
+            text: "Settings  (s)"
+            iconText: "\udb81\udc93"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.settingsOpen = true
+          }
+
+          Button {
+            width: (content.width - Style.space(6)) / 2
+            text: "Help  (?)"
+            iconText: "\udb81\ude25"
+            tooltipText: "Report an issue or ask a question: " + root.issuesUrl
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: root.openHelp()
           }
         }
       }

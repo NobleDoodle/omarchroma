@@ -66,7 +66,7 @@ chk "\"i\" is still the key for all three, not just named in the button" \
 # The separator and the refresh/close-apps buttons once checked only
 # !guideOpen, so with no service installed they still drew over an otherwise
 # empty panel -- controls for a framework list that had nothing in it.
-for control in 'PanelSeparator {' 'text: "Refresh enabled' 'Open Settings  (/)"'; do
+for control in 'PanelSeparator {' 'text: "Refresh enabled' 'to close  (/)"'; do
   chk "gated on root.ready: $control" \
     "$(code Panel.qml | grep -B3 -A2 "$control" | grep -c 'visible:.*root\.ready')" "1"
 done
