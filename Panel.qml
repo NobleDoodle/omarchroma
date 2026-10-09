@@ -695,7 +695,7 @@ Panel {
       Column {
         id: content
         width: parent.width
-        spacing: Style.space(8)
+        spacing: Style.space(4)
 
         Text {
           text: root.confirmRestartOpen
@@ -1025,7 +1025,7 @@ Panel {
             ? (root.targetEnabled(root.activeTarget)
                 ? "Synchronizing " + root.activeTarget + "..."
                 : "Reverting " + root.activeTarget + "...")
-            : "Switching one off restores how it looked before Omarchroma."
+            : "Off restores the pre-Omarchroma look."
           color: Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
@@ -1151,40 +1151,42 @@ Panel {
           onClicked: root.refresh("all")
         }
 
-        // Reachable by mouse as well as by "/", and carries the count so the
-        // number of windows waiting is visible without opening it.
-        Button {
-          visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
-          width: content.width
-          text: root.staleWindowCount > 0
-            ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
-            : "Nothing to close  (/)"
-          iconText: "󰖯"
-          foreground: root.bar ? root.bar.foreground : Color.popups.text
-          onClicked: {
-            root.refreshStaleApps()
-            root.guideOpen = true
-          }
-        }
-
+        // The list on "/", with Settings and Help beside it as icons alone --
+        // one row, not three. Reachable by mouse as well as by key; each icon
+        // names itself and its key in its tooltip.
         Row {
+          id: bottomRow
           visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
           width: content.width
-          spacing: Style.space(6)
+          spacing: Style.space(4)
+          readonly property real iconWidth: Style.spacing.controlHeight
 
           Button {
-            width: (content.width - Style.space(6)) / 2
-            text: "Settings  (s)"
+            visible: !root.guideOpen && !root.settingsOpen && !root.confirmRestartOpen && root.ready
+            width: bottomRow.width - 2 * (bottomRow.iconWidth + bottomRow.spacing)
+            text: root.staleWindowCount > 0
+              ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
+              : "Nothing to close  (/)"
+            iconText: "󰖯"
+            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            onClicked: {
+              root.refreshStaleApps()
+              root.guideOpen = true
+            }
+          }
+
+          Button {
+            width: bottomRow.iconWidth
             iconText: "\udb81\udc93"
+            tooltipText: "Settings  (s)"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.settingsOpen = true
           }
 
           Button {
-            width: (content.width - Style.space(6)) / 2
-            text: "Help  (?)"
+            width: bottomRow.iconWidth
             iconText: "\udb81\ude25"
-            tooltipText: "Report an issue or ask a question: " + root.issuesUrl
+            tooltipText: "Help: report an issue or ask a question  (?)"
             foreground: root.bar ? root.bar.foreground : Color.popups.text
             onClicked: root.openHelp()
           }
