@@ -127,28 +127,44 @@ omarchy_icon_theme() {
   printf "%s" "$value"
 }
 
-# --icon-theme: only the GTK icon-theme setting. Qt applications here read
-# their icons through the gtk3 platform theme -- QT_QPA_PLATFORMTHEME=gtk3 on
-# Omarchy -- so the icon set in kdeglobals never reaches them; Okular kept the
-# light Yaru set Omarchy names, dark glyphs on a dark background (issue #3).
-# Replaced only when the setting holds exactly the light name of the set chosen
-# above, as Omarchy writes it: anything else, the user's own choice included,
-# is left alone. Run apart from the rest because unlike kdeglobals it does not
-# disturb a running application, so it does not wait for KDE apps to close.
-sync_icon_theme_setting() {
-  local chosen current
-  chosen=$(omarchy_icon_theme sync-qt-kde-theme) || return 0
-  current=$(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null) || return 0
-  current=${current//\'/}
-  if [[ $chosen == *-dark && $chosen == "$current-dark" ]]; then
-    gsettings set org.gnome.desktop.interface icon-theme "$chosen"
+# The icon set KDE applications are given: a theme of Omarchroma's own, named
+# Omarchroma, holding no icons -- only an order to look them up in. First the
+# set the Omarchy theme names (its dark variant on a dark theme), so its icons
+# are used wherever it has them; then KDE's own Breeze in the theme's
+# brightness, for the many it lacks. Yaru, which Omarchy's themes name, has
+# none of view-preview, bookmarks, go-up and the like, and those fell back to
+# light-background Breeze: dark glyphs on a dark window (issue #3). Verified on
+# Okular: Yaru's colored zoom icons kept, every other icon light, the GTK icon
+# setting left exactly as Omarchy set it.
+#
+# Hidden, so it is never offered as a choice anywhere; one declared directory,
+# because a theme listing none is taken as invalid and skipped entirely --
+# which is what an earlier, directory-less version of this ran into. Written
+# only when it changes, through the state helper like every other write here.
+kde_icon_theme() {
+  local breeze=breeze own inherits=() data dir content
+  [[ $(omarchy-theme-color mode 2>/dev/null) == dark ]] && breeze=breeze-dark
+  data=${XDG_DATA_HOME:-$HOME/.local/share}
+  own=$(omarchy_icon_theme "$1")
+  [[ -n $own ]] && inherits+=("$own")
+  [[ -d "/usr/share/icons/$breeze" || -d "$data/icons/$breeze" ]] && inherits+=("$breeze")
+  (( ${#inherits[@]} )) || return 0
+  inherits+=(hicolor)
+  dir="$data/icons/Omarchroma"
+  content=$(printf '%s\n' \
+    "[Icon Theme]" "Name=Omarchroma" \
+    "Comment=The Omarchy theme's icons, then Breeze for what they lack (Omarchroma)" \
+    "Inherits=$(IFS=,; printf '%s' "${inherits[*]}")" \
+    "Hidden=true" "Directories=actions/22" "" \
+    "[actions/22]" "Size=22" "Context=Actions" "Type=Fixed")
+  if ! [[ -f $dir/index.theme && ! -L $dir/index.theme && $content == "$(cat -- "$dir/index.theme" 2>/dev/null)" ]]; then
+    printf '%s\n' "$content" |
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$dir/index.theme" --mode 644
   fi
-  return 0
+  [[ -d $dir/actions/22 ]] ||
+    printf '' | "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$dir/actions/22/.omarchroma" --mode 644
+  printf "Omarchroma"
 }
-if [[ ${1:-} == --icon-theme ]]; then
-  sync_icon_theme_setting
-  exit 0
-fi
 
 load_palette
 background=$(color background)
@@ -310,7 +326,7 @@ else
 fi
 
 globals_changed=$(
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$scheme_file" "$kdeglobals" "$(omarchy_icon_theme sync-qt-kde-theme)" <<'PY'
+  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$scheme_file" "$kdeglobals" "$(kde_icon_theme sync-qt-kde-theme)" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import hashlib
 import os
