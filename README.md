@@ -69,7 +69,7 @@ With the bar widget:
 | `1` – `6` | Toggle kept frameworks |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme, and Settings |
-| `c` (in Settings) | Ask to restart after a theme change: on / off |
+| `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
 | `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
 | `?` (in Settings) | Help: open the issues page to report a problem or ask a question |
 | `a` (in that list) | Review a restart of them: lists what will close, then Ctrl+Enter to go ahead |

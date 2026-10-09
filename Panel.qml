@@ -853,13 +853,6 @@ Panel {
             foreground: root.bar ? root.bar.foreground : Color.popups.text
           }
 
-          Text {
-            text: "Restart"
-            color: Color.muted
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-          }
-
           Item {
             width: guide.width
             height: Math.max(Style.spacing.controlHeight, askLabel.implicitHeight)
@@ -876,7 +869,7 @@ Panel {
 
             Text {
               id: askLabel
-              text: "Ask after a theme change"
+              text: "Restart apps at theme change"
               color: root.bar ? root.bar.foreground : Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
