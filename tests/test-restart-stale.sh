@@ -332,24 +332,24 @@ else:
 # exited silently within its first second, launched this way it did not.
 # Real desktop files, not fakes: HOME is not sandboxed for this half of the
 # script, and YouTube Music's, declaring the class below, ships with Omarchy.
-chk("a window class with an installed launcher resolves to its desktop file, suffix and all",
-    st.desktop_entries().get("com.github.th-ch.youtube-music"),
-    "com.github.th-ch.youtube-music.desktop")
+youtube_music = st.desktop_entries().get("com.github.th-ch.youtube-music") or ""
+chk("a window class with an installed launcher resolves to its desktop file's full path",
+    (os.path.isabs(youtube_music), youtube_music.endswith("/com.github.th-ch.youtube-music.desktop")),
+    (True, True))
 uwsm_path = shutil.which("uwsm", path=st.trusted_path())
 if uwsm_path:
     chk("...and relaunch_command runs it through uwsm's own scope",
-        st.relaunch_command("com.github.th-ch.youtube-music",
-                            ["/opt/YouTube Music/youtube-music"],
+        st.relaunch_command(youtube_music, ["/opt/YouTube Music/youtube-music"],
                             "/opt/YouTube Music/youtube-music"),
-        [uwsm_path, "app", "-s", "a", "--", "com.github.th-ch.youtube-music.desktop"])
+        [uwsm_path, "app", "-s", "a", "--", youtube_music])
 else:
     print("  SKIP relaunch_command via uwsm: uwsm is not installed here")
 chk("a class with no installed launcher falls back to the kernel's own exe",
-    st.relaunch_command("no.such.class", ["firefox", "--new-window"], "/usr/bin/firefox", confined=False),
+    st.relaunch_command(None, ["firefox", "--new-window"], "/usr/bin/firefox", confined=False),
     ["/usr/bin/firefox", "--new-window"])
 chk("...but never for a sandboxed process, whose argv and exe are its own to choose",
-    (st.relaunch_command("no.such.class", ["python3", "-c", "x"], "/usr/bin/python3", confined=True),
-     st.relaunch_command("no.such.class", ["python3", "-c", "x"], "/usr/bin/python3")),
+    (st.relaunch_command(None, ["python3", "-c", "x"], "/usr/bin/python3", confined=True),
+     st.relaunch_command(None, ["python3", "-c", "x"], "/usr/bin/python3")),
     (None, None))
 
 # -- several at once: close all, sync while closed, relaunch all ------------
@@ -507,7 +507,8 @@ st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
 evaluated.clear()
 st.hide_new_windows({"vivaldi-stable", "com.github.th-ch.youtube-music", 'x" }) hl.exec("y'})
 chk("a rule sends the restarting apps' new windows to a hidden workspace, by class",
-    evaluated, ['_G.omarchroma_restart_rule = hl.window_rule({ name = "omarchroma-restart", '
+    evaluated, ['if _G.omarchroma_restart_rule then _G.omarchroma_restart_rule:set_enabled(false) end '
+                '_G.omarchroma_restart_rule = hl.window_rule({ name = "omarchroma-restart", '
                 'match = { class = "(?i)^(com\\\\.github\\\\.th\\\\-ch\\\\.youtube\\\\-music|vivaldi\\\\-stable)$" }, '
                 'workspace = "special:omarchroma-restart silent" })'])
 chk("...a class that is not a plain name is never written into it",
@@ -541,7 +542,8 @@ finally:
         proc.kill()
     proc.wait(timeout=2)
 chk("...and the rule is switched off again even when relaunching fails",
-    [e.split("(")[0] for e in evaluated], ["_G.omarchroma_restart_rule = hl.window_rule", "if _G.omarchroma_restart_rule then _G.omarchroma_restart_rule:set_enabled"])
+    [("hl.window_rule" in e, e.startswith("if _G.omarchroma_restart_rule then")) for e in evaluated],
+    [(True, True), (False, True)])
 st.relaunch_and_place, st.open_window_records = real_relaunch, real_records
 st.stale_window_groups = pristine_stale_window_groups
 st.WINDOW_CLOSE_GRACE_SECONDS = 0.2
@@ -610,7 +612,7 @@ real_records, real_command = st.open_window_records, st.new_window_command
 launched_windows = []
 shown = [{"title": "Home", "class": "test-files", "pid": 5, "address": "0xf1", "workspace": "special:omarchroma-restart"}]
 st.open_window_records = lambda: list(shown)
-st.new_window_command = lambda klass: ["/bin/true", klass]
+st.new_window_command = lambda entry: ["/bin/true", entry]
 real_popen = st.subprocess.Popen
 def fake_popen(argv, **kwargs):
     if argv[:1] == ["/bin/true"]:
@@ -620,13 +622,14 @@ def fake_popen(argv, **kwargs):
     return real_popen(["true"])
 st.subprocess.Popen = fake_popen
 st.PLACEMENT_SECONDS, st.WINDOW_SETTLE_SECONDS = 2.0, 0.3
-plan = {"windows": [{"address": "0xa1", "class": "test-files", "title": "Home", "workspace": "2"},
+plan = {"entry": "/usr/share/applications/test-files.desktop",
+        "windows": [{"address": "0xa1", "class": "test-files", "title": "Home", "workspace": "2"},
                     {"address": "0xa2", "class": "test-files", "title": "Downloads", "workspace": "5"}]}
 dispatched.clear()
 st.place_windows([plan], before=set())
 st.subprocess.Popen = real_popen
 chk("an application that came back with fewer windows has the rest opened for it",
-    launched_windows, ["test-files"])
+    launched_windows, ["/usr/share/applications/test-files.desktop"])
 chk("...and every window, old or new, goes back to its own workspace",
     sorted(d.split('workspace = "')[1].split('"')[0] for d in dispatched), ["2", "5"])
 st.open_window_records, st.new_window_command = real_records, real_command

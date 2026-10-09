@@ -2168,7 +2168,7 @@ def stale_open_windows(since=None):
             continue
         if klass in UNTHEMED_CLASSES:
             continue
-        name = app_display_name(title, klass)
+        name = app_display_name(title, klass, *process_identity(pid))
         counts[name] = counts.get(name, 0) + 1
     return counts
 
@@ -2261,7 +2261,11 @@ def hide_new_windows(classes):
         return False
     pattern = "(?i)^(" + "|".join(re.escape(klass) for klass in safe) + ")$"
     lua_pattern = pattern.replace("\\", "\\\\")
+    # Any rule an earlier restart left on -- killed before it could switch it
+    # off -- is switched off first: overwriting the only handle to it would
+    # leave windows of those classes opening out of sight until a reload.
     return hyprland_eval(
+        "if _G.omarchroma_restart_rule then _G.omarchroma_restart_rule:set_enabled(false) end "
         "_G.omarchroma_restart_rule = hl.window_rule({ name = \"omarchroma-restart\", "
         f"match = {{ class = \"{lua_pattern}\" }}, workspace = \"{HIDDEN_WORKSPACE} silent\" }})")
 
@@ -2321,7 +2325,7 @@ def stale_window_groups(since=None):
         started = process_started_at(pid)
         if started is None or started >= since:
             continue
-        name = app_display_name(windows[0]["title"], windows[0]["class"])
+        name = app_display_name(windows[0]["title"], windows[0]["class"], *process_identity(pid))
         groups.append({"pid": pid, "started": started, "name": name, "class": windows[0]["class"],
                        "addresses": [w["address"] for w in windows],
                        "windows": [{"address": w["address"], "class": w["class"],
@@ -2433,23 +2437,47 @@ def launch_environment():
 # one. {window class (lower-case, matching what Hyprland and open_windows()
 # already fold it to): desktop entry id}.
 _DESKTOP_ENTRIES = None
+_FLATPAK_ENTRIES = None
+_DESKTOP_ACTIONS = {}
+_DESKTOP_NAMES = {}
 
 
-def desktop_entries():
-    """Every installed application's id, by the window class its own
-    StartupWMClass declares. A window's class is the application's own claim,
-    so one can name another's class; all that buys it is which installed
-    launcher a restart the user confirmed starts -- an entry the launcher
-    would start the same way, never a command read from the window."""
-    global _DESKTOP_ENTRIES
-    if _DESKTOP_ENTRIES is not None:
-        return _DESKTOP_ENTRIES
+def is_flatpak_export(root):
+    """Whether a data root is one Flatpak exports its apps' files into."""
+    parts = Path(root).parts
+    return any(parts[i:i + 2] == ("flatpak", "exports") for i in range(len(parts)))
+
+
+def is_snap_export(root):
+    """Whether a data root is snapd's, which carries each snap's own desktop
+    files -- StartupWMClass included -- the same way Flatpak's exports do."""
+    parts = Path(root).parts
+    return any(parts[i:i + 2] == ("snapd", "desktop") for i in range(len(parts)))
+
+
+def scan_desktop_entries():
+    """Read every installed desktop entry once, into two separate maps.
+
+    Host launchers, by the window class each declares (StartupWMClass) and by
+    its own id, to the full path of the file. And Flatpak exports, by app id
+    alone. They are kept apart because a Flatpak's exported entry can declare
+    any StartupWMClass it likes -- "firefox" included -- and Flatpak's export
+    folders come first in XDG_DATA_DIRS: one map would have let an installed
+    Flatpak be launched in place of the host Firefox the user had confirmed
+    restarting, under Firefox's name. Paths, not ids, so that what uwsm
+    starts is the file chosen here, not whatever its own lookup finds first."""
+    global _DESKTOP_ENTRIES, _FLATPAK_ENTRIES
     roots = [Path.home() / ".local/share", Path.home() / ".local/share/flatpak/exports/share"]
     roots += [Path(part) for part in (os.environ.get("XDG_DATA_DIRS")
                                       or "/usr/share:/usr/local/share").split(":") if part]
     roots.append(Path("/var/lib/flatpak/exports/share"))
-    entries = {}
+    host, flatpak = {}, {}
     for root in roots:
+        exported = is_flatpak_export(root)
+        if is_snap_export(root):
+            # Never a host launcher, and a confined snap has no identity
+            # here to be matched by: it is left open, not relaunched.
+            continue
         directory = root / "applications"
         try:
             names = sorted(entry.name for entry in os.scandir(directory)
@@ -2457,6 +2485,7 @@ def desktop_entries():
         except OSError:
             continue
         for filename in names:
+            path = str(directory / filename)
             text = safe_read(directory / filename, MAX_FOREIGN_FILE)
             if text is None:
                 continue
@@ -2469,32 +2498,88 @@ def desktop_entries():
                     klass = line[len("StartupWMClass="):].strip().lower()
                 elif line.startswith("Actions="):
                     actions = {a for a in line[len("Actions="):].strip().split(";") if a}
-                elif line.startswith("Name=") and filename not in _DESKTOP_NAMES:
-                    _DESKTOP_NAMES[filename] = line[len("Name="):].strip()
-            # The full file name, suffix and all: that suffix is how uwsm
-            # tells a desktop entry id from a command name (main.py, "elif
-            # arg.endswith('.desktop')"). Without it, it looks for a binary
-            # called "com.github.th-ch.youtube-music" and fails.
+                elif line.startswith("Name=") and path not in _DESKTOP_NAMES:
+                    _DESKTOP_NAMES[path] = line[len("Name="):].strip()
+            _DESKTOP_ACTIONS.setdefault(path, actions)
+            if exported:
+                # Flatpak names every exported file after its app id.
+                flatpak.setdefault(filename.removesuffix(".desktop"), path)
+                continue
             if klass:
-                entries.setdefault(klass, filename)
+                host.setdefault(klass, path)
             # On Wayland a window's app id is its desktop file's own name,
             # which is how Nautilus, with no StartupWMClass, is found.
-            entries.setdefault(filename.removesuffix(".desktop").lower(), filename)
-            _DESKTOP_ACTIONS.setdefault(filename, actions)
-    _DESKTOP_ENTRIES = entries
-    return entries
+            host.setdefault(filename.removesuffix(".desktop").lower(), path)
+    _DESKTOP_ENTRIES, _FLATPAK_ENTRIES = host, flatpak
 
 
-_DESKTOP_ACTIONS = {}
-_DESKTOP_NAMES = {}
+def desktop_entries():
+    """Host launchers: window class or id -> desktop file path."""
+    if _DESKTOP_ENTRIES is None:
+        scan_desktop_entries()
+    return _DESKTOP_ENTRIES
 
 
-def app_display_name(title, klass):
+def flatpak_entries():
+    """Flatpak exports: app id -> desktop file path."""
+    if _FLATPAK_ENTRIES is None:
+        scan_desktop_entries()
+    return _FLATPAK_ENTRIES
+
+
+FLATPAK_APP_ID = re.compile(r"\A[A-Za-z_][A-Za-z0-9_-]*(\.[A-Za-z_][A-Za-z0-9_-]*){2,}\Z")
+
+
+def flatpak_app_id(pid):
+    """A Flatpak process's app id, from the /.flatpak-info Flatpak places in
+    its sandbox -- read-only there, and not the app's to rewrite -- or None
+    for anything else, a bare bubblewrap or firejail sandbox included."""
+    try:
+        descriptor = os.open(f"/proc/{pid}/root/.flatpak-info",
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        data = os.read(descriptor, 65536)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    section = ""
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        elif section == "[Application]" and line.startswith("name="):
+            app_id = line[len("name="):].strip()
+            return app_id if FLATPAK_APP_ID.match(app_id) else None
+    return None
+
+
+def process_identity(pid):
+    """(confined, Flatpak app id or None) for a window's process."""
+    confined = runs_confined(pid)
+    return confined, (flatpak_app_id(pid) if confined else None)
+
+
+def launcher_for(klass, confined=False, app_id=None):
+    """The desktop file that starts a window's application, or None. A host
+    process gets a host launcher, by its class; a Flatpak gets its own export,
+    by the app id Flatpak recorded, whatever class its window claims; any
+    other sandboxed process gets none."""
+    if confined:
+        return flatpak_entries().get(app_id) if app_id else None
+    return desktop_entries().get(klass)
+
+
+def app_display_name(title, klass, confined=False, app_id=None):
     """What to call a window's application: its own name, from its desktop
-    entry ("Vivaldi", "Visual Studio Code"), where one names this class, and
+    entry ("Vivaldi", "Visual Studio Code"), where one is its launcher, and
     otherwise what the window itself says (window_display_name). Cleaned
     either way: a desktop entry in ~/.local/share is this account's to write."""
-    entry = desktop_entries().get(klass)
+    entry = launcher_for(klass, confined, app_id)
     name = _DESKTOP_NAMES.get(entry) if entry else None
     if name:
         return display_name(name)
@@ -2502,19 +2587,18 @@ def app_display_name(title, klass):
     return name[:1].upper() + name[1:]
 
 
-def new_window_command(klass):
+def new_window_command(entry):
     """How to open one more window of an application, or None: its desktop
     entry's "new-window" action -- the conventional id, shipped by Vivaldi,
     Chromium, Firefox, Nautilus and most others -- through uwsm, as the
     launcher would. Used for windows an application did not bring back."""
     uwsm = shutil.which("uwsm", path=trusted_path())
-    entry = uwsm and desktop_entries().get(klass)
-    if entry and "new-window" in _DESKTOP_ACTIONS.get(entry, ()):
+    if uwsm and entry and "new-window" in _DESKTOP_ACTIONS.get(entry, ()):
         return [uwsm, "app", "-s", "a", "--", f"{entry}:new-window"]
     return None
 
 
-def relaunch_command(klass, cmdline, exe, confined=True):
+def relaunch_command(entry, cmdline, exe, confined=True):
     """How to bring an application back: by the application's own installed
     launcher where one names this window class, which is what actually
     starts it the way the desktop would -- in the systemd scope Omarchy
@@ -2530,8 +2614,7 @@ def relaunch_command(klass, cmdline, exe, confined=True):
     installed launcher gets None: it is left open rather than closed with
     nothing safe to bring it back with."""
     uwsm = shutil.which("uwsm", path=trusted_path())
-    entry = uwsm and desktop_entries().get(klass)
-    if entry:
+    if uwsm and entry:
         return [uwsm, "app", "-s", "a", "--", entry]
     if confined:
         return None
@@ -2673,8 +2756,9 @@ def restart_stale_apps(state_dir, since=None, between=None):
             # with nothing to replace it.
             failed.append(name)
             continue
-        confined = runs_confined(pid)
-        argv = relaunch_command(klass, cmdline, exe, confined)
+        confined, app_id = process_identity(pid)
+        entry = launcher_for(klass, confined, app_id)
+        argv = relaunch_command(entry, cmdline, exe, confined)
         if argv is None:
             # Sandboxed, and no installed launcher names its class: nothing
             # safe to relaunch it with, so it is not closed.
@@ -2696,7 +2780,7 @@ def restart_stale_apps(state_dir, since=None, between=None):
         # this account's PATH than the real one happened to hold. Either way
         # argv[0] is already an absolute, verified path, so it is its own
         # executable=. Captured now, while the process is still here to read.
-        plans.append({"pid": pid, "pidfd": descriptor, "name": name, "exe": exe,
+        plans.append({"pid": pid, "pidfd": descriptor, "name": name, "exe": exe, "entry": entry,
                       "argv": argv,
                       # A confined process's working directory is its own
                       # choice too; the launcher starts everything at home.
@@ -2911,7 +2995,7 @@ def place_windows(plans, before):
         # an application the relaunch could not.
         if not originals or id(plan) not in reappeared:
             continue
-        command = new_window_command(originals[0]["class"])
+        command = new_window_command(plan.get("entry"))
         if not command:
             continue
         for _ in originals:
