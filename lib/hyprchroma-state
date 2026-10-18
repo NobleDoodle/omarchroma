@@ -3465,6 +3465,61 @@ GTK_PORTAL_BACKENDS = (
 )
 
 
+# How long a recycled backend is given to own its name again, and how long the
+# "no preference" step of re-sending the color scheme lasts.
+PORTAL_RESTART_SECONDS = 5.0
+COLOR_SCHEME_STEP_SECONDS = 0.3
+
+
+def restart_portal_backend(name):
+    """Start a portal backend this has just quit, and wait until it owns its name.
+
+    Left to D-Bus activation, a quit backend stayed down until the next portal
+    request, and while it was down nothing watched gsettings: the next theme
+    switch changed color-scheme and no SettingChanged for it ever reached an
+    application (issue #4). A restart in progress could also relaunch apps that
+    read the portal while the old backend was still exiting. Returning only
+    once the new one is up closes both. The portal is then asked for the color
+    scheme once, so it is talking to the new backend before anything relies on
+    its signals. True if the backend came back in time."""
+    bus_call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+             "org.freedesktop.DBus.StartServiceByName", name, "0")
+    deadline = time.monotonic() + PORTAL_RESTART_SECONDS
+    while time.monotonic() < deadline:
+        if name_has_owner(name):
+            bus_call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                     "org.freedesktop.portal.Settings.ReadOne",
+                     "org.freedesktop.appearance", "color-scheme")
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def resend_color_scheme():
+    """Have the portal announce the current color scheme once more.
+
+    Recycling the backend that turns gsettings into SettingChanged left apps
+    that follow the system scheme -- Chromium, Electron, libadwaita, Qt through
+    the portal -- on the last value they were sent, or on light once the old
+    backend went away, while gsettings and ReadOne both said dark (issue #4).
+    A backend only signals a change, so the scheme passes through "default"
+    and back: apps end on the right value, at the cost of a moment of "no
+    preference". "default" itself needs nothing sent. The original value is
+    put back whatever happens in between. True if it was re-sent."""
+    value = command_output(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"])
+    if value not in ("'prefer-dark'", "'prefer-light'"):
+        return False
+    scheme = value.strip("'")
+    try:
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", "default"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=10)
+        time.sleep(COLOR_SCHEME_STEP_SECONDS)
+    finally:
+        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "color-scheme", scheme],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=10)
+    return True
+
+
 def gtk_portal_pids():
     """PIDs currently serving a GTK portal backend."""
     pids = set()
@@ -3537,7 +3592,9 @@ def _refresh_idle_apps(newer_than, windows):
     # ties a dialog to its backend: one with a dialog open is left alone, and
     # the window event that closes the dialog is the run that recycles it.
     # D-Bus activation starts a fresh one on the next request, which reads the
-    # stylesheet as it is now.
+    # stylesheet as it is now -- started straight away rather than left to
+    # activation, since the same backend sends apps their color scheme.
+    recycled = []
     for name in GTK_PORTAL_BACKENDS:
         if name not in running:
             continue
@@ -3554,8 +3611,15 @@ def _refresh_idle_apps(newer_than, windows):
             continue
         if quit_application(pid, name, "/" + name.replace(".", "/")):
             print(f"Hyprchroma: closed idle {name} so its next dialog is themed")
+            recycled.append(name)
         else:
             print(f"Hyprchroma: {name} did not quit; its next dialog may still be stale")
+    restarted = [name for name in recycled if restart_portal_backend(name)]
+    for name in recycled:
+        if name not in restarted:
+            print(f"Hyprchroma: {name} did not start again; apps may miss the next color scheme change")
+    if restarted and resend_color_scheme():
+        print("Hyprchroma: sent the color scheme again through the restarted portal")
 
     for name in sorted(running):
         if name.startswith("org.freedesktop.") or name.lower() in windowed:

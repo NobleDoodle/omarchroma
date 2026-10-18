@@ -27,6 +27,8 @@ PORTAL_PID, HYPR_PID, NOTIFY_PID = 1397, 1505, 1600
 THEME_SWITCH = 10_000
 BEFORE, AFTER = THEME_SWITCH - 3600, THEME_SWITCH + 60
 
+real_restart, real_resend = st.restart_portal_backend, st.resend_color_scheme
+
 def scenario(windows, started=BEFORE, binary="/usr/lib/xdg-desktop-portal-gtk",
              exec_line="/usr/lib/xdg-desktop-portal-gtk"):
     """Run refresh_idle_apps against a described session; return who it quit."""
@@ -41,8 +43,12 @@ def scenario(windows, started=BEFORE, binary="/usr/lib/xdg-desktop-portal-gtk",
     st.running_binary = lambda pid: binary if pid == PORTAL_PID else "/usr/bin/other"
     st.has_quit_action = lambda name, path, pid=None: False
     st.quit_application = lambda pid, name, path: quit.append(name) or True
+    st.restart_portal_backend = lambda name: steps.append(("restart", name)) or restart_ok
+    st.resend_color_scheme = lambda: steps.append(("resend",)) or True
     st.refresh_idle_apps()
     return quit
+
+steps, restart_ok = [], True
 
 # -- the reported case: portal idle, started before the theme switch --------
 chk("an idle portal still on the previous palette is recycled",
@@ -80,6 +86,61 @@ quit = []
 st.quit_application = lambda pid, name, path: quit.append(name) or True
 st.refresh_idle_apps()
 chk("without a window list nothing is recycled", quit, [])
+
+# -- issue #4: the recycled backend is what sends apps their color scheme ----
+steps.clear()
+chk("a recycled portal is started again at once, then the color scheme re-sent",
+    (scenario(windows=[]), steps), ([GTK], [("restart", GTK), ("resend",)]))
+steps.clear()
+scenario(windows=[], started=AFTER)
+chk("...and nothing is restarted or re-sent when nothing was recycled", steps, [])
+steps.clear(); restart_ok = False
+scenario(windows=[])
+chk("a backend that does not come back is not followed by a re-send",
+    steps, [("restart", GTK)])
+restart_ok = True
+
+# restart_portal_backend: starts the name, waits for an owner, then reads once
+st.restart_portal_backend, st.resend_color_scheme = real_restart, real_resend
+calls, owners = [], iter([False, False, True])
+st.bus_call = lambda dest, path, method, *a: calls.append((dest, method, a)) or "()"
+st.name_has_owner = lambda name: next(owners, True)
+st.time.sleep = lambda s: None
+chk("a restarted backend is waited for until it owns its name",
+    st.restart_portal_backend(GTK), True)
+chk("...started through D-Bus, then read through the portal once",
+    [c[1] for c in calls], ["org.freedesktop.DBus.StartServiceByName",
+                            "org.freedesktop.portal.Settings.ReadOne"])
+chk("...for the backend just quit, and the appearance color scheme",
+    (calls[0][2], calls[1][2]), ((GTK, "0"), ("org.freedesktop.appearance", "color-scheme")))
+calls.clear()
+st.name_has_owner = lambda name: False
+st.PORTAL_RESTART_SECONDS = 0.05
+real_monotonic = st.time.monotonic
+chk("one that never comes back is reported, not waited on forever",
+    st.restart_portal_backend(GTK), False)
+
+# resend_color_scheme: through "default" and back, the value always restored
+ran = []
+st.subprocess.run = lambda args, **kw: ran.append(args[-1])
+st.command_output = lambda args: "'prefer-dark'"
+chk("a dark scheme is re-sent through default", (st.resend_color_scheme(), ran),
+    (True, ["default", "prefer-dark"]))
+ran.clear()
+st.command_output = lambda args: "'default'"
+chk("no preference needs nothing sent", (st.resend_color_scheme(), ran), (False, []))
+st.command_output = lambda args: None
+chk("an unreadable scheme is left alone", (st.resend_color_scheme(), ran), (False, []))
+st.command_output = lambda args: "'prefer-light'"
+def interrupted(s):
+    raise KeyboardInterrupt
+st.time.sleep = interrupted
+try:
+    st.resend_color_scheme()
+except KeyboardInterrupt:
+    pass
+chk("...and an interruption still puts the original value back",
+    ran, ["default", "prefer-light"])
 
 # -- the stale-apps report names applications, not a file chooser ----------
 st.open_windows = lambda: [("All Files", "xdg-desktop-portal-gtk", PORTAL_PID),

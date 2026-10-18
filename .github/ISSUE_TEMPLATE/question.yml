@@ -24,6 +24,6 @@ body:
     attributes:
       label: Omarchroma version
       description: Press `?` in the panel to see the plugin and service versions.
-      placeholder: Plugin 3.2.3, service hyprchroma 3.2.3
+      placeholder: Plugin 3.2.4, service hyprchroma 3.2.4
     validations:
       required: false
