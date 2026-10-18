@@ -121,17 +121,25 @@ chk("one that never comes back is reported, not waited on forever",
     st.restart_portal_backend(GTK), False)
 
 # resend_color_scheme: through "default" and back, the value always restored
-ran = []
-st.subprocess.run = lambda args, **kw: ran.append(args[-1])
-st.command_output = lambda args: "'prefer-dark'"
+ran, current = [], ["'prefer-dark'"]
+class Done:
+    def __init__(self, out=""): self.stdout, self.returncode = out, 0
+def fake_run(args, **kw):
+    if args[1] == "get":
+        if current[0] is None:
+            raise st.subprocess.TimeoutExpired(args, 10)
+        return Done(current[0])
+    ran.append(args[-1])
+    return Done()
+st.subprocess.run = fake_run
 chk("a dark scheme is re-sent through default", (st.resend_color_scheme(), ran),
     (True, ["default", "prefer-dark"]))
 ran.clear()
-st.command_output = lambda args: "'default'"
+current[0] = "'default'"
 chk("no preference needs nothing sent", (st.resend_color_scheme(), ran), (False, []))
-st.command_output = lambda args: None
+current[0] = None
 chk("an unreadable scheme is left alone", (st.resend_color_scheme(), ran), (False, []))
-st.command_output = lambda args: "'prefer-light'"
+current[0] = "'prefer-light'"
 def interrupted(s):
     raise KeyboardInterrupt
 st.time.sleep = interrupted
@@ -141,6 +149,35 @@ except KeyboardInterrupt:
     pass
 chk("...and an interruption still puts the original value back",
     ran, ["default", "prefer-light"])
+
+# a gsettings that hangs or fails is an answer, never an exception
+st.time.sleep = lambda s: None
+ran.clear(); current[0] = "'prefer-dark'"
+attempts = []
+def flaky_run(args, **kw):
+    if args[1] == "get":
+        return Done(current[0])
+    attempts.append(args[-1])
+    if args[-1] == "prefer-dark" and attempts.count("prefer-dark") == 1:
+        raise st.subprocess.TimeoutExpired(args, 10)
+    return Done()
+st.subprocess.run = flaky_run
+chk("a restore that times out is tried again, not raised",
+    (st.resend_color_scheme(), attempts), (True, ["default", "prefer-dark", "prefer-dark"]))
+def failing_run(args, **kw):
+    if args[1] == "get":
+        return Done(current[0])
+    attempts.append(args[-1])
+    r = Done(); r.returncode = 1; return r
+attempts.clear(); st.subprocess.run = failing_run
+st.set_color_scheme = st.set_color_scheme  # real one, using the failing run
+chk("a scheme that cannot be set to default is left exactly as it was",
+    (st.resend_color_scheme(), attempts), (False, ["default"]))
+def hung(*a, **k):
+    raise st.subprocess.TimeoutExpired("gdbus", 10)
+st.bus_call = hung
+chk("a bus that does not answer reads as a backend not back, not an exception",
+    st.restart_portal_backend(GTK), False)
 
 # -- the stale-apps report names applications, not a file chooser ----------
 st.open_windows = lambda: [("All Files", "xdg-desktop-portal-gtk", PORTAL_PID),
