@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 Panel {
@@ -753,7 +754,7 @@ Panel {
                   ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                               : "Nothing to close")
                   : "Omarchroma"
-            color: root.bar ? root.bar.foreground : Color.popups.text
+            color: root.bar ? root.bar.foreground : Commons.Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.body
             font.bold: true
@@ -773,14 +774,14 @@ Panel {
             Button {
               iconText: "\udb81\udc93"
               tooltipText: "Settings  (s)"
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
               onClicked: root.settingsOpen = true
             }
 
             Button {
               iconText: "\udb81\ude25"
               tooltipText: "About and help  (?)"
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
               onClicked: root.openAbout()
             }
           }
@@ -802,7 +803,7 @@ Panel {
             text: root.staleWindowCount > 0
               ? "These will be closed and reopened on the new theme:"
               : "Nothing is showing the previous theme."
-            color: root.bar ? root.bar.foreground : Color.popups.text
+            color: root.bar ? root.bar.foreground : Commons.Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
@@ -817,7 +818,7 @@ Panel {
               width: confirmRestart.width
               text: "\u2022 " + modelData + " \u2014 " + root.windowsPhrase(root.windowsOf(modelData))
               textFormat: Text.PlainText
-              color: root.bar ? root.bar.foreground : Color.popups.text
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
@@ -833,7 +834,7 @@ Panel {
             text: "\u2022 Unsaved work may be lost\n"
               + "\u2022 Save prompts are up to each app\n"
               + "\u2022 Multi-window apps close without asking"
-            color: root.bar ? root.bar.urgent : Color.urgent
+            color: root.bar ? root.bar.urgent : Commons.Color.urgent
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.body
             wrapMode: Text.WordWrap
@@ -844,7 +845,7 @@ Panel {
             width: confirmRestart.width
             text: "Restart  (Ctrl+Enter)"
             iconText: "\udb81\udf09"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.confirmRestart()
           }
 
@@ -852,7 +853,7 @@ Panel {
             width: confirmRestart.width
             text: "Cancel  (Esc)"
             iconText: "󰌍"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.confirmRestartOpen = false
           }
         }
@@ -869,7 +870,7 @@ Panel {
             visible: root.staleApps.length === 0
             width: guide.width
             text: "Nothing to close."
-            color: Color.muted
+            color: Commons.Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -889,7 +890,7 @@ Panel {
                 id: staleName
                 text: "\u2022  " + staleRow.modelData
                 textFormat: Text.PlainText
-                color: root.bar ? root.bar.foreground : Color.popups.text
+                color: root.bar ? root.bar.foreground : Commons.Color.popups.text
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
                 anchors.left: parent.left
@@ -901,9 +902,9 @@ Panel {
               Text {
                 id: staleRowWindows
                 text: root.windowsPhrase(root.windowsOf(staleRow.modelData))
-                // The name's color, dimmed: Color.muted all but vanishes on some
+                // The name's color, dimmed: Commons.Color.muted all but vanishes on some
                 // themes' panels, and this is a count to read, not a hint.
-                color: root.bar ? root.bar.foreground : Color.popups.text
+                color: root.bar ? root.bar.foreground : Commons.Color.popups.text
                 opacity: 0.7
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
@@ -916,7 +917,7 @@ Panel {
             visible: root.staleApps.length > root.staleShown
             width: guide.width
             text: "and " + (root.staleApps.length - root.staleShown) + " more"
-            color: Color.muted
+            color: Commons.Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
           }
@@ -926,7 +927,7 @@ Panel {
           // the previous theme, and the only place the user ever sees them.
           PanelSeparator {
             visible: root.staleApps.length > 0 || root.hiddenFrameworks.length > 0
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           }
 
           // Present in every mode, not only "off": restartMode decides what
@@ -936,7 +937,7 @@ Panel {
             width: guide.width
             text: "Restart All\u2026  (Ctrl+Enter)"
             iconText: "\udb81\udf09"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.openRestartConfirm()
           }
 
@@ -944,7 +945,7 @@ Panel {
             width: guide.width
             text: "Back  (/)"
             iconText: "\udb80\udf0d"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.guideOpen = false
           }
         }
@@ -969,7 +970,7 @@ Panel {
             Text {
               id: askIcon
               text: "\udb81\udf09"
-              color: root.bar ? root.bar.foreground : Color.popups.text
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
               anchors.left: parent.left
@@ -979,7 +980,7 @@ Panel {
             Text {
               id: askLabel
               text: "Restart apps at\ntheme change"
-              color: root.bar ? root.bar.foreground : Color.popups.text
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
               anchors.left: askIcon.right
@@ -994,7 +995,7 @@ Panel {
             Text {
               id: askKey
               text: "c"
-              color: Color.muted
+              color: Commons.Color.muted
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               anchors.right: askSwitch.left
@@ -1006,7 +1007,7 @@ Panel {
               id: askSwitch
               checked: root.restartMode === "confirm"
               busy: modeProcess.running
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               onToggled: root.toggleRestartMode()
@@ -1015,7 +1016,7 @@ Panel {
 
           Text {
             text: "Show in panel"
-            color: Color.muted
+            color: Commons.Color.muted
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
             topPadding: Style.space(8)
@@ -1035,7 +1036,7 @@ Panel {
               Text {
                 id: shownIcon
                 text: shown.modelData.icon
-                color: root.frameworkRemoved(shown.modelData.target) ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
+                color: root.frameworkRemoved(shown.modelData.target) ? Commons.Color.muted : (root.bar ? root.bar.foreground : Commons.Color.popups.text)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.body
                 anchors.left: parent.left
@@ -1045,7 +1046,7 @@ Panel {
               Text {
                 id: shownLabel
                 text: shown.modelData.label
-                color: root.frameworkRemoved(shown.modelData.target) ? Color.muted : (root.bar ? root.bar.foreground : Color.popups.text)
+                color: root.frameworkRemoved(shown.modelData.target) ? Commons.Color.muted : (root.bar ? root.bar.foreground : Commons.Color.popups.text)
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.body
                 anchors.left: shownIcon.right
@@ -1059,7 +1060,7 @@ Panel {
               Text {
                 id: shownKey
                 text: String(shown.index + 1)
-                color: Color.muted
+                color: Commons.Color.muted
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
                 anchors.right: shownSwitch.left
@@ -1071,7 +1072,7 @@ Panel {
                 id: shownSwitch
                 checked: !root.frameworkRemoved(shown.modelData.target)
                 busy: restoreProcess.running
-                foreground: root.bar ? root.bar.foreground : Color.popups.text
+                foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 onToggled: root.toggleRemoved(shown.modelData.target)
@@ -1080,14 +1081,14 @@ Panel {
           }
 
           PanelSeparator {
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           }
 
           Button {
             width: settings.width
             text: "Back  (s)"
             iconText: "\udb80\udf0d"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.settingsOpen = false
           }
         }
@@ -1116,7 +1117,7 @@ Panel {
               Text {
                 id: factLabel
                 text: fact.modelData.label
-                color: Color.muted
+                color: Commons.Color.muted
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
                 anchors.left: parent.left
@@ -1127,7 +1128,7 @@ Panel {
                 id: factValue
                 text: fact.modelData.value
                 textFormat: Text.PlainText
-                color: root.bar ? root.bar.foreground : Color.popups.text
+                color: root.bar ? root.bar.foreground : Commons.Color.popups.text
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.body
                 horizontalAlignment: Text.AlignRight
@@ -1141,14 +1142,14 @@ Panel {
           }
 
           PanelSeparator {
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           }
 
           Button {
             width: about.width
             text: "Open issue/ask for help  (i)"
             iconText: "\udb81\ude25"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.openLink(root.issuesUrl)
           }
 
@@ -1156,7 +1157,7 @@ Panel {
             width: about.width
             text: "Source on GitHub  (g)"
             iconText: "\udb80\udea4"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.openLink(root.repoUrl)
           }
 
@@ -1164,7 +1165,7 @@ Panel {
             width: about.width
             text: "Buy me a coffee  (b)"
             iconText: "\udb80\udd76"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.openLink(root.coffeeUrl)
           }
 
@@ -1172,7 +1173,7 @@ Panel {
             width: about.width
             text: "Back  (?)"
             iconText: "\udb80\udf0d"
-            foreground: root.bar ? root.bar.foreground : Color.popups.text
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.aboutOpen = false
           }
         }
@@ -1184,7 +1185,7 @@ Panel {
                 ? "Synchronizing " + root.activeTarget + "..."
                 : "Reverting " + root.activeTarget + "...")
             : "Off restores the pre-Omarchroma look."
-          color: Color.muted
+          color: Commons.Color.muted
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -1214,8 +1215,8 @@ Panel {
           // which stays readable where a theme's alert color is a muted one.
           // Drawn here rather than through the kit's "selected" state, which a
           // theme may fix to a color of its own.
-          readonly property color alertColor: root.bar ? root.bar.urgent : Color.urgent
-          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          readonly property color alertColor: root.bar ? root.bar.urgent : Commons.Color.urgent
+          foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           background: root.outdated ? Util.alpha(alertColor, 0.30) : "transparent"
 
           Rectangle {
@@ -1243,7 +1244,7 @@ Panel {
             Text {
               id: icon
               text: row.modelData.icon
-              color: root.bar ? root.bar.foreground : Color.popups.text
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
               anchors.left: parent.left
@@ -1253,7 +1254,7 @@ Panel {
             Text {
               id: label
               text: row.modelData.label
-              color: root.bar ? root.bar.foreground : Color.popups.text
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
               anchors.left: icon.right
@@ -1269,7 +1270,7 @@ Panel {
             Text {
               id: keyHint
               text: String(row.index + 1)
-              color: Color.muted
+              color: Commons.Color.muted
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
               anchors.right: toggle.left
@@ -1281,7 +1282,7 @@ Panel {
               id: toggle
               checked: root.targetEnabled(row.modelData.target)
               busy: refreshProcess.running
-              foreground: root.bar ? root.bar.foreground : Color.popups.text
+              foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               onToggled: root.setTargetEnabled(row.modelData.target, !checked)
@@ -1295,7 +1296,7 @@ Panel {
         // controls for a thing that does not exist yet.
         PanelSeparator {
           visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
-          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
         }
 
 
@@ -1304,7 +1305,7 @@ Panel {
           width: content.width
           text: "Refresh enabled  (r)"
           iconText: "󰑐"
-          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           enabled: !refreshProcess.running
           onClicked: root.refresh("all")
         }
@@ -1318,7 +1319,7 @@ Panel {
             ? "View " + root.windowsPhrase(root.staleWindowCount) + " to close  (/)"
             : "Nothing to close  (/)"
           iconText: "󰖯"
-          foreground: root.bar ? root.bar.foreground : Color.popups.text
+          foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
           onClicked: {
             root.refreshStaleApps()
             root.guideOpen = true
