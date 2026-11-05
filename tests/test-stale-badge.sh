@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# The bar icon says how many windows are still showing the previous theme:
-# it takes the theme's urgent color, as Omarchy's agents widget does when a
-# limit is near, with a small raised count. The service keeps the list in
-# status.json -- after each sync, and on every window event -- and the panel
-# watches the file, so the count follows an application being closed without
-# anything polling. Rendered and checked in a sandboxed shell; these pin it.
+# Theme status stays available inside the panel without an urgent bar badge.
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 set -uo pipefail
 
@@ -115,10 +110,6 @@ chk "the sync's own report records the list" \
   "$(grep -c 'report-stale-apps --record 2>' bin/hyprchroma)" "1"
 chk "the panel watches status.json for it, rather than polling" \
   "$(grep -c 'path: root.statusPath' Panel.qml),$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'watchChanges: true')" "1,1"
-chk "the icon turns the theme's urgent color while any are left" \
-  "$(grep -c 'active: root.alertCount > 0' BarWidget.qml)" "1"
-chk "...counting windows, not applications" \
-  "$(grep -c 'panelLoader.item.staleWindowCount$' BarWidget.qml)" "1"
 chk "the panel takes each app's windows from status.json, beside the list" \
   "$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'var counts = status.staleWindows')" "1"
 chk "...counting one for an app a service older than the counts lists without them" \
@@ -129,12 +120,6 @@ chk "...and puts each app's count beside it, in words so it is not taken for a k
   "$(grep -c 'text: root.windowsPhrase(root.windowsOf(staleRow.modelData))' Panel.qml)" "1"
 chk "...readable on every theme: the name's color dimmed, not Color.muted, which all but vanished" \
   "$(awk '/id: staleRowWindows/,/^              }/' Panel.qml | sed 's|//.*||' | grep -cE 'color: root.bar \? root.bar.foreground|opacity: 0.7|Color.muted')" "2"
-chk "...with a count raised beside it in that same color" \
-  "$(awk '/id: staleBadge/,/^  }/' BarWidget.qml | grep -cE 'color: button.activeColor|visible: root.alertCount > 0')" "2"
-chk "...drawn as the shell draws the glyph, so it is not color-fringed" \
-  "$(awk '/id: staleBadge/,/^  }/' BarWidget.qml | grep -c 'renderType: Text.NativeRendering')" "1"
-chk "...and capped at 9+ so it fits the icon's slot" \
-  "$(grep -c 'root.alertCount > 9 ? "9+"' BarWidget.qml)" "1"
 
 # -- one baseline: the moment the theme last changed ---------------------------
 python3 - "$REPO" <<'E'
@@ -207,12 +192,6 @@ chk("...and the same whatever OMARCHY_PATH the asker has", sorted(real.omarchy_r
 E
 
 # -- a pending service update: the same alert, counted as one -------------------
-chk "a service older than the plugin counts as one on the icon, beside any windows" \
-  "$(grep -c 'readonly property int alertCount: staleCount + (updatePending ? 1 : 0)' BarWidget.qml)" "1"
-chk "...which is the panel's own outdated check" \
-  "$(grep -c 'panelLoader.item.outdated === true' BarWidget.qml)" "1"
-chk "...and the tooltip says so, with the windows after it" \
-  "$(grep -cE '"1 service update pending"|", and "' BarWidget.qml)" "2"
 chk "the version is asked as the shell starts, not only when the panel opens" \
   "$(grep -c 'Component.onCompleted: presenceProcess.running = true' Panel.qml)" "1"
 chk "...again when the plugin's manifest changes" \

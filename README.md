@@ -12,6 +12,13 @@ Waterfox and Vivaldi.
 It runs as a standalone user service (`hyprchroma`) with an optional Omarchy
 bar widget for convenience.
 
+Theme changes and panel actions do not send routine desktop notifications.
+Synchronization errors show at most one notification per desktop session,
+shared across the service, hooks and panel actions. Further errors remain in
+the logs. The bar icon stays neutral; open the panel to inspect applications
+still using the previous theme or a pending service update. `--notify` remains
+accepted for compatibility, but no longer enables routine popups.
+
 ## Install
 
 **With the bar widget:**

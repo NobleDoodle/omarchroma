@@ -122,8 +122,24 @@ install_hooks() {
 # Defined ahead of the subcommand dispatch below, which uses both.
 fail() {
   printf 'Hyprchroma: %s\n' "$*" >&2
-  (( notify )) && notify-send -a Hyprchroma "Color synchronization failed" "$*" || true
+  notify_error_once
   exit 1
+}
+
+# Share one error popup across concurrent hooks, daemon runs and panel actions.
+# The compositor signature changes at login, but survives service/shell reloads.
+notify_error_once() {
+  local session marker
+  [[ -n ${XDG_RUNTIME_DIR:-} && -d $XDG_RUNTIME_DIR ]] || return 0
+  command -v notify-send >/dev/null || return 0
+  session=$(printf '%s' "${HYPRLAND_INSTANCE_SIGNATURE:-${XDG_SESSION_ID:-login}}" | sha256sum)
+  marker="$XDG_RUNTIME_DIR/hyprchroma-error-${session%% *}"
+  # Atomic even when several failing processes arrive at once.
+  if mkdir -m 700 -- "$marker" 2>/dev/null; then
+    notify-send -a Hyprchroma "Color synchronization failed" \
+      "Open Omarchroma to check theme synchronization. Further errors this session will stay quiet." \
+      2>/dev/null || true
+  fi
 }
 
 # The lock is created by the state helper, relative to a directory descriptor
@@ -333,14 +349,7 @@ PY
     [[ -n $restarted ]] && printf 'Hyprchroma: restarted: %s\n' "${restarted//$'\n'/, }"
     [[ -n $pending ]] && printf 'Hyprchroma: still open, could not be closed: %s\n' "${pending//$'\n'/, }"
     [[ -n $failed ]] && printf 'Hyprchroma: could not be restarted: %s\n' "${failed//$'\n'/, }"
-    if (( want_notify )) && command -v notify-send >/dev/null; then
-      body=""
-      [[ -n $restarted ]] && body+="Restarted: ${restarted//$'\n'/, }"$'\n'
-      [[ -n $pending ]] && body+="Still open: ${pending//$'\n'/, }"$'\n'
-      [[ -n $failed ]] && body+="Could not restart: ${failed//$'\n'/, }"
-      notify-send -a Hyprchroma "Restarting applications" \
-        "${body:-Nothing needed restarting.}" 2>/dev/null || true
-    fi
+    [[ -z $pending && -z $failed ]] || notify_error_once
     # The list the panel shows is only current once this has had its say.
     "$HYPRCHROMA_LIB/hyprchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
@@ -404,12 +413,8 @@ log() {
 }
 
 notify_user() {
-  (( notify )) || return 0
-  command -v notify-send >/dev/null || return 0
-  # A notification that cannot be shown -- the notification daemon restarting,
-  # no session bus -- must not end the sync that wanted to show it: under
-  # set -e it did, partway through a theme change.
-  notify-send -a Hyprchroma "Hyprchroma" "$*" 2>/dev/null || true
+  # Routine status belongs in the panel, including explicit --notify actions.
+  return 0
 }
 
 
@@ -437,7 +442,7 @@ theme_outputs() {
 # Windows already open cannot be restyled in place, and nothing here touches
 # them; say which ones they are so the choice to restart is the user's.
 report_stale_apps() {
-  local stale_apps stale_list last_notified
+  local stale_apps stale_list
   # --record keeps the list in status.json too, with each app's window count,
   # where the bar widget reads how many are left to close. Only here, under the
   # sync lock. An app with more than one window reads "Vivaldi (2 windows)".
@@ -451,21 +456,7 @@ report_stale_apps() {
   fi
   stale_list=${stale_apps//$'\n'/, }
   log "restart to pick up the new theme: $stale_list"
-  # A quiet, event-driven sync runs on every window opened or closed nearby --
-  # not only ones this caused -- so with an app left open and no gate here,
-  # this fired the same popup on every one of them. The daemon never passes
-  # --notify at all; only a person acting in the panel does.
-  (( notify )) || return 0
-  # Even a --notify run repeats this exact call each time the panel is used
-  # while the same app is still open, so a popup already shown for this list
-  # is not shown again until the list actually changes.
-  last_notified=$(cat "$STATE_DIR/last-stale-notify" 2>/dev/null || true)
-  [[ $stale_list == "$last_notified" ]] && return 0
-  printf '%s' "$stale_list" | "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
-    --path "$STATE_DIR/last-stale-notify" --mode 644
-  command -v notify-send >/dev/null && \
-    notify-send -a Hyprchroma "Restart to finish theming" \
-      "Still showing the previous theme: $stale_list" || true
+  # Stale applications remain visible in the panel without a desktop popup.
 }
 
 # The palette is resolved once and kept, not asked for a key at a time: each
@@ -1188,11 +1179,6 @@ else
   esac
 fi
 log "$message"
-if (( notify )); then
-  # As in notify_user: a notification that cannot be shown ends nothing.
-  command -v notify-send >/dev/null && \
-    notify-send -a Hyprchroma "Colors synchronized" "$message" 2>/dev/null || true
-fi
 
 # Everything is written to disk by this point, so anything started from now on
 # picks up the new theme -- which is what makes this the right moment to recycle
