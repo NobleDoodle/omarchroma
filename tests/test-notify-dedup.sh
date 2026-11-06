@@ -45,6 +45,5 @@ HYPRLAND_INSTANCE_SIGNATURE=failing-notifier notify_error_once
 HYPRLAND_INSTANCE_SIGNATURE=failing-notifier notify_error_once
 chk 'a broken notification daemon does not fail synchronization' "$?" 0
 chk 'all desktop notifications flow through the error budget' "$(grep -c '^[[:space:]]*notify-send ' "$REPO/bin/hyprchroma")" 1
-chk 'bar icon stays neutral' "$(grep -c '    active: false' "$REPO/BarWidget.qml")" 1
-chk 'bar has no stale badge or update alert count' "$(grep -cE 'staleBadge|alertCount' "$REPO/BarWidget.qml" || true)" 0
+chk 'the bar alert stays available and is not hardcoded off' "$(grep -c 'active: root.alertCount > 0' "$REPO/BarWidget.qml"),$(grep -c 'id: staleBadge' "$REPO/BarWidget.qml")" 1,1
 chk 'theme hook does not request routine popups' "$(grep -c '^exec /usr/bin/hyprchroma --force --quiet$' "$REPO/share/hooks/hyprchroma")" 1

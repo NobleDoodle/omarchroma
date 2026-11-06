@@ -516,6 +516,9 @@ def write_firefox_storage_data(database: Path, data: dict) -> None:
 # libraries these databases are written through open paths by name, following
 # any link the sandbox plants. "desktops" maps a snapshot from the releases
 # that themed only the default browser, which named it by desktop file.
+# "path_has"/"path_lacks" tell apart browsers whose programs share a name: Brave
+# and Brave Origin both run as "brave", so an open Origin kept Brave's write
+# waiting, and with it Brave's palette, until both had closed.
 BROWSERS = {
     "helium": {"name": "Helium", "family": "chromium",
                "roots": ["~/.config/net.imput.helium"],
@@ -532,7 +535,13 @@ BROWSERS = {
     "brave": {"name": "Brave", "family": "chromium",
               "roots": ["~/.config/BraveSoftware/Brave-Browser"],
               "executables": ["brave", "brave-browser"],
+              "path_lacks": "brave-origin",
               "desktops": ["brave-browser.desktop"]},
+    "brave-origin": {"name": "Brave Origin", "family": "chromium",
+                     "roots": ["~/.config/BraveSoftware/Brave-Origin"],
+                     "executables": ["brave", "brave-origin"],
+                     "path_has": "brave-origin",
+                     "desktops": ["brave-origin.desktop"]},
     "vivaldi": {"name": "Vivaldi", "family": "chromium",
                 "roots": ["~/.config/vivaldi"],
                 "executables": ["vivaldi-bin", "vivaldi-stable"],
@@ -673,6 +682,26 @@ def pids_running(executables) -> list[int]:
     return sorted({pid for executable in set(executables) for pid in index.get(executable, [])})
 
 
+def browser_pids(spec: dict) -> list[int]:
+    """The processes of one browser, by its program's name and, where another
+    browser's program has that name too, its path as the kernel records it: a
+    process chooses its own argv and environment, but not this. A process that
+    has gone in between is simply no longer running."""
+    pids = pids_running(spec["executables"])
+    has, lacks = spec.get("path_has"), spec.get("path_lacks")
+    if not has and not lacks:
+        return pids
+    kept = []
+    for pid in pids:
+        try:
+            path = os.readlink(f"/proc/{pid}/exe")
+        except OSError:
+            continue
+        if (not has or has in path) and (not lacks or lacks not in path):
+            kept.append(pid)
+    return kept
+
+
 LOCK_DEVICE_INODE = re.compile(r"\A[0-9a-f]+:[0-9a-f]+:(\d+)\Z")
 
 
@@ -736,7 +765,7 @@ def target_pids(target) -> list[int]:
     is known by its executable, a Gecko one by the profile lock it holds."""
     if target.family == "firefox":
         return profile_holders(target.profile)
-    return pids_running(BROWSERS[target.browser]["executables"])
+    return browser_pids(BROWSERS[target.browser])
 
 
 def targets_signature(targets) -> str:

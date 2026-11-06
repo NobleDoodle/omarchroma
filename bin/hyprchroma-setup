@@ -130,16 +130,22 @@ if [[ -f $here/WHATSNEW.md ]]; then
 fi
 
 # --- the optional frameworks ----------------------------------------------
-head2 "Pear Desktop"
+head2 "Additional Apps"
+cat <<'TB'
+Thunderbird does not pick up the GTK theme in its own window. Hyprchroma
+colors it the same way it colors Firefox, which Thunderbird reads the next
+time it starts. This writes into your mail profiles, so it is off unless
+you say so.
+TB
+want_thunderbird=no
+if ask "Include Thunderbird"; then want_thunderbird=yes; fi
 cat <<'PEAR'
 Pear Desktop is a desktop app for YouTube Music. Hyprchroma can generate a
 stylesheet for it so its window matches your theme instead of staying black
 regardless of what the rest of the desktop looks like.
-
-Only useful if you actually use it. Nothing else depends on this.
 PEAR
 want_pear=no
-if ask "Include Pear Desktop"; then want_pear=yes; fi
+if ask "Include Pear Desktop (YouTube Music)"; then want_pear=yes; fi
 
 head2 "Dark Reader"
 cat <<'DR'
@@ -368,7 +374,22 @@ makepkg -si --needed || { say "The build did not finish; nothing else was change
 
 # --- apply the choices, now that the tool exists --------------------------
 head2 "Applying your choices"
-[[ $want_pear == yes ]] || hyprchroma framework remove pear
+# Thunderbird is opt-in, so a yes has to switch it on. Pear stays on unless
+# it was declined. Declining both hides the Additional Apps row; saying yes
+# to either leaves the row up and sets each switch on its own.
+if [[ $want_thunderbird == yes ]]; then
+  hyprchroma --target=thunderbird --set-enabled=true --quiet ||
+    note "Could not switch Thunderbird on; the panel can do it: open Additional Apps."
+else
+  hyprchroma --target=thunderbird --set-enabled=false --quiet || true
+fi
+if [[ $want_pear == no ]]; then
+  hyprchroma --target=pear --set-enabled=false --quiet || true
+fi
+if [[ $want_thunderbird == no && $want_pear == no ]]; then
+  hyprchroma framework remove apps ||
+    note "Could not hide Additional Apps; Settings can do it."
+fi
 [[ $want_dark == yes ]] || hyprchroma framework remove dark-reader
 # Opt-in, so a yes has to switch it on rather than just leave it listed --
 # which "framework restore" does.

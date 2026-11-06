@@ -128,24 +128,27 @@ PY
 # --- 6. the instances the first pass missed --------------------------------
 chk "no lock is opened for writing anywhere" \
   "$(countcode 'open\([^)]*\.lock", "w"\)' lib/hyprchroma-state)" "0"
-# Eight: the definition, the subcommand that exposes it, the four watcher
-# locks that now go through it, the sync lock a browsers waiter takes, and
-# try_lock, through which the daemon takes the sync lock and asks whether a
-# waiter is alive.
+# Nine: the definition, the subcommand that exposes it, the four watcher
+# locks that now go through it, the sync lock a browsers waiter takes, the
+# same lock for the Thunderbird waiter, and try_lock, through which the
+# daemon takes the sync lock and asks whether a waiter is alive.
 chk "every watcher lock is prepared first" \
-  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "8"
+  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "9"
 # Scoped to bin/ only before, which is why a fifth copy sat in the Qt/KDE
 # generator writing kdeglobals by pathname and went unnoticed for a release.
 chk "no generator embeds a writer of its own" \
   "$(countcode 'tempfile\.mkstemp\(|os\.replace\(temporary' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "0"
-# Sixteen: eleven in bin/hyprchroma (six embedded Python writers, the theme
-# hook, a captured palette, the Pear stylesheet, the browsers' palette, and the
-# last-stale-notify record), one in the GTK generator that writes both its
-# stylesheets when they change, and in the Qt/KDE generator the color scheme,
-# kdeglobals, and the Omarchroma icon theme's index and directory keeper.
+# Nineteen: fourteen in bin/hyprchroma (nine embedded Python writers, the
+# theme hook, a captured palette, the Pear stylesheet, the browsers' palette,
+# the Thunderbird palette, and the last-stale-notify record), one in the GTK
+# generator that writes both its stylesheets when they change, and in the
+# Qt/KDE generator the color scheme, kdeglobals, and the Omarchroma icon
+# theme's index and directory keeper. The three writers added for Additional
+# Apps are the saved switch state, the removed-row list, and the restore.
 chk "every generator write goes through the helper" \
-  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "16"
-# Six: settings on a toggle, status, the Dark Reader theme, the Pear config,
-# the removed-framework list, and the restart mode.
+  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "19"
+# Nine: settings on a toggle, status, the Dark Reader theme, the Pear config,
+# the removed-framework list, the restart mode, and the three Additional Apps
+# writes (saved switches, the removed row, and the restore).
 chk "sync's embedded writers call the helper" \
-  "$(countcode 'write-file", "--path"' bin/hyprchroma)" "6"
+  "$(countcode 'write-file", "--path"' bin/hyprchroma)" "9"

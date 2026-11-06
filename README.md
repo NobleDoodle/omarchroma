@@ -5,9 +5,9 @@
 **Change your Omarchy theme once and let your desktop follow.**
 
 Omarchroma applies your active palette to GTK 3/4, libadwaita, GNOME settings,
-Qt/KDE Frameworks, Dark Reader, Pear Desktop (YouTube Music), Flatpak apps, and
-the browsers Omarchy does not theme itself: Firefox, Floorp, Zen, LibreWolf,
-Waterfox and Vivaldi.
+Qt/KDE Frameworks, Dark Reader, Flatpak apps, Thunderbird, Pear Desktop
+(YouTube Music), and the browsers Omarchy does not theme itself: Firefox,
+Floorp, Zen, LibreWolf, Waterfox and Vivaldi.
 
 It runs as a standalone user service (`hyprchroma`) with an optional Omarchy
 bar widget for convenience.
@@ -15,9 +15,11 @@ bar widget for convenience.
 Theme changes and panel actions do not send routine desktop notifications.
 Synchronization errors show at most one notification per desktop session,
 shared across the service, hooks and panel actions. Further errors remain in
-the logs. The bar icon stays neutral; open the panel to inspect applications
-still using the previous theme or a pending service update. `--notify` remains
-accepted for compatibility, but no longer enables routine popups.
+the logs. The bar icon still takes the theme's alert color, with a count,
+while applications are on the previous theme or a service update is waiting.
+Settings (`s`, then `b`) hides that display. The panel list stays either way.
+`--notify` remains accepted for compatibility, but no longer enables routine
+popups.
 
 ## Install
 
@@ -60,9 +62,9 @@ this restart, and the Omarchy shell's own, automatically.
 ```bash
 hyprchroma                        # sync only what changed
 hyprchroma --force                # rewrite everything
-hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak | browsers
-hyprchroma framework remove pear  # remove from the panel and revert
-hyprchroma framework restore pear # put it back and sync
+hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak | browsers | thunderbird
+hyprchroma framework remove apps  # hide Additional Apps and revert both
+hyprchroma framework restore apps # put the row back, as each switch was
 hyprchroma palette --capture      # pin the current palette to a file
 hyprchroma restore --stock        # revert everything to stock defaults
 hyprchroma restart-stale          # close and relaunch every stale application
@@ -74,7 +76,9 @@ With the bar widget:
 | Input | Action |
 |---|---|
 | Left click palette icon | Open/close the panel |
-| `1` – `6` | Toggle kept frameworks |
+| `1` – `5` | Toggle a framework |
+| `6` | Open or close the Additional Apps drop-down |
+| `7`, `8` (while it is open) | Thunderbird, then Pear Desktop (YouTube Music) |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme |
 | `Ctrl+Enter` (in that list) | Restart All: lists what will close, then Ctrl+Enter again to go ahead |
@@ -85,16 +89,18 @@ With the bar widget:
 | `g` (in About) | Open the source on GitHub |
 | `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
+| `b` (in Settings) | Show the bar icon's alert color and count. On unless you turn it off |
 | `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
 
 * While applications are still showing the previous theme, the icon takes your
   theme's alert color with a small count of how many windows to close; `/`
-  lists the applications, with how many windows each has open.
+  lists the applications, with how many windows each has open. Settings can
+  hide the icon's color and count. The list in the panel stays.
 * When the installed service is older than the plugin, the icon alerts the
   same way, counting the update as one, and the panel's Update button is lit
-  in that color until it is run.
+  in that color until it is run. Hiding the bar display leaves that button.
 * Turning a framework off reverts it to its original state.
 * Removing one hides it from the panel entirely and reverts it. Settings (`s`)
   lists the optional frameworks, and anything removed, each with a switch and a
@@ -105,18 +111,21 @@ With the bar widget:
   then in `breeze-dark` (or `breeze` on a light theme). Without it, the icons a set
   like Yaru lacks fell back to light-background Breeze: dark on a dark window.
   The GTK icon setting is left exactly as Omarchy sets it.
-* GTK and Qt/KDE are always included; Dark Reader, Pear Desktop, Flatpak apps and
-  Additional browsers are optional. Install the Dark Reader browser extension
-  manually for it to theme on the next sync.
+* GTK and Qt/KDE are always included. Dark Reader, Flatpak apps, Additional
+  browsers and Additional Apps are optional. Additional Apps holds Thunderbird
+  (off until you switch it on) and Pear Desktop (YouTube Music). Install the
+  Dark Reader browser extension manually for it to theme on the next sync.
 * Dark Reader is themed in every browser profile it is installed in, not only
-  your default browser: Chromium, Chrome, Brave, Vivaldi, Helium, Firefox,
-  Floorp, Zen, LibreWolf and Waterfox. A browser that is open is themed when it
-  closes, since its settings live in the browser's own database.
+  your default browser: Chromium, Chrome, Brave, Brave Origin, Vivaldi, Helium,
+  Firefox, Floorp, Zen, LibreWolf and Waterfox. A browser that is open is themed
+  when it closes, since its settings live in the browser's own database.
 * Flatpak apps is off until you switch it on: it changes a permission for every
   Flatpak app you have (see below). Each app picks it up on its next launch.
 * Additional browsers is off until you switch it on: it writes into your browser
   profiles (see below). Each browser picks it up on its next start. Chromium,
   Chrome, Brave and Helium are not included; Omarchy colors those itself.
+  Thunderbird is not one of them. It is under Additional Apps, and it is off
+  until you switch it on for the same reason: it writes into mail profiles.
 * The applications-to-close list has a Restart All button, and a restart
   setting below it. Nothing ever restarts on its own: every restart goes
   through a confirmation that lists each window it will close, warns you to
@@ -200,6 +209,7 @@ stops and changes nothing.
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
 | [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
+| Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
 | Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |
 
@@ -217,6 +227,12 @@ pacman installation requires sudo).
   above, and keeps `GTK_THEME` out of the sandbox. Nothing of hyprchroma's own
   state is granted. Switching it off removes exactly those entries and leaves
   the rest of your overrides as they were.
+* **Thunderbird** (only when switched on, under Additional Apps): colors the
+  toolbars, folder list and message list. Each profile gets its own
+  `chrome/hyprchroma.css`, one `@import` line at the top of `userChrome.css`,
+  and one line in `user.js` that lets Thunderbird load it. A `userChrome.css`
+  or `user.js` that is a link is left alone. Switching it off removes exactly
+  what it added. Thunderbird reads the sheet the next time it starts.
 * **Additional browsers** (only when switched on): colors the tabs, toolbar and
   menus of every supported browser with a profile. Each Firefox-family profile
   gets its own `chrome/hyprchroma.css`, one `@import` line at the top of
@@ -240,6 +256,7 @@ Generated output is never included in backups.
 ~/.local/share/flatpak/overrides/global  Flatpak apps only, when switched on:
     xdg-config/gtk-3.0:ro  xdg-config/gtk-4.0:ro  xdg-config/kdeglobals:ro
     xdg-data/color-schemes:ro  and GTK_THEME unset
+<Thunderbird profile>/chrome/hyprchroma.css  Thunderbird only, when switched on
 <browser profile>/chrome/hyprchroma.css  Additional browsers only, when switched on
 <browser profile>/chrome/userChrome.css  one @import line, nothing else
 <browser profile>/user.js                one preference line, nothing else
@@ -258,6 +275,7 @@ o.bind("SUPER + ALT + G", "Omarchroma: toggle GTK", om .. " toggleGtk")
 o.bind("SUPER + ALT + K", "Omarchroma: toggle Qt/KDE", om .. " toggleQtKde")
 o.bind("SUPER + ALT + D", "Omarchroma: toggle Dark Reader", om .. " toggleDarkReader")
 o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear")
+o.bind("SUPER + ALT + T", "Omarchroma: toggle Thunderbird", om .. " toggleThunderbird")
 o.bind("SUPER + ALT + F", "Omarchroma: toggle Flatpak apps", om .. " toggleFlatpak")
 o.bind("SUPER + ALT + B", "Omarchroma: toggle additional browsers", om .. " toggleBrowsers")
 o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
@@ -275,6 +293,12 @@ systemctl --user disable --now hyprchromad.service
 sudo pacman -R hyprchroma
 omarchy plugin remove io.github.nobledoodle.omarchroma
 ```
+
+## Contributors
+
+- [Ryan Mulligan](https://github.com/ryantm): quieter notifications, with errors limited to one popup per session ([#6](https://github.com/NobleDoodle/omarchroma/pull/6)).
+
+Thanks also to [@Crucialjun](https://github.com/Crucialjun) ([#4](https://github.com/NobleDoodle/omarchroma/issues/4)) and [@BlueElectivire](https://github.com/BlueElectivire) ([#5](https://github.com/NobleDoodle/omarchroma/issues/5)) for reports that led to fixes.
 
 ## License
 

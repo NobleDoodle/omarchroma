@@ -12,7 +12,21 @@ BarWidget {
   readonly property bool popoutSwitchClosing: panelLoader.item
     ? panelLoader.item.popoutSwitchClosing === true : false
 
-  // Keep theme status inside the panel; the bar stays neutral.
+  // Windows still on the previous theme, plus a service update waiting to be
+  // installed. The icon takes the theme's urgent color and a raised count.
+  // Settings can hide that display; the panel list stays either way. Windows
+  // rather than applications, since that is what there is to close: two
+  // Vivaldi windows are two, and Vivaldi changes after the second.
+  readonly property bool barAlert: setting("barAlert", true) !== false
+  readonly property int staleCount: panelLoader.item && panelLoader.item.staleWindowCount
+    ? panelLoader.item.staleWindowCount : 0
+  // A service older than this plugin is one more thing to deal with, and says
+  // so the same way: the icon in the urgent color, counting it as one. The
+  // panel's Update button, lit in the same color, is what clears it.
+  readonly property bool updatePending: panelLoader.item ? panelLoader.item.outdated === true : false
+  readonly property int alertCount: root.barAlert
+    ? root.staleCount + (root.updatePending ? 1 : 0) : 0
+
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
   function toggle() { if (panelLoader.item) panelLoader.item.toggle() }
@@ -75,11 +89,13 @@ BarWidget {
     function openPanel(): void { root.open() }
 
     // Bind these to keys in your own bindings.lua; the plugin ships the
-    // capability and never writes a binding itself. Status stays in the panel.
+    // capability and never writes a binding itself. The bar shows the count
+    // when Settings has that display on; the panel is always there either way.
     function toggleGtk(): void { root.toggleFramework("gtk") }
     function toggleQtKde(): void { root.toggleFramework("qt-kde") }
     function toggleDarkReader(): void { root.toggleFramework("dark-reader") }
     function togglePear(): void { root.toggleFramework("pear") }
+    function toggleThunderbird(): void { root.toggleFramework("thunderbird") }
     function toggleFlatpak(): void { root.toggleFramework("flatpak") }
     function toggleBrowsers(): void { root.toggleFramework("browsers") }
     function refresh(): void { root.refreshEnabled() }
@@ -103,11 +119,31 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: "\udb80\udfd8"
-    active: false
-    tooltipText: root.opened ? "Close Omarchroma" : "Open Omarchroma"
+    active: root.alertCount > 0
+    tooltipText: root.opened ? "Close Omarchroma"
+      : root.alertCount === 0 ? "Open Omarchroma"
+      : "Open Omarchroma: "
+        + (root.updatePending ? "1 service update pending" : "")
+        + (root.updatePending && root.staleCount > 0 ? ", and " : "")
+        + (root.staleCount > 0
+            ? panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme" : "")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.togglePanel()
     }
   }
 
+  // Raised to the icon's top right, like an exponent, in the same urgent color.
+  Text {
+    id: staleBadge
+    visible: root.alertCount > 0
+    text: root.alertCount > 9 ? "9+" : String(root.alertCount)
+    color: button.activeColor
+    font.family: button.fontFamily
+    font.pixelSize: Math.max(7, Math.round(Style.bar.iconFont * 0.62))
+    font.bold: true
+    renderType: Text.NativeRendering  // as the shell draws the glyph beside it
+    x: Math.round(button.x + (button.width + Style.bar.iconCanvas) / 2 - implicitWidth * 0.3)
+    y: Math.round(button.y + (button.height - Style.bar.iconCanvas) / 2 - implicitHeight * 0.35)
+    z: 2
+  }
 }

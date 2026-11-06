@@ -168,8 +168,80 @@ target_key() {
     pear) printf 'pear' ;;
     flatpak) printf 'flatpak' ;;
     browsers) printf 'browsers' ;;
+    thunderbird) printf 'thunderbird' ;;
     *) return 1 ;;
   esac
+}
+
+# Additional Apps is one panel row with two frameworks behind it. Removing the
+# row reverts both and remembers how each was set, so putting the row back
+# restores those switches instead of turning both on.
+framework_apps() {
+  local action=$1 saved_pear saved_thunderbird
+  if [[ $action == remove ]]; then
+    python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+import sys; HELPER = sys.argv.pop(1)
+import json, subprocess
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError):
+    data = {}
+removed = [entry for entry in data.get("removed", []) if isinstance(entry, str)]
+if "apps" not in removed:
+    frameworks = data.get("frameworks") if isinstance(data.get("frameworks"), dict) else {}
+    def flag(key, default):
+        value = frameworks.get(key, default)
+        return value if isinstance(value, bool) else default
+    data["appsSaved"] = {"pear": flag("pear", True), "thunderbird": flag("thunderbird", False)}
+    subprocess.run([HELPER, "write-file", "--path", str(path), "--mode", "644"],
+                   input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
+PY
+    "$HYPRCHROMA_SELF" --target=thunderbird --set-enabled=false --quiet || true
+    "$HYPRCHROMA_SELF" --target=pear --set-enabled=false --quiet || true
+    python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+import sys; HELPER = sys.argv.pop(1)
+import json, subprocess
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError):
+    data = {}
+removed = [entry for entry in data.get("removed", []) if entry != "apps"]
+removed.append("apps")
+data["removed"] = sorted(removed)
+subprocess.run([HELPER, "write-file", "--path", str(path), "--mode", "644"],
+               input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
+PY
+  else
+    read -r saved_pear saved_thunderbird < <(python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+import sys; HELPER = sys.argv.pop(1)
+import json, subprocess
+from pathlib import Path
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text())
+except (OSError, ValueError):
+    data = {}
+data["removed"] = sorted(entry for entry in data.get("removed", []) if entry != "apps")
+saved = data.pop("appsSaved", None)
+if not isinstance(saved, dict):
+    saved = {"pear": True, "thunderbird": False}
+subprocess.run([HELPER, "write-file", "--path", str(path), "--mode", "644"],
+               input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
+print("true" if saved.get("pear") is True else "false",
+      "true" if saved.get("thunderbird") is True else "false")
+PY
+)
+    if [[ $saved_thunderbird == true ]]; then
+      "$HYPRCHROMA_SELF" --target=thunderbird --set-enabled=true --quiet || true
+    fi
+    if [[ $saved_pear == true ]]; then
+      "$HYPRCHROMA_SELF" --target=pear --set-enabled=true --quiet || true
+    fi
+  fi
 }
 
 case "${1:-}" in
@@ -252,6 +324,11 @@ PY
         ;;
       remove|restore)
         [[ -n $name ]] || fail "hyprchroma framework $action needs a target"
+        if [[ $name == apps ]]; then
+          framework_apps "$action"
+          printf 'Hyprchroma: %s %sd\n' "$name" "$action"
+          exit 0
+        fi
         key=$(target_key "$name") || fail "unknown target: $name"
         # Reverting first, while it is still listed, so the framework hands back
         # what it changed before it disappears from the panel.
@@ -357,7 +434,7 @@ PY
     exit 0
     ;;
   --version|version)
-    echo "hyprchroma 3.2.4"
+    echo "hyprchroma 3.2.7"
     exit 0
     ;;
 esac
@@ -381,13 +458,14 @@ for argument in "$@"; do
     --target=pear) target="pear" ;;
     --target=flatpak) target="flatpak" ;;
     --target=browsers) target="browsers" ;;
+    --target=thunderbird) target="thunderbird" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
     --restart-mode=confirm) restart_mode="confirm" ;;
     --restart-mode=off) restart_mode="off" ;;
     -h|--help)
       cat <<'USAGE'
-Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers]
+Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers|thunderbird]
                   [--set-enabled=true|false] [--force] [--quiet] [--notify]
        hyprchroma daemon           watch for changes and keep everything in step
        hyprchroma install-hooks    place the Omarchy theme and font hooks
@@ -521,9 +599,9 @@ target_enabled() {
   key=$(target_key "$1") || return 1
   # Flatpak is opt-in: it widens what every sandboxed app may read, which is
   # not something an install, an upgrade or a different toggle may do on the
-  # user's behalf. Additional browsers is too: it writes into browser profiles.
-  # Only a recorded true turns either on.
-  [[ $key == flatpak || $key == browsers ]] && default=false
+  # user's behalf. Additional browsers and Thunderbird are too: each writes
+  # into profiles. Only a recorded true turns any of these on.
+  [[ $key == flatpak || $key == browsers || $key == thunderbird ]] && default=false
   # Not "// true": jq's alternative operator treats false as empty as well as
   # null, so a framework switched off read back as enabled and every sync
   # re-applied the theme the toggle had just reverted. Only a missing key means
@@ -584,6 +662,7 @@ for name in ("gtk", "qtKde", "darkReader", "pear"):
 # Opt-in, unlike the rest: see target_enabled.
 frameworks.setdefault("flatpak", False)
 frameworks.setdefault("browsers", False)
+frameworks.setdefault("thunderbird", False)
 frameworks[key] = enabled
 atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
@@ -751,14 +830,14 @@ fingerprint=$(
     sha256sum | cut -d' ' -f1
 )
 
-previous_fingerprint="" dark_reader_state="" qt_kde_state="" browsers_previous=""
+previous_fingerprint="" dark_reader_state="" qt_kde_state="" browsers_previous="" thunderbird_previous=""
 if [[ -f "$STATUS_FILE" ]]; then
   # One read of the status, not one per field. Joined on the unit separator,
   # not a tab: a tab is whitespace to read, which runs empty fields together
   # and shifts every later value into the wrong variable. Each value is
   # stripped of the separator first, so none can spill into the next.
-  IFS=$'\x1f' read -r previous_fingerprint dark_reader_state qt_kde_state browsers_previous < <(
-    jq -r '[.fingerprint, .darkReader, .qtKde, .browsers]
+  IFS=$'\x1f' read -r previous_fingerprint dark_reader_state qt_kde_state browsers_previous thunderbird_previous < <(
+    jq -r '[.fingerprint, .darkReader, .qtKde, .browsers, .thunderbird]
            | map(. // "" | tostring | gsub("\u001f"; " ")) | join("\u001f")' \
       "$STATUS_FILE" 2>/dev/null) || true
 fi
@@ -808,6 +887,22 @@ fi
 if (( browsers_resume )); then
   "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
     sync-browsers --resume >/dev/null 2>&1 || true
+fi
+
+# The same for Thunderbird: a revert that had to wait for it to exit, or a
+# theme that was still pending, finishes here instead of on the next palette
+# change. A quiet window event does not start a full sync for this.
+thunderbird_resume=0
+if [[ $target == "all" ]]; then
+  if target_enabled thunderbird; then
+    if (( ! force )) && [[ ${thunderbird_previous:-} == "pending" ]]; then thunderbird_resume=1; fi
+  elif jq -e 'has("thunderbird")' "$STATE_DIR/original/manifest.json" >/dev/null 2>&1; then
+    thunderbird_resume=1
+  fi
+fi
+if (( thunderbird_resume )); then
+  "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+    sync-thunderbird --resume >/dev/null 2>&1 || true
 fi
 
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
@@ -952,6 +1047,22 @@ if [[ ( $target == "all" || $target == "browsers" ) ]] && target_enabled browser
   if [[ -n $browsers_summary ]]; then log "additional browsers: $browsers_summary"; fi
 fi
 
+thunderbird_state="disabled"
+thunderbird_summary=""
+if [[ ( $target == "all" || $target == "thunderbird" ) ]] && target_enabled thunderbird; then
+  log "synchronizing Thunderbird"
+  printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
+    "$mode" "$background" "$dark_background" "$foreground" "$accent" \
+    "$selection" "$selection_foreground" "$muted" |
+    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/thunderbird-theme.json" --mode 644
+  thunderbird_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-thunderbird) ||
+    fail "Thunderbird synchronization failed"
+  thunderbird_state=${thunderbird_output%%$'\n'*}
+  thunderbird_summary=${thunderbird_output#*$'\n'}
+  if [[ -n $thunderbird_summary ]]; then log "thunderbird: $thunderbird_summary"; fi
+fi
+
 dark_reader_exit=0
 # Hyprchroma installs nothing into a browser. If Dark Reader is in none of
 # them, say so -- there is nothing to theme until the user adds it somewhere.
@@ -1073,7 +1184,7 @@ if [[ $fingerprint != "$previous_fingerprint" || $outputs_before != "$(theme_out
   theme_changed=1
 fi
 
-python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$theme_changed" <<'PY'
+python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$thunderbird_state" "$theme_changed" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -1105,7 +1216,7 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state, theme_changed = sys.argv[4:]
+pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state, thunderbird_state, theme_changed = sys.argv[4:]
 # The baseline every stale-application question measures against; moved only
 # by a real change, never by a sync that found everything already current.
 if theme_changed == "1" or "themeChangedAt" not in state:
@@ -1122,6 +1233,8 @@ if target in {"all", "flatpak"}:
     state["flatpak"] = flatpak_state
 if target in {"all", "browsers"}:
     state["browsers"] = browsers_state
+if target in {"all", "thunderbird"}:
+    state["thunderbird"] = thunderbird_state
 # Nothing for darkReader: the Dark Reader helper records its own outcome --
 # which browsers are done, which it waits on, or that none has it installed --
 # and writing "synchronized" over that here claimed all of them, including
@@ -1155,6 +1268,11 @@ else
                 not-installed) message="No additional browser found to theme" ;;
                 *) message="Additional browsers are switched off" ;;
               esac ;;
+    thunderbird) case "$thunderbird_state" in
+                   synchronized|pending) message="Thunderbird: $thunderbird_summary; it picks the theme up on its next start" ;;
+                   not-installed) message="Thunderbird is not installed" ;;
+                   *) message="Thunderbird is switched off" ;;
+                 esac ;;
     *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
        # every time, which was invisible only while no toggle could really
        # disable anything.
@@ -1167,6 +1285,7 @@ else
        target_enabled pear && (( pear_installed )) && synced+=("Pear Desktop")
        [[ $flatpak_state == "synchronized" ]] && synced+=("Flatpak apps")
        [[ $browsers_state == "synchronized" || $browsers_state == "pending" ]] && synced+=("additional browsers")
+       [[ $thunderbird_state == "synchronized" || $thunderbird_state == "pending" ]] && synced+=("Thunderbird")
        if (( ${#synced[@]} == 0 )); then
          message="nothing to synchronize; every framework is switched off"
        else

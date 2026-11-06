@@ -96,7 +96,7 @@ os.environ["PATH"] = trusted_path()
 APP_COLOR_SCHEME_GROUP = "UiSettings"
 APP_COLOR_SCHEME_KEY = "ColorScheme"
 
-TARGETS = ("gtk", "qt-kde", "pear", "flatpak", "browsers")
+TARGETS = ("gtk", "qt-kde", "pear", "flatpak", "browsers", "thunderbird")
 
 # Which snapshot entries belong to which framework, so a single framework can be
 # reverted on its own when its toggle is switched off.
@@ -106,6 +106,7 @@ TARGET_FILE_KEYS = {
     "pear": ("pear_config", "pear_css"),
     "flatpak": (),
     "browsers": (),
+    "thunderbird": (),
 }
 
 # A Flatpak app reads its configuration from a directory of its own, so none of
@@ -148,6 +149,7 @@ STOCK_ABSENT_FILES = {
     "pear": (".config/YouTube Music/hyprchroma.css",),
     "flatpak": (),
     "browsers": (),
+    "thunderbird": (),
 }
 
 
@@ -810,6 +812,15 @@ FIREFOX_FAMILY = (
 )
 VIVALDI_ROOTS = (".config/vivaldi", ".config/vivaldi-snapshot",
                  ".var/app/com.vivaldi.Vivaldi/config/vivaldi")
+# Thunderbird keeps profiles.ini the same way Firefox does. Native installs use
+# ~/.thunderbird; some packages use ~/.config/thunderbird; the Flatpak id is
+# org.mozilla.Thunderbird. Not part of Additional browsers: that list is web
+# browsers, and this writes into mail profiles.
+THUNDERBIRD_ROOTS = (
+    ".thunderbird",
+    ".config/thunderbird",
+    ".var/app/org.mozilla.Thunderbird/.thunderbird",
+)
 VIVALDI_EXECUTABLES = {"vivaldi-bin"}
 
 BROWSER_STYLESHEET = "hyprchroma.css"
@@ -1066,9 +1077,9 @@ def detected_browsers():
     return detected
 
 
-def browser_palette(data_dir):
+def browser_palette(data_dir, filename="browsers-theme.json"):
     """The palette the sync wrote for this framework, or None if it is unusable."""
-    text = read_capped(data_dir / "browsers-theme.json")
+    text = read_capped(data_dir / filename)
     try:
         palette = json.loads(text) if text is not None else None
     except ValueError:
@@ -1172,6 +1183,462 @@ def firefox_stylesheet(palette):
 """
 
 
+def contrast_ratio(first, second):
+    """WCAG contrast between two #rrggbb colors, from 1 to 21."""
+    def luminance(color):
+        channels = (int(color[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        r, g, b = (c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    lighter, darker = sorted((luminance(first), luminance(second)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def readable_text_on(fill, *candidates):
+    """The candidate that reads best on fill, or black or white when none of
+    them reaches 4.5:1: a mid-tone accent can fall short against both ends of
+    a palette."""
+    best = max(candidates, key=lambda color: contrast_ratio(color, fill))
+    if contrast_ratio(best, fill) >= 4.5:
+        return best
+    return max(("#000000", "#ffffff"), key=lambda color: contrast_ratio(color, fill))
+
+
+def readable_accent(accent, foreground, background):
+    """The accent, moved toward the foreground only as far as it takes to read
+    as text on the background."""
+    channels = lambda color: [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    for percent in range(0, 101, 5):
+        mixed = "#" + "".join(f"{round(a + (f - a) * percent / 100):02x}"
+                              for a, f in zip(channels(accent), channels(foreground), strict=True))
+        if contrast_ratio(mixed, background) >= 4.5:
+            return mixed
+    return foreground
+
+
+def thunderbird_stylesheet(palette):
+    """userChrome CSS for Thunderbird 158.
+
+    The mail window does not read one palette. Folder and message lists resolve
+    light-dark() against --color-gray-* and, in the dark scheme, --color-black
+    (tree-listbox.css even marks that black as something to remove). Account
+    pages and buttons read Bolt tokens (--color-surface-*, --color-primary-*).
+    Toolbars, the spaces bar and dialogs read another set again. Every one of
+    those that paints a surface or its text is set from the palette here. The
+    start page in the message pane is a website; that is
+    thunderbird_content_stylesheet.
+
+    Variables do not reach everything: chat panels, search fields and tree
+    headers paint system colors (Field, -moz-headerbar) directly, which no
+    variable overrides, so those are named in the rules at the end.
+    --selected-item-color is Thunderbird's accent, used as text as well as fill
+    (today's date, the Account Hub button), so it takes the accent. Selected
+    rows have their own variables, which take the selection color. Its text
+    partner stays the selection's: selected rows read it, and fills known to
+    sit under it on the accent are given on_accent by name.
+
+    No rule here may paint :root or a bare element type: toolbar icons are SVG
+    documents under chrome://messenger/, so a background on :root turns each
+    into a solid square, and some inputs are meant to be transparent (the
+    mini-calendar's month and year)."""
+    colors = {key: palette[key] for key in BROWSER_COLORS}
+    bg = colors["background"]
+    side = colors["dark_background"]
+    fg = colors["foreground"]
+    muted = colors["muted"]
+    accent = colors["accent"]
+    sel = colors["selection"]
+    sel_fg = colors["selection_foreground"]
+    # Text on an accent fill, and the accent as text on the background.
+    on_accent = readable_text_on(accent, fg, bg)
+    accent_text = readable_accent(accent, fg, bg)
+    mode = palette["mode"]
+    raised = f"color-mix(in srgb, {fg} 14%, {bg})"
+    dim = f"color-mix(in srgb, {fg} 75%, {bg})"
+    faint = f"color-mix(in srgb, {fg} 55%, {bg})"
+    soft = f"color-mix(in srgb, {accent} 24%, {bg})"
+    tint = f"color-mix(in srgb, {accent} 10%, {bg})"
+    # The selection color is made to go under selection_foreground. A fill that
+    # keeps its normal text (an unfocused selected row, a checked button) can
+    # only use it when normal text reads on it: Scotch's selection is its own
+    # foreground, which made those rows invisible.
+    picked = sel if contrast_ratio(fg, sel) >= 4.5 else soft
+    if mode == "dark":
+        # Higher gray numbers are the dark surfaces; the low ones are light text.
+        gray = {"05": fg, "10": fg, "20": dim, "30": dim, "40": muted,
+                "50": muted, "60": bg, "70": bg, "80": side, "90": side}
+        black, white = side, fg
+    else:
+        gray = {"05": bg, "10": bg, "20": raised, "30": raised, "40": muted,
+                "50": muted, "60": dim, "70": dim, "80": fg, "90": fg}
+        black, white = fg, bg
+    variables = {
+        "--layout-background-0": bg,
+        "--layout-background-1": bg,
+        "--layout-background-2": side,
+        "--layout-background-3": raised,
+        "--layout-background-4": side,
+        "--layout-color-0": fg,
+        "--layout-color-1": fg,
+        "--layout-color-2": dim,
+        "--layout-color-3": muted,
+        "--layout-border-0": muted,
+        "--layout-border-1": muted,
+        "--layout-border-2": muted,
+        "--selected-item-color": accent,
+        "--selected-item-text-color": sel_fg,
+        "--row-grouped-header-bg-color": side,
+        "--row-grouped-header-bg-color-selected": sel,
+        "accent-color": accent,
+        "--toolbar-bgcolor": side,
+        "--toolbar-color": fg,
+        "--toolbar-background-color": side,
+        "--toolbar-text-color": fg,
+        "--toolbar-field-background-color": bg,
+        "--toolbar-field-text-color": fg,
+        "--toolbar-field-border-color": muted,
+        "--toolbar-field-background-color-focus": bg,
+        "--toolbar-field-text-color-focus": fg,
+        "--toolbar-field-border-color-focus": accent,
+        "--lwt-accent-color": side,
+        "--lwt-text-color": fg,
+        "--lwt-frame": side,
+        "--lwt-frame-inactive": side,
+        "--sidebar-background": side,
+        "--sidebar-background-color": side,
+        "--sidebar-text-color": fg,
+        "--sidebar-border-color": muted,
+        "--sidebar-highlight-background-color": sel,
+        "--sidebar-highlight-text-color": sel_fg,
+        "--tree-view-bg": bg,
+        "--tree-view-color": fg,
+        "--tree-pane-background": bg,
+        "--tree-card-background": raised,
+        "--tree-card-background-current": sel,
+        "--tree-view-header-hover-bg": raised,
+        "--tree-view-header-hover-active-bg": raised,
+        "--button-background-color": raised,
+        "--button-text-color": fg,
+        "--button-hover-background-color": soft,
+        "--button-active-background-color": picked,
+        "--button-primary-background-color": accent,
+        "--button-primary-hover-background-color": accent,
+        "--button-primary-active-background-color": accent,
+        "--button-primary-text-color": on_accent,
+        "--button-primary-border-color": accent,
+        # Calendar paints the selected day and drag highlight with the blue
+        # ramp, not the theme accent. Address book and chat primary buttons
+        # follow the same blue when their own token is still the default.
+        "--color-blue-10": soft,
+        "--color-blue-40": accent,
+        "--color-blue-50": accent,
+        "--color-blue-60": accent,
+        "--viewBackground": bg,
+        "--viewWeekendBackground": side,
+        "--viewTodayBackground": bg,
+        "--viewDayBoxSelectedBackground": tint,
+        "--viewTodayLabelBackground": accent,
+        "--viewTodayLabelColor": on_accent,
+        "--viewDayLabelSelectedBackground": accent,
+        "--viewDayLabelSelectedColor": on_accent,
+        "--mmDayWeekColor": dim,
+        "--mmDayOtherColor": faint,
+        "--mmDaySelectedColor": accent_text,
+        "--link-color": accent_text,
+        "--link-color-hover": accent_text,
+        "--link-color-active": accent_text,
+        "--treeitem-background-selected": raised,
+        "--viewDragboxBackground": accent,
+        "--viewDropshadowBackground": accent,
+        "--toolbarbutton-background-color-hover": raised,
+        "--toolbarbutton-background-color-active": picked,
+        "--toolbarbutton-icon-fill": fg,
+        "--panel-background-color": bg,
+        "--panel-background-color-dimmed": side,
+        "--panel-background-color-dimmed-further": side,
+        "--panel-text-color": fg,
+        "--panel-border-color": muted,
+        "--background-color-canvas": bg,
+        "--background-color-box": raised,
+        "--background-color-box-info": raised,
+        "--background-color-list-item-hover": raised,
+        "--field-background-color": bg,
+        "--field-text-color": fg,
+        "--input-text-background-color": bg,
+        "--input-text-color": fg,
+        "--input-text-border-color": muted,
+        "--dialog-background-color": bg,
+        "--spaces-button-active-bg-color": sel,
+        "--spaces-button-active-text-color": sel_fg,
+        "--spaces-button-badge-bg-color": accent,
+        "--tabline-color": accent,
+        "--autocomplete-popup-highlight-background": sel,
+        "--bg-watermark": "none",
+        "--color-primary-default": accent,
+        "--color-primary-default-dark": accent,
+        "--color-primary-default-light": accent,
+        "--color-primary-hover": accent,
+        "--color-primary-pressed": accent,
+        "--color-primary-soft": soft,
+        "--color-text-base": fg,
+        "--color-text-base-dark": fg,
+        "--color-text-base-light": fg,
+        "--color-text-secondary": fg,
+        "--color-text-muted": muted,
+        "--color-text-brand": accent_text,
+        "--color-text-highlight": accent_text,
+        "--color-surface-base": bg,
+        "--color-surface-subtle": raised,
+        "--color-surface-raised": raised,
+        "--color-surface-lower": side,
+        "--color-surface-deep": side,
+        "--color-surface-deep-dark": side,
+        "--color-surface-border": muted,
+        "--color-surface-border-intense": muted,
+        "--hub-button-background": accent,
+        "--hub-button-color": on_accent,
+        "--hub-account-button-background": raised,
+        "--hub-account-button-background-hover": soft,
+        "--hub-account-button-background-hover-active": picked,
+        "--hub-account-secondary-button-background": side,
+        "--hub-account-secondary-button-background-hover": raised,
+        "--hub-account-secondary-button-background-active": picked,
+        "--hub-input-bg-color": bg,
+        "--hub-menulist-background-color": bg,
+        "--hub-menulist-background-color-hover-focus-open": raised,
+        "--hub-loader-background": side,
+        "--hub-border-color": muted,
+        "--button-border-color": muted,
+        "--button-background": raised,
+        "--button-background-hover": soft,
+        "--button-background-active": picked,
+        "--close-button-background": "transparent",
+        "--close-button-background-hover": raised,
+        "--close-button-background-active": picked,
+        "--box-background-color": bg,
+        "--container-background": bg,
+        "--content-background": bg,
+        "--highlight-background": picked,
+        "--in-content-box-background-odd": side,
+        "--indicator-background": accent,
+        "--message-bar-background-color": raised,
+        "--overlay-backround": side,
+        "--panel-background-color-dimmed-even-further": side,
+        "--panel-separator-color": muted,
+        "--search-bar-background": bg,
+        "--search-bar-focus-background": bg,
+        "--spaces-bg-color": side,
+        "--status-background-color": side,
+        "--tabs-toolbar-background-color": side,
+        "--tab-hover-background": raised,
+        "--tab-selected-background": bg,
+        "--toolbar-button-hover-background-color": raised,
+        "--toolbar-button-active-background-color": picked,
+        "--toolbar-button-hover-checked-color": picked,
+        "--toolbar-button-badge-bg-color": accent,
+        "--toolbarbutton-checked-background": picked,
+        "--lwt-toolbarbutton-hover-background": raised,
+        "--lwt-toolbar-field-highlight": sel,
+        "--list-container-background-hover": raised,
+        "--list-container-background-selected": picked,
+        "--list-container-background-selected-focused": picked,
+        "--list-container-background-selected-current": picked,
+        "--list-container-background-selected-current-focused": picked,
+        "--listbox-hover": raised,
+        "--listbox-selected-bg": picked,
+        "--listbox-focused-selected-bg": sel,
+        "--treeitem-background-active": sel,
+        "--tree-card-background-selected": picked,
+        "--tree-card-background-selected-unfocused": picked,
+        "--tree-card-background-selected-current": picked,
+        "--tree-card-background-current-unfocused": picked,
+        "--imbox-selected-background-color": picked,
+        "--folderpane-unread-count-background": accent,
+        "--folderpane-unread-new-count-background": accent,
+        "--folderpane-total-count-background": muted,
+        "--folderpane-unread-count-text": on_accent,
+        "--dialog-button-background-color-hover": raised,
+        "--dialog-button-background-color-active": picked,
+        "--dialog-highlight-color": picked,
+        "--dialog-primary-background-hover": accent,
+        "--dialog-primary-background-active": accent,
+        "--drop-attachment-box-background-hover": raised,
+        "--drop-attachment-title-background": side,
+        "--page-nav-button-background-color": raised,
+        "--page-nav-button-background-color-hover": soft,
+        "--page-nav-button-background-color-selected": picked,
+        "--richlist-button-background": raised,
+        "--recipient-avatar-background-color": picked,
+        "--section-highlight-background-color": picked,
+        "--focus-outline-color": accent,
+        "--toolbox-text-color": fg,
+        "--toolbox-text-color-inactive": muted,
+        "--item-color": fg,
+        "--hub-loader-color": accent,
+        "--color-secondary-default": fg,
+        "--color-secondary-soft": side,
+        "--color-accent-blue-dark": accent,
+        "--color-accent-teal-dark": accent,
+        "--color-accent-teal-light": accent,
+        "--color-accent-orange-dark": accent,
+        "--color-accent-orange-light": accent,
+        "--color-accent-pink-dark": accent,
+        "--color-accent-pink-light": accent,
+        "--color-accent-purple-light": accent,
+        "--color-accent-ink-dark": accent,
+        "--color-accent-ink-light": accent,
+        "--color-accent-primary-selected-unfocused": picked,
+        "--color-black": black,
+        "--color-white": white,
+    }
+    for step, color in gray.items():
+        variables[f"--color-gray-{step}"] = color
+    block = "\n".join(f"  {name}: {value} !important;" for name, value in variables.items())
+    return f"""/* Generated by Hyprchroma from the active Omarchy palette. */
+
+:root {{
+  color-scheme: {mode} !important;
+  scrollbar-color: {muted} {side} !important;
+}}
+
+:root, :root * {{
+{block}
+}}
+
+#navigation-toolbox,
+#chat-toolbar,
+#conv-top-info,
+.conv-nicklist-header,
+.conv-logs-header-label,
+#spacesToolbar,
+#unifiedToolbar,
+#tabs-toolbar,
+#threadPaneHeaderBar,
+#folderPaneHeaderBar {{
+  background-color: {side} !important;
+  color: {fg} !important;
+}}
+
+html,
+body,
+#tabpanelcontainer,
+.contentTabInstance,
+.im-placeholder-screen,
+#listPaneBox,
+tree,
+richlistbox,
+#folderPane,
+#folderTree,
+#threadPane,
+#threadTree,
+#threadPane > tree-view,
+#placeholderNoMessages,
+#messagePane,
+#messageBrowser,
+#webBrowser,
+#accountCentral,
+#accountCentralBrowser {{
+  background-color: {bg} !important;
+  color: {fg} !important;
+}}
+
+.searchBox,
+.themeableSearchBox,
+#searchInput,
+#quick-filter-bar-search2 {{
+  background-color: {bg} !important;
+  color: {fg} !important;
+}}
+
+treecols,
+treecol,
+.tree-columnpicker-button,
+.calendar-splitter {{
+  appearance: none !important;
+  background-color: {side} !important;
+  color: {fg} !important;
+  border-color: {muted} !important;
+}}
+
+treecol:hover,
+.tree-columnpicker-button:hover {{
+  background-color: {raised} !important;
+}}
+
+.calendar-enable-button {{
+  background-color: {accent} !important;
+  color: {on_accent} !important;
+}}
+
+.button-primary,
+button.button-primary {{
+  background-color: {accent} !important;
+  color: {on_accent} !important;
+  border-color: {accent} !important;
+}}
+
+#placeholderCreateContact,
+.day-column-today .day-column-heading {{
+  color: {accent_text} !important;
+}}
+"""
+
+
+# The message pane's start page is https://start.thunderbird.net, loaded as a
+# document of its own. userChrome does not reach it.
+THUNDERBIRD_CONTENT_STYLESHEET = "hyprchroma-content.css"
+USERCONTENT_IMPORT = '@import url("hyprchroma-content.css");'
+
+
+def thunderbird_content_stylesheet(palette):
+    """userContent CSS for Thunderbird pages that are not the main chrome window.
+
+    Address book, Settings and Add-ons are about: pages, so userChrome never
+    reaches them. The same tokens are applied there, and on the other chrome URLs, and nowhere else:
+    a mail message does not match. The start page block is the website in the
+    message pane."""
+    colors = {key: palette[key] for key in BROWSER_COLORS}
+    scoped = thunderbird_stylesheet(palette)
+    return f"""/* Generated by Hyprchroma from the active Omarchy palette. */
+
+@-moz-document url-prefix("about:addressbook"),
+               url-prefix("about:3pane"),
+               url-prefix("about:message"),
+               url-prefix("about:preferences"),
+               url-prefix("about:addons"),
+               url-prefix("about:accountsettings"),
+               url-prefix("about:accountsetup"),
+               url-prefix("about:import"),
+               url-prefix("chrome://messenger/"),
+               url-prefix("chrome://calendar/"),
+               url-prefix("chrome://chat/") {{
+{scoped}
+}}
+
+@-moz-document url-prefix("https://start.thunderbird.net/"),
+               url-prefix("https://live.thunderbird.net/") {{
+  :root {{
+    color-scheme: {palette["mode"]} !important;
+  }}
+
+  html, body {{
+    background-color: {colors["background"]} !important;
+    background-image: none !important;
+    color: {colors["foreground"]} !important;
+  }}
+
+  body * {{
+    background-image: none !important;
+    color: {colors["foreground"]} !important;
+    border-color: {colors["muted"]} !important;
+  }}
+
+  a, button, [role="button"] {{
+    color: {colors["accent"]} !important;
+  }}
+}}
+"""
+
+
 def stylesheets_pref_on(text):
     """Whether prefs.js text has the preference on."""
     return any(STYLESHEETS_PREF.fullmatch(line) for line in (text or "").splitlines())
@@ -1242,39 +1709,57 @@ def strip_line(descriptor, name, line, keep_empty):
         os.unlink(name, dir_fd=descriptor)
 
 
-def sync_firefox_profile(profile, stylesheet, manifest):
+def sync_firefox_profile(profile, stylesheet, manifest, group="browsers", bucket="firefox",
+                         content_stylesheet=None):
     """Theme one Firefox-family profile. The stylesheet is ours outright; the
-    other two files are the user's and get one line each."""
+    other two files are the user's and get one line each.
+
+    group and bucket choose the manifest record. Additional browsers keep the
+    historical browsers/firefox record; Thunderbird passes its own so a revert
+    of one cannot see the other's captures."""
     descriptor = profile.open()
     try:
         chrome_info = lstat_at(descriptor, "chrome")
         userjs_info = lstat_at(descriptor, "user.js")
         userchrome_info = None
+        usercontent_info = None
         if chrome_info is not None:
             if not stat.S_ISDIR(chrome_info.st_mode):
                 raise OSError(f"refusing {profile}: its chrome folder is a link")
             chrome = open_child(descriptor, "chrome")
             try:
                 userchrome_info = lstat_at(chrome, "userChrome.css")
+                if content_stylesheet is not None:
+                    usercontent_info = lstat_at(chrome, "userContent.css")
             finally:
                 os.close(chrome)
         # Checked before anything is written, so a refused profile is untouched.
-        for info, label in ((userjs_info, "user.js"), (userchrome_info, "userChrome.css")):
+        checks = [(userjs_info, "user.js"), (userchrome_info, "userChrome.css")]
+        if content_stylesheet is not None:
+            checks.append((usercontent_info, "userContent.css"))
+        for info, label in checks:
             if info is not None and not stat.S_ISREG(info.st_mode):
                 raise OSError(f"refusing {profile}: its {label} is not a regular file")
-        captured = manifest.setdefault("browsers", {}).setdefault("firefox", {})
+        captured = manifest.setdefault(group, {}).setdefault(bucket, {})
         if str(profile) not in captured:
+            existed = {"chrome": chrome_info is not None,
+                       "userChrome": userchrome_info is not None,
+                       "userJs": userjs_info is not None}
+            if content_stylesheet is not None:
+                existed["userContent"] = usercontent_info is not None
             captured[str(profile)] = {
                 "stylesheetsPref": stylesheets_pref_on(read_at(descriptor, "prefs.js")),
-                "existed": {"chrome": chrome_info is not None,
-                            "userChrome": userchrome_info is not None,
-                            "userJs": userjs_info is not None},
+                "existed": existed,
             }
         chrome = open_child(descriptor, "chrome", create=True)
         try:
             if read_at(chrome, BROWSER_STYLESHEET) != stylesheet:
                 atomic_write_at(chrome, BROWSER_STYLESHEET, stylesheet, 0o644)
             prepend_line(chrome, "userChrome.css", USERCHROME_IMPORT)
+            if content_stylesheet is not None:
+                if read_at(chrome, THUNDERBIRD_CONTENT_STYLESHEET) != content_stylesheet:
+                    atomic_write_at(chrome, THUNDERBIRD_CONTENT_STYLESHEET, content_stylesheet, 0o644)
+                prepend_line(chrome, "userContent.css", USERCONTENT_IMPORT)
         finally:
             os.close(chrome)
         prepend_line(descriptor, "user.js", USERJS_PREF)
@@ -1282,9 +1767,9 @@ def sync_firefox_profile(profile, stylesheet, manifest):
         os.close(descriptor)
 
 
-def revert_firefox_profile(profile, manifest):
+def revert_firefox_profile(profile, manifest, group="browsers", bucket="firefox", content=False):
     """Un-theme one profile. Returns the PIDs still to wait for, if any."""
-    captured = manifest.get("browsers", {}).get("firefox", {})
+    captured = manifest.get(group, {}).get(bucket, {})
     record = captured.get(str(profile))
     existed = record.get("existed", {}) if isinstance(record, dict) else {}
     descriptor = profile.open()
@@ -1300,6 +1785,12 @@ def revert_firefox_profile(profile, manifest):
                     os.unlink(BROWSER_STYLESHEET, dir_fd=chrome)
                 strip_line(chrome, "userChrome.css", USERCHROME_IMPORT,
                            keep_empty=existed.get("userChrome") is True)
+                if content:
+                    info = lstat_at(chrome, THUNDERBIRD_CONTENT_STYLESHEET)
+                    if info is not None and not stat.S_ISDIR(info.st_mode):
+                        os.unlink(THUNDERBIRD_CONTENT_STYLESHEET, dir_fd=chrome)
+                    strip_line(chrome, "userContent.css", USERCONTENT_IMPORT,
+                               keep_empty=existed.get("userContent") is True)
             finally:
                 os.close(chrome)
         strip_line(descriptor, "user.js", USERJS_PREF, keep_empty=existed.get("userJs") is True)
@@ -1599,6 +2090,158 @@ def record_browsers_state(state_dir, value):
     if status and status.get("browsers") != value:
         status["browsers"] = value
         write_json(path, status)
+
+
+def thunderbird_profiles():
+    """Every Thunderbird profile profiles.ini lists under a known root."""
+    home = Path.home()
+    return sorted({profile for relative in THUNDERBIRD_ROOTS
+                   for profile in firefox_profiles(*browser_root(home, relative))})
+
+
+def thunderbird_enabled(state_dir):
+    """Opt-in: only a recorded true is on. It writes into mail profiles."""
+    settings = read_json(Path(state_dir) / "settings.json")
+    frameworks = settings.get("frameworks") if isinstance(settings, dict) else None
+    return isinstance(frameworks, dict) and frameworks.get("thunderbird") is True
+
+
+def spawn_thunderbird_waiter(state_dir, data_dir):
+    """Wait for Thunderbird to exit, then finish a revert it was holding."""
+    subprocess.Popen(
+        [os.path.realpath(__file__), "--state-dir", str(state_dir),
+         "--data-dir", str(data_dir), "watch-thunderbird-exit"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def sync_thunderbird(state_dir, data_dir, revert=False, spawn=True):
+    """Theme -- or, with revert, un-theme -- every Thunderbird profile found.
+
+    The same write as a Firefox profile: the stylesheet is ours, and userChrome
+    and user.js gain one line each. Thunderbird reads the sheet at start, so
+    the files can be written while it runs. A revert that still has to take the
+    preference back out of prefs.js waits until Thunderbird exits, because it
+    rewrites that file from memory on the way out."""
+    profiles = thunderbird_profiles()
+    if not profiles and not revert:
+        return "not-installed", "Thunderbird is not installed", []
+    palette = None if revert else browser_palette(data_dir, "thunderbird-theme.json")
+    if not revert and palette is None:
+        raise SystemExit("hyprchroma-state: no usable Thunderbird palette")
+    manifest_path = state_dir / "original" / "manifest.json"
+    manifest = read_json(manifest_path)
+    captured_before = json.dumps(manifest, sort_keys=True)
+    stylesheet = thunderbird_stylesheet(palette) if palette else None
+    held, abandoned = [], set()
+    changed = failed = False
+    for profile in profiles:
+        try:
+            if revert:
+                held += revert_firefox_profile(profile, manifest, "thunderbird", "profiles", content=True)
+            else:
+                sync_firefox_profile(
+                    profile, stylesheet, manifest, "thunderbird", "profiles",
+                    content_stylesheet=thunderbird_content_stylesheet(palette))
+            changed = True
+        except (OSError, ValueError, RecursionError):
+            failed = True
+            abandoned.add(str(profile))
+    captured = manifest.get("thunderbird")
+    if revert and isinstance(captured, dict):
+        present = {str(profile) for profile in profiles}
+        for records in captured.values():
+            if isinstance(records, dict):
+                for key in [key for key in records if key not in present or key in abandoned]:
+                    records.pop(key)
+    if isinstance(captured, dict):
+        for family in [key for key, value in captured.items() if not value]:
+            captured.pop(family)
+        if not captured:
+            manifest.pop("thunderbird")
+    if json.dumps(manifest, sort_keys=True) != captured_before:
+        write_json(manifest_path, manifest)
+    if not profiles:
+        return "not-installed", "Thunderbird is not installed", []
+    if held and spawn:
+        spawn_thunderbird_waiter(state_dir, data_dir)
+    if held:
+        summary = "Thunderbird when it closes"
+    elif failed and not changed:
+        summary = "could not safely change a Thunderbird profile"
+    elif failed:
+        summary = "Thunderbird; could not safely change a profile"
+    else:
+        summary = "Thunderbird"
+    return ("pending" if held else "synchronized"), summary, sorted(set(held))
+
+
+def record_thunderbird_state(state_dir, value):
+    """Keep status.json current when a revert lands after the sync that
+    recorded "pending"."""
+    path = state_dir / "status.json"
+    status = read_json(path)
+    if status and status.get("thunderbird") != value:
+        status["thunderbird"] = value
+        write_json(path, status)
+
+
+def resume_thunderbird(state_dir, data_dir):
+    """Finish Thunderbird work a waiter did not. Nothing outstanding, no change."""
+    enabled = thunderbird_enabled(state_dir)
+    if enabled:
+        outstanding = read_json(state_dir / "status.json").get("thunderbird") == "pending"
+    else:
+        outstanding = "thunderbird" in read_json(state_dir / "original" / "manifest.json")
+    if not outstanding:
+        return None
+    state, _, _ = sync_thunderbird(state_dir, data_dir, revert=not enabled)
+    record_thunderbird_state(state_dir, state if enabled else "disabled")
+    return state
+
+
+def watch_thunderbird_exit(state_dir, data_dir):
+    """Finish a Thunderbird revert that had to wait for the application to exit.
+
+    Theme or revert is decided when it exits, from the setting as it is then."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir)
+    prepare_lock(runtime / "hyprchroma-thunderbird-wait.lock")
+    lock = open(runtime / "hyprchroma-thunderbird-wait.lock", "r")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return
+    try:
+        for _ in range(WATCH_ROUNDS):
+            with sync_lock(state_dir):
+                revert = not thunderbird_enabled(state_dir)
+                state, _, pids = sync_thunderbird(
+                    state_dir, data_dir, revert=revert, spawn=False)
+                if state != "pending":
+                    record_thunderbird_state(state_dir, "disabled" if revert else state)
+                    return
+            descriptors = []
+            for pid in pids:
+                try:
+                    descriptors.append(os.pidfd_open(pid))
+                except OSError:
+                    continue
+            if not descriptors:
+                continue
+            poller = select.poll()
+            for descriptor in descriptors:
+                poller.register(descriptor, select.POLLIN)
+            remaining = set(descriptors)
+            while remaining:
+                events = poller.poll(WATCH_TIMEOUT_SECONDS * 1000)
+                if not events:
+                    return
+                for descriptor, _ in events:
+                    poller.unregister(descriptor)
+                    os.close(descriptor)
+                    remaining.discard(descriptor)
+    finally:
+        lock.close()
 
 
 def resume_browsers(state_dir, data_dir):
@@ -4269,6 +4912,12 @@ def restore(state_dir, data_dir, targets, mode):
             if state == "pending":
                 print(f"Hyprchroma: browsers reverted: {summary}")
                 continue
+        elif target == "thunderbird":
+            # Same write as a Firefox profile, kept under its own manifest key.
+            state, summary, _ = sync_thunderbird(state_dir, data_dir, revert=True)
+            if state == "pending":
+                print(f"Hyprchroma: thunderbird reverted: {summary}")
+                continue
         elif mode == "stock":
             restore_target_stock(snapshot_dir, manifest, target)
         else:
@@ -4308,6 +4957,12 @@ def main():
                           help="only finish work a waiter left outstanding")
     sub.add_parser("watch-browsers-exit")
     sub.add_parser("detect-browsers")
+    thunderbird = sub.add_parser("sync-thunderbird")
+    thunderbird.add_argument("--revert", action="store_true")
+    thunderbird.add_argument("--resume", action="store_true",
+                             help="only finish work a waiter left outstanding")
+    sub.add_parser("watch-thunderbird-exit")
+    sub.add_parser("detect-thunderbird")
     stale = sub.add_parser("report-stale-apps")
     stale.add_argument("--written-now", action="store_true",
                        help="the palette was just written, so judge staleness against now")
@@ -4360,7 +5015,7 @@ def main():
     # write-file and prepare-lock act on one named path; everything else
     # works on the state and data trees and must be given both.
     if args.command not in ("write-file", "prepare-lock", "detect-browsers",
-                            "ensure-import", "remove-import") and (
+                            "detect-thunderbird", "ensure-import", "remove-import") and (
             args.state_dir is None or args.data_dir is None):
         parser.error("--state-dir and --data-dir are required for " + args.command)
 
@@ -4389,6 +5044,19 @@ def main():
     elif args.command == "detect-browsers":
         for name, _, _ in detected_browsers():
             print(name)
+    elif args.command == "sync-thunderbird":
+        if args.resume:
+            resume_thunderbird(args.state_dir, args.data_dir)
+            return
+        state, summary, _ = sync_thunderbird(
+            args.state_dir, args.data_dir, revert=args.revert)
+        print(state)
+        print(summary)
+    elif args.command == "watch-thunderbird-exit":
+        watch_thunderbird_exit(args.state_dir, args.data_dir)
+    elif args.command == "detect-thunderbird":
+        if thunderbird_profiles():
+            print("Thunderbird")
     elif args.command == "report-stale-apps":
         # One baseline, the stored one, unless a caller insists on now.
         if args.written_now:

@@ -224,6 +224,50 @@ binary.unlink()
 chk("a browser whose binary was replaced by an update still counts as open",
     process.pid in dr.pids_running(["helium"]), True)
 process.kill(); process.wait()
+
+# -- Brave and Brave Origin ------------------------------------------------------
+# Both run as a program called "brave", so an open Origin held Brave's write back
+# until both had closed. Real processes under each path, since what the kernel
+# reports for them is the thing in question.
+brave_binary = home / "opt/brave-bin/brave"
+origin_binary = home / "opt/brave-origin-bin/brave"
+for binary in (brave_binary, origin_binary):
+    binary.parent.mkdir(parents=True)
+    shutil.copy("/usr/bin/sleep", binary)
+brave_target = dr.Target("brave", "Brave", "chromium", home / "b")
+origin_target = dr.Target("brave-origin", "Brave Origin", "chromium", home / "o")
+dr._EXECUTABLES = None
+origin = subprocess.Popen([str(origin_binary), "30"])
+time.sleep(0.2)
+chk("an open Brave Origin holds its own write back",
+    origin.pid in dr.target_pids(origin_target), True)
+chk("...and not Brave's", origin.pid in dr.target_pids(brave_target), False)
+dr._EXECUTABLES = None
+brave = subprocess.Popen([str(brave_binary), "30"])
+time.sleep(0.2)
+chk("an open Brave holds its own write back", brave.pid in dr.target_pids(brave_target), True)
+chk("...and not Brave Origin's", brave.pid in dr.target_pids(origin_target), False)
+# argv and environment are the process's own to choose; the path is the kernel's.
+dr._EXECUTABLES = None
+claiming = subprocess.Popen(["brave-origin", "30"], executable=str(brave_binary),
+                            env={**os.environ, "CHROME_WRAPPER": "/opt/brave-origin-bin/brave-origin"})
+time.sleep(0.2)
+chk("a process only calling itself Brave Origin does not count as it",
+    claiming.pid in dr.target_pids(origin_target), False)
+for process in (origin, brave, claiming):
+    process.kill(); process.wait()
+dr._EXECUTABLES = None
+chk("a process that has gone is not running", dr.browser_pids(dr.BROWSERS["brave-origin"]), [])
+# The findings this list has to keep honoring.
+chk("Brave Origin is themed from its own folder",
+    dr.BROWSERS["brave-origin"]["roots"], ["~/.config/BraveSoftware/Brave-Origin"])
+chk("no browser root is inside a Flatpak's sandbox",
+    [root for spec in dr.BROWSERS.values() for root in spec["roots"] if ".var" in root], [])
+origin_profile = chromium_profile(".config/BraveSoftware/Brave-Origin", "Default", True, cache={"../../escape": {}})
+found = [t for t in dr.dark_reader_targets() if t.browser == "brave-origin"]
+chk("a profile that climbs out of Brave Origin's folder is refused",
+    [t.profile for t in found], [Path(os.path.realpath(origin_profile))])
+chk("its name passes as the panel's plain text", set("<>&") & set(dr.BROWSERS["brave-origin"]["name"]), set())
 E
 
 # -- the sync script asks for all of them, not the default browser -------------

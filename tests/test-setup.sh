@@ -34,8 +34,8 @@ chk "it names what is missing and how to get it" \
 # the decline path stops rather than falling through into the real questions.
 chk "declining -- or having nothing to answer with -- stops the script" \
   "$(grep -c 'cannot continue without them' <<<"$base_out")" "1"
-chk "and never reaches a single question about Pear or Dark Reader" \
-  "$(grep -cE 'Include (Pear Desktop|Dark Reader)' <<<"$base_out")" "0"
+chk "and never reaches a single question about an optional app" \
+  "$(grep -cE 'Include (Thunderbird|Pear Desktop|Dark Reader)' <<<"$base_out")" "0"
 chk "declining exits non-zero rather than continuing" \
   "$(timeout 5 "$base_probe" </dev/null >/dev/null 2>&1; echo $?)" "1"
 # Real jq and python are already required just to run this test suite, so the
@@ -118,14 +118,20 @@ chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "
 chk "Dark Reader is explained" "$(grep -c 'browser extension that darkens web pages' <<<"$out")" "1"
 chk "it says it will not install the extension" \
   "$(grep -c 'does not install the extension' <<<"$out")" "1"
-chk "both are asked about" "$(grep -cE 'Include (Pear Desktop|Dark Reader)' <<<"$out")" "0"
+# The question itself is read's prompt, which is not part of the captured
+# output. The wording lives in the script.
+chk "Thunderbird, Pear Desktop and Dark Reader are each asked about" \
+  "$(grep -cE 'ask "Include (Thunderbird|Pear Desktop \(YouTube Music\)|Dark Reader)"' $S)" "3"
 chk "declining is the default" "$(grep -c '\[y/N\]' $S)" "1"
 
 # --- dependencies are scanned, explained, and optional --------------------
 probe=$(mktemp); trap 'rm -f "$probe"' EXIT
 sed 's/adw-gtk-theme/definitely-not-a-package/g; s/python-plyvel/also-not-a-package/g' $S > "$probe"
 chmod +x "$probe"
-want=$(printf 'n\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
+# n Thunderbird, n Pear, y Dark Reader. The next n declines whatever follows
+# (Flatpak, when it is installed here) so the Dark Reader dependency is the
+# one this run is about.
+want=$(printf 'n\nn\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
 chk "a missing dependency is named" "$(grep -c 'These are missing' <<<"$want")" "1"
 chk "with what it is for" "$(grep -c 'GTK 3 apps follow the theme' <<<"$want")" "1"
 chk "and the command to get it" "$(grep -c 'sudo pacman -S --needed' <<<"$want")" "1"
@@ -153,7 +159,7 @@ chk "the check happens right where the question is answered, not after the build
 # browser happens to be this machine's actual default.
 dr_home=$(mktemp -d); trap 'rm -rf "$dr_home"' EXIT
 dr_out=$(export HOME="$dr_home"
-         printf 'n\ny\nno\n' | timeout 30 "./$S" 2>&1)
+         printf 'n\nn\ny\nno\n' | timeout 30 "./$S" 2>&1)
 chk "the store links appear live, at the point Dark Reader is chosen" \
   "$(grep -c 'Chrome Web Store' <<<"$dr_out")" "1"
 chk "before the build even starts" \
@@ -170,11 +176,12 @@ pear_probe=$(mktemp); trap 'rm -f "$pear_probe"' EXIT
 sed 's/command -v pear-desktop/command -v definitely-not-pear/' $S > "$pear_probe"
 chmod +x "$pear_probe"
 pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
-# y: include Pear. n: decline Dark Reader, so its dependency never enters it.
-# n: decline the install offer below -- answering yes here would really try
-# to run "omarchy pkg aur add" against this machine. no: cancel before build.
+# n: decline Thunderbird. y: include Pear. n: decline Dark Reader, so its
+# dependency never enters it. n: decline whatever is asked next. no: cancel
+# before the build. Answering yes to the Pear install offer would really try
+# to run "omarchy pkg aur add" against this machine.
 pear_out=$(export HOME="$pear_home"
-           printf 'y\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
+           printf 'n\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
 chk "a missing, wanted Pear Desktop is named" \
   "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
 # -bin specifically, not the plain package: that one builds a full Electron
@@ -228,7 +235,7 @@ chk "and both actions behind it, mirrored" "$(grep -c 'framework", "restore"' Pa
 chk "WHATSNEW.md is titled with this version" \
   "$(sed -n 's/^# What.s new in //p' WHATSNEW.md | head -1)" "$(cat VERSION)"
 chk "the installer shows it before the first framework question" \
-  "$(awk '/WHATSNEW.md/{seen=1} /ask "Include Pear Desktop"/{print (seen?"before":"after"); exit}' $S)" "before"
+  "$(awk '/WHATSNEW.md/{seen=1} /ask "Include Thunderbird"/{print (seen?"before":"after"); exit}' $S)" "before"
 chk "its title is shown as a heading" \
   "$(grep -c "What's new in $(cat VERSION)" <<<"$out")" "1"
 

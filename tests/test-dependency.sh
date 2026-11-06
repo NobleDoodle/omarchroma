@@ -66,10 +66,14 @@ chk "\"i\" is still the key for all three, not just named in the button" \
 # The separator and the refresh/close-apps buttons once checked only
 # !guideOpen, so with no service installed they still drew over an otherwise
 # empty panel -- controls for a framework list that had nothing in it.
-for control in 'PanelSeparator {' 'text: "Refresh enabled' 'to close  (/)"'; do
+for control in 'text: "Refresh enabled' 'to close  (/)"'; do
   chk "gated on root.ready: $control" \
     "$(code Panel.qml | grep -B3 -A2 "$control" | grep -c 'visible:.*root\.ready')" "1"
 done
+# Two: the one above those buttons and the one under the header. The others sit
+# inside views that are themselves only reachable once it is ready.
+chk "gated on root.ready: PanelSeparator {" \
+  "$(code Panel.qml | grep -B3 -A2 'PanelSeparator {' | grep -c 'visible:.*root\.ready')" "2"
 # "/" used to flip the guide open regardless of readiness, showing an
 # always-empty "Nothing to close" screen with no framework list behind it.
 chk "the guide key is refused before the ready check, not after" \

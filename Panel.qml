@@ -32,8 +32,62 @@ Panel {
   // own PATH regardless, so this is a floor rather than the whole defense.
   readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
+  FileView {
+    id: themeNameFile
+    path: root.omarchyCurrent + "/theme.name"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      root.themeName = String(text() || "").trim()
+      themeColorsFile.reload()
+    }
+    onFileChanged: reload()
+  }
+
+  FileView {
+    id: themeColorsFile
+    path: root.omarchyCurrent + "/theme/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.readThemeColors(text())
+    onFileChanged: reload()
+  }
+
   readonly property string settingsPath: stateDir + "/settings.json"
   readonly property string statusPath: stateDir + "/status.json"
+  // The running Omarchy theme. theme.name is rewritten in place; colors.toml
+  // is replaced with the theme directory, so a name change reloads the colors.
+  readonly property string omarchyCurrent: (Quickshell.env("XDG_STATE_HOME") !== ""
+    ? Quickshell.env("XDG_STATE_HOME")
+    : Quickshell.env("HOME") + "/.local/state") + "/omarchy/current"
+  property string themeName: ""
+  property var themeSwatches: []
+
+  function readThemeColors(text) {
+    var wanted = ["background", "dark_background", "foreground", "accent", "selection"]
+    var found = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim()
+      var eq = line.indexOf("=")
+      if (eq < 1) continue
+      var key = line.slice(0, eq).trim()
+      var raw = line.slice(eq + 1).trim().replace(/^["']|["']$/g, "")
+      if (wanted.indexOf(key) !== -1 && /^#[0-9A-Fa-f]{6}$/.test(raw))
+        found[key] = raw
+    }
+    var swatches = []
+    for (var j = 0; j < wanted.length; j++) {
+      if (found[wanted[j]]) swatches.push(found[wanted[j]])
+    }
+    root.themeSwatches = swatches
+  }
+
+  function themeStatus() {
+    var name = String(root.themeName || "").replace(/[^A-Za-z0-9 _.-]/g, "").trim()
+    if (!name) return ""
+    return name.replace(/[-_.]+/g, " ").toUpperCase()
+  }
 
   // hyprchroma is a separate package and does all the actual work; this panel
   // only drives it. Without it every toggle would fail quietly and the panel
@@ -222,6 +276,29 @@ Panel {
     root.setRestartMode(root.restartMode === "confirm" ? "off" : "confirm")
   }
 
+  // The bar's urgent color and count. On unless this widget's shell.json entry
+  // says otherwise, so an existing layout keeps the display it already had.
+  // The panel's own list does not follow this: hiding the badge is not hiding
+  // the applications.
+  readonly property bool barAlert: setting("barAlert", true) !== false
+
+  function setBarAlert(shown) {
+    var next = shown === true
+    if (next === root.barAlert) return
+    var entry = { id: root.moduleName }
+    var existing
+    for (existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
+    entry.barAlert = next
+    root.settings = entry
+    if (root.hostWidget && "settings" in root.hostWidget) root.hostWidget.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
+
+  function toggleBarAlert() {
+    root.setBarAlert(!root.barAlert)
+  }
+
   function frameworkRemoved(target) {
     return root.removedTargets.indexOf(root.targetKey(target)) !== -1
   }
@@ -240,10 +317,14 @@ Panel {
   // About, on "?" and the help icon: what is installed and under what
   // license, then the links -- an issue or question, the source, a coffee.
   property bool aboutOpen: false
+  // Additional Apps: Thunderbird and Pear Desktop, in a drop-down under its
+  // row on the main list. Its row has no switch of its own: it only opens this.
+  property bool appsOpen: false
 
   function openAbout() {
     root.guideOpen = false
     root.settingsOpen = false
+    root.appsOpen = false
     root.aboutOpen = true
   }
 
@@ -385,21 +466,33 @@ Panel {
     { target: "gtk", label: "GTK and GNOME", icon: "󰍛" },
     { target: "qt-kde", label: "Qt and KDE", icon: "󰖯" },
     { target: "dark-reader", label: "Dark Reader", icon: "󰈈", optional: true },
-    { target: "pear", label: "Pear Desktop", icon: "󰎆", optional: true },
     { target: "flatpak", label: "Flatpak apps", icon: "󰏗", optional: true },
-    { target: "browsers", label: "Additional browsers", icon: "󰖟", optional: true }
+    { target: "browsers", label: "Additional browsers", icon: "󰖟", optional: true },
+    { target: "apps", label: "Additional Apps", icon: "󰀻", optional: true, menu: true }
   ]
 
-  // Flatpak and additional browsers are opt-in -- one widens what every
-  // sandboxed app may read, the other writes into browser profiles -- so they
-  // alone are off unless settings record them on.
+  // Under the Additional Apps row. Thunderbird is opt-in: it writes
+  // into mail profiles. Pear stays on unless settings say otherwise.
+  // Open, and its row still there: Settings can remove the row while it is open.
+  readonly property bool appsListShown: root.appsOpen && root.visibleFrameworks.some(function(entry) {
+    return entry.menu === true
+  })
+  readonly property var appFrameworks: [
+    { target: "thunderbird", label: "Thunderbird", icon: "󰇮" },
+    { target: "pear", label: "Pear Desktop (YouTube Music)", icon: "󰎆" }
+  ]
+
+  // Flatpak, additional browsers and Thunderbird are opt-in -- one widens
+  // what every sandboxed app may read, the others write into profiles -- so
+  // they are off unless settings record them on.
   property var enabledTargets: ({
     gtk: true,
     qtKde: true,
     darkReader: true,
     pear: true,
     flatpak: false,
-    browsers: false
+    browsers: false,
+    thunderbird: false
   })
 
   function targetKey(target) {
@@ -410,7 +503,7 @@ Panel {
 
   function targetEnabled(target) {
     var key = targetKey(target)
-    if (key === "flatpak" || key === "browsers") return enabledTargets[key] === true
+    if (key === "flatpak" || key === "browsers" || key === "thunderbird") return enabledTargets[key] === true
     return enabledTargets[key] !== false
   }
 
@@ -423,7 +516,8 @@ Panel {
       darkReader: enabledTargets.darkReader !== false,
       pear: enabledTargets.pear !== false,
       flatpak: enabledTargets.flatpak === true,
-      browsers: enabledTargets.browsers === true
+      browsers: enabledTargets.browsers === true,
+      thunderbird: enabledTargets.thunderbird === true
     }
     next[key] = enabled
     enabledTargets = next
@@ -477,6 +571,7 @@ Panel {
     root.guideOpen = false
     root.settingsOpen = false
     root.aboutOpen = false
+    root.appsOpen = false
     root.close()
   }
 
@@ -497,6 +592,7 @@ Panel {
     root.guideOpen = false
     root.settingsOpen = false
     root.aboutOpen = false
+    root.appsOpen = false
     root.confirmRestartOpen = true
   }
 
@@ -532,6 +628,7 @@ Panel {
     if (key === "/") {
       root.settingsOpen = false
       root.aboutOpen = false
+      root.appsOpen = false
       root.guideOpen = !root.guideOpen
       if (root.guideOpen) root.refreshStaleApps()
       return
@@ -539,16 +636,18 @@ Panel {
     if (key === "s") {
       root.guideOpen = false
       root.aboutOpen = false
+      root.appsOpen = false
       root.settingsOpen = !root.settingsOpen
       return
     }
     // While the guide is up, its only key is Ctrl+Enter (the Shortcut), which
     // opens the confirmation; letters and digits do nothing there.
     if (root.guideOpen) return
-    // Settings: c flips the restart mode, and a digit removes or adds back the
-    // framework shown beside it.
+    // Settings: c flips the restart mode, b the bar alert, and a digit removes
+    // or adds back the framework shown beside it.
     if (root.settingsOpen) {
       if (key === "c") { root.toggleRestartMode(); return }
+      if (key === "b") { root.toggleBarAlert(); return }
       var back = parseInt(key, 10) - 1
       if (back >= 0 && back < root.settingsFrameworks.length) {
         root.toggleRemoved(root.settingsFrameworks[back].target)
@@ -573,8 +672,17 @@ Panel {
     }
     var index = parseInt(key, 10) - 1
     if (index >= 0 && index < root.visibleFrameworks.length) {
-      var target = root.visibleFrameworks[index].target
-      root.setTargetEnabled(target, !root.targetEnabled(target))
+      var entry = root.visibleFrameworks[index]
+      if (entry.menu === true) root.appsOpen = !root.appsOpen
+      else root.setTargetEnabled(entry.target, !root.targetEnabled(entry.target))
+    } else if (root.appsListShown) {
+      // The drop-down's rows are numbered on from the list above them, and
+      // those keys do nothing while it is closed.
+      var appIndex = index - root.visibleFrameworks.length
+      if (appIndex >= 0 && appIndex < root.appFrameworks.length) {
+        var appTarget = root.appFrameworks[appIndex].target
+        root.setTargetEnabled(appTarget, !root.targetEnabled(appTarget))
+      }
     }
   }
 
@@ -652,18 +760,19 @@ Panel {
           darkReader: frameworks.darkReader !== false,
           pear: frameworks.pear !== false,
           flatpak: frameworks.flatpak === true,
-          browsers: frameworks.browsers === true
+          browsers: frameworks.browsers === true,
+          thunderbird: frameworks.thunderbird === true
         }
         // "force", from before it was removed, now means the confirmation.
         var mode = parsed.restartMode === "force" ? "confirm" : parsed.restartMode
         root.restartMode = root.restartModes.indexOf(mode) !== -1 ? mode : "off"
       } catch (error) {
-        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+        root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false, thunderbird: false }
         root.restartMode = "off"
       }
     }
     onLoadFailed: {
-      root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false }
+      root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false, thunderbird: false }
       root.restartMode = "off"
     }
     onFileChanged: reload()
@@ -702,7 +811,9 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(300))
+    // Wide enough for the settings rows to stay one line: "Restart apps at
+    // theme change" is the longest, beside its icon, key and switch.
+    contentWidth: panel.fittedContentWidth(Style.space(360))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
@@ -715,6 +826,7 @@ Panel {
         else if (root.guideOpen) root.guideOpen = false
         else if (root.settingsOpen) root.settingsOpen = false
         else if (root.aboutOpen) root.aboutOpen = false
+        else if (root.appsOpen) root.appsOpen = false
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
@@ -736,39 +848,150 @@ Panel {
         width: parent.width
         spacing: Style.space(4)
 
-        // The title, with Settings and Help as icons at its right on the main
-        // view: out of the list of controls, where they are always to hand.
+        // Main view matches the fan panel's header: a large mark, a bold
+        // title, and a small tracked line under it. Other views keep a title
+        // only. Settings and Help stay at the right of the main header.
         Item {
+          id: header
+          readonly property bool hero: !root.guideOpen && !root.settingsOpen && !root.aboutOpen
+                                        && !root.confirmRestartOpen
           width: content.width
-          height: Math.max(heading.implicitHeight, headerIcons.visible ? headerIcons.implicitHeight : 0)
+          height: header.hero
+                  ? Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
+                  : Math.max(heading.implicitHeight, headerIcons.visible ? headerIcons.implicitHeight : 0)
+
+          Text {
+            id: heroIcon
+            visible: header.hero
+            text: "\udb80\udfd8"
+            textFormat: Text.PlainText
+            color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+            font.pixelSize: Style.font.display
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+          }
+
+          Column {
+            id: heroLabels
+            visible: header.hero
+            anchors.left: heroIcon.right
+            anchors.leftMargin: Style.space(14)
+            anchors.right: headerIcons.visible ? headerIcons.left : parent.right
+            anchors.rightMargin: headerIcons.visible ? Style.space(8) : 0
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(2)
+
+            Text {
+              text: "Omarchroma"
+              textFormat: Text.PlainText
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.title
+              font.bold: true
+              elide: Text.ElideRight
+              width: parent.width
+            }
+
+            Text {
+              visible: root.themeStatus() !== ""
+              text: root.themeStatus()
+              textFormat: Text.PlainText
+              color: root.bar ? Qt.darker(root.bar.foreground, 1.4) : Commons.Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+              elide: Text.ElideRight
+              width: parent.width
+            }
+
+            Row {
+              id: swatchRow
+              spacing: Style.space(4)
+              visible: root.themeSwatches.length > 0
+              // Fade in on each open. Cleared on close, so the next open does
+              // not flash the cells that were already showing.
+              property bool reveal: root.opened && header.hero
+              onRevealChanged: {
+                for (var i = 0; i < swatchRepeater.count; i++) {
+                  var cell = swatchRepeater.itemAt(i)
+                  if (!cell) continue
+                  if (reveal) cell.playReveal()
+                  else cell.hideSwatch()
+                }
+              }
+              Repeater {
+                id: swatchRepeater
+                model: root.themeSwatches
+                Rectangle {
+                  id: swatch
+                  required property string modelData
+                  required property int index
+                  function playReveal() {
+                    opacity = 0
+                    revealAnim.restart()
+                  }
+                  function hideSwatch() {
+                    revealAnim.stop()
+                    opacity = 0
+                  }
+                  Component.onCompleted: if (swatchRow.reveal) playReveal()
+                  width: Style.space(16)
+                  height: Style.space(8)
+                  radius: Style.space(2)
+                  color: modelData
+                  opacity: 0
+                  border.width: 1
+                  border.color: Qt.rgba(root.bar ? root.bar.foreground.r : 1,
+                                        root.bar ? root.bar.foreground.g : 1,
+                                        root.bar ? root.bar.foreground.b : 1, 0.28)
+
+                  SequentialAnimation {
+                    id: revealAnim
+                    PauseAnimation { duration: swatch.index * 120 }
+                    NumberAnimation {
+                      target: swatch
+                      property: "opacity"
+                      from: 0
+                      to: 1
+                      duration: 280
+                      easing.type: Easing.OutCubic
+                    }
+                  }
+                }
+              }
+            }
+          }
 
           Text {
             id: heading
+            visible: !header.hero
             text: root.confirmRestartOpen
               ? (root.staleWindowCount > 0 ? "Save your work first" : "Nothing to restart")
-              : root.settingsOpen
+                : root.settingsOpen
                 ? "Settings"
                 : root.aboutOpen
                 ? "About"
                 : root.guideOpen
                   ? (root.staleWindowCount > 0 ? root.windowsPhrase(root.staleWindowCount) + " to close"
                                               : "Nothing to close")
-                  : "Omarchroma"
+                  : ""
             color: root.bar ? root.bar.foreground : Commons.Color.popups.text
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.body
+            font.pixelSize: Style.font.title
             font.bold: true
             anchors.left: parent.left
-            anchors.right: headerIcons.visible ? headerIcons.left : parent.right
+            anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             elide: Text.ElideRight
           }
 
           Row {
             id: headerIcons
-            visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
+            visible: header.hero && root.ready
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
+            anchors.top: parent.top
             spacing: Style.space(2)
 
             Button {
@@ -979,7 +1202,7 @@ Panel {
 
             Text {
               id: askLabel
-              text: "Restart apps at\ntheme change"
+              text: "Restart apps at theme change"
               color: root.bar ? root.bar.foreground : Commons.Color.popups.text
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.body
@@ -988,8 +1211,7 @@ Panel {
               anchors.right: askKey.left
               anchors.rightMargin: Style.space(10)
               anchors.verticalCenter: parent.verticalCenter
-              // Two lines, broken by hand: wider than the panel in its own
-              // font, and a word wrap left "change" alone on the second.
+              elide: Text.ElideRight
             }
 
             Text {
@@ -1011,6 +1233,55 @@ Panel {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               onToggled: root.toggleRestartMode()
+            }
+          }
+
+          Item {
+            width: settings.width
+            height: Math.max(Style.spacing.controlHeight, barAlertLabel.implicitHeight)
+
+            Text {
+              id: barAlertIcon
+              text: "\udb80\udfd8"
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              id: barAlertLabel
+              text: "Show alerts on the bar"
+              elide: Text.ElideRight
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.body
+              anchors.left: barAlertIcon.right
+              anchors.leftMargin: Style.space(10)
+              anchors.right: barAlertKey.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+              id: barAlertKey
+              text: "b"
+              color: Commons.Color.muted
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              anchors.right: barAlertSwitch.left
+              anchors.rightMargin: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            ToggleSwitch {
+              id: barAlertSwitch
+              checked: root.barAlert
+              foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              onToggled: root.toggleBarAlert()
             }
           }
 
@@ -1178,6 +1449,25 @@ Panel {
           }
         }
 
+        // Same break the fan panel uses between its header and its controls:
+        // a gap, a rule, and a gap. It sits above the status line.
+        Item {
+          visible: header.hero && root.ready
+          width: parent.width
+          height: Style.space(10)
+        }
+
+        PanelSeparator {
+          visible: header.hero && root.ready
+          foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+        }
+
+        Item {
+          visible: header.hero && root.ready
+          width: parent.width
+          height: Style.space(10)
+        }
+
         Text {
           visible: !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
           text: refreshProcess.running
@@ -1241,6 +1531,14 @@ Panel {
             width: content.width
             height: Math.max(Style.spacing.controlHeight, label.implicitHeight)
 
+            // The whole row opens the drop-down; there is no switch to aim at.
+            MouseArea {
+              visible: row.modelData.menu === true
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.appsOpen = !root.appsOpen
+            }
+
             Text {
               id: icon
               text: row.modelData.icon
@@ -1280,12 +1578,91 @@ Panel {
 
             ToggleSwitch {
               id: toggle
+              visible: row.modelData.menu !== true
               checked: root.targetEnabled(row.modelData.target)
               busy: refreshProcess.running
               foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               onToggled: root.setTargetEnabled(row.modelData.target, !checked)
+            }
+
+            // Where the others have their switch, so the keys stay in a column.
+            Text {
+              visible: row.modelData.menu === true
+              text: root.appsOpen ? "\udb80\udd43" : "\udb80\udd40"
+              color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              // Larger and bold, to hold its own beside the switches above it.
+              font.pixelSize: Math.round(Style.font.body * 1.6)
+              font.bold: true
+              anchors.centerIn: toggle
+            }
+          }
+        }
+
+        // The Additional Apps drop-down: Thunderbird and Pear Desktop, the two
+        // frameworks behind that row. It is the last row, so this sits under it.
+        Column {
+          id: apps
+          visible: root.appsListShown && !root.guideOpen && !root.settingsOpen && !root.aboutOpen && !root.confirmRestartOpen && root.ready
+          width: content.width
+          leftPadding: Style.space(16)
+          spacing: Style.space(4)
+
+          Repeater {
+            model: root.appFrameworks
+            delegate: Item {
+              id: appRow
+              required property var modelData
+              required property int index
+              width: apps.width - apps.leftPadding
+              height: Math.max(Style.spacing.controlHeight, appLabel.implicitHeight)
+
+              Text {
+                id: appIcon
+                text: appRow.modelData.icon
+                color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                id: appLabel
+                text: appRow.modelData.label
+                color: root.bar ? root.bar.foreground : Commons.Color.popups.text
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.body
+                anchors.left: appIcon.right
+                anchors.leftMargin: Style.space(10)
+                anchors.right: appKey.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: appKey
+                text: String(root.visibleFrameworks.length + appRow.index + 1)
+                color: Commons.Color.muted
+                font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                font.pixelSize: Style.font.caption
+                anchors.right: appSwitch.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              ToggleSwitch {
+                id: appSwitch
+                checked: root.targetEnabled(appRow.modelData.target)
+                busy: refreshProcess.running
+                foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                onToggled: root.setTargetEnabled(appRow.modelData.target, !checked)
+              }
             }
           }
         }
