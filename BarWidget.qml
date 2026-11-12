@@ -46,6 +46,11 @@ BarWidget {
     panel.setTargetEnabled(target, !panel.targetEnabled(target))
   }
 
+  function nextFolderColor() {
+    var panel = panelLoader.item
+    if (panel && panel.targetEnabled("icons")) panel.nextFolderMode()
+  }
+
   function refreshEnabled() {
     if (panelLoader.item) panelLoader.item.refresh("all")
   }
@@ -98,6 +103,8 @@ BarWidget {
     function toggleThunderbird(): void { root.toggleFramework("thunderbird") }
     function toggleFlatpak(): void { root.toggleFramework("flatpak") }
     function toggleBrowsers(): void { root.toggleFramework("browsers") }
+    function toggleIcons(): void { root.toggleFramework("icons") }
+    function nextFolderColor(): void { root.nextFolderColor() }
     function refresh(): void { root.refreshEnabled() }
     // Opens the same confirmation the guide's own "Restart All" button leads
     // to, for a key of your own in bindings.lua. Opens the panel too: unlike a
@@ -129,6 +136,9 @@ BarWidget {
             ? panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme" : "")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.togglePanel()
+      // Right click cycles where folders take their color, without opening
+      // the panel -- only while Icons is on, so it never changes anything else.
+      else if (buttonCode === Qt.RightButton) root.nextFolderColor()
     }
   }
 

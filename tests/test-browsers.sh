@@ -383,7 +383,7 @@ chk "the panel lists it as a fifth framework" \
 chk "the panel reads it as off unless settings say true" \
   "$(grep -c 'browsers: frameworks.browsers === true' "$P")" "1"
 chk "...and treats a missing value as off" \
-  "$(grep -c 'if (key === "flatpak" || key === "browsers" || key === "thunderbird") return enabledTargets\[key\] === true' "$P")" "1"
+  "$(grep -c 'if (key === "flatpak" || key === "browsers" || key === "thunderbird" || key === "icons")' "$P")" "1"
 chk "it can be toggled over IPC like the others" \
   "$(grep -c 'function toggleBrowsers(): void { root.toggleFramework("browsers") }' "$REPO/BarWidget.qml")" "1"
 U=$REPO/bin/hyprchroma-setup

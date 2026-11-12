@@ -1,0 +1,2018 @@
+#!/usr/bin/env python3
+"""Hyprchroma's Icons framework: Reversal or Yaru for every Omarchy theme.
+
+Every Omarchy theme points at one icon theme, Omarchroma-Icons, in ~/.icons. Its
+Inherits= line names the color variant of the chosen base set (Reversal or
+Yaru) nearest the active theme's accent, -dark on a dark theme, so a theme
+change rewrites one line rather than renaming anything. Folder icons are
+recolored from the active theme: its sidebar highlight, its accent, or its
+window border. App icons the base set does not ship can be covered with
+Reversal's rounded plate.
+
+Yaru ships its folders as PNG only, so they are traced to SVG once (the
+vectorize section below) and then recolor by hex like Reversal's do.
+
+Started by bin/hyprchroma, which holds the sync lock around apply and revert.
+Every file written goes through the safe-io block shared with the other
+helpers: a verified parent directory descriptor, an exclusive temporary, and a
+rename relative to that descriptor, so nothing swapped into a path redirects a
+write.
+"""
+
+from __future__ import annotations
+
+import argparse
+import colorsys
+import fcntl
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+def _overflow_uid() -> int:
+    """The uid shown for an owner not mapped into this namespace, or -1 where
+    that uid is a real account. See the same function in hyprchroma-state."""
+    try:
+        overflow = int(pathlib_read("/proc/sys/kernel/overflowuid"))
+    except (OSError, ValueError):
+        overflow = 65534
+    try:
+        mapping = pathlib_read("/proc/self/uid_map")
+    except OSError:
+        return -1
+    for line in mapping.splitlines():
+        try:
+            inside, _, count = (int(field) for field in line.split())
+        except ValueError:
+            return -1
+        if inside <= overflow < inside + count:
+            return -1
+    return overflow
+
+
+def pathlib_read(name: str) -> str:
+    with open(name, "r", encoding="ascii") as handle:
+        return handle.read().strip()
+
+
+_OVERFLOW_UID = _overflow_uid()
+
+PATH_CANDIDATES = ("/usr/bin", "/usr/share/omarchy/bin")
+
+
+def trusted_path() -> str:
+    """Commands come from root-owned directories only, as in hyprchroma-state."""
+    keep = []
+    for directory in PATH_CANDIDATES:
+        try:
+            info = os.stat(directory)
+        except OSError:
+            continue
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, _OVERFLOW_UID):
+            continue
+        if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        keep.append(directory)
+    return ":".join(keep) if keep else ":".join(PATH_CANDIDATES)
+
+
+os.environ["PATH"] = trusted_path()
+
+# --------------------------------------------------------------- safe io --
+# This block is shared verbatim between bin/hyprchroma-state and
+# bin/hyprchroma-dark-reader; test-safeio asserts the two copies stay
+# byte-identical, so a fix can never land in only one of them.
+#
+# An exclusive temporary filename is not enough on its own: the directory it
+# is created in, and the destination it is renamed onto, were still named by
+# ordinary pathname strings, so a symlink swapped into any ancestor could
+# redirect the create or the rename somewhere else entirely. Here the parent
+# directory is resolved once, verified, and kept open as a descriptor; every
+# create, stat, rename and unlink is then performed relative to that
+# descriptor. The directory a descriptor refers to cannot be changed by
+# renaming or relinking anything on disk afterwards, which closes the window
+# between checking a path and using it.
+#
+# Legitimate symlinks are still honored -- dotfile managers routinely link
+# ~/.config entries -- by resolving the path first and then walking the
+# resolved chain with O_NOFOLLOW. Nothing in that chain may be a symlink at
+# the moment it is opened, and every component must be owned by root or by
+# this user and be unwritable by anyone else, so no other account can ever
+# redirect a write, and a component swapped in mid-walk fails the open rather
+# than silently changing the destination.
+
+SAFE_DIR_MODE = 0o700
+_TEMPORARY_ATTEMPTS = 16
+
+
+def _verify_directory(descriptor: int, where: str) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISDIR(info.st_mode):
+        raise OSError(f"not a directory: {where}")
+    if info.st_uid not in (0, os.geteuid(), _OVERFLOW_UID):
+        raise OSError(f"directory belongs to uid {info.st_uid}: {where}")
+    # Group- or world-writable is only safe with the sticky bit, which stops
+    # anyone but an entry's owner renaming or removing it -- the /tmp rule.
+    # Another account can still create a new name in such a directory, but the
+    # ownership check above rejects walking into anything it made.
+    if (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            and not info.st_mode & stat.S_ISVTX):
+        raise OSError(f"directory is writable by others: {where}")
+
+
+def open_dir(path, create: bool = False) -> int:
+    """Return a verified descriptor for path. The caller closes it."""
+    resolved = Path(os.path.realpath(str(path)))
+    if not resolved.is_absolute():
+        raise ValueError(f"refusing a relative directory: {path}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    descriptor = os.open("/", flags)
+    try:
+        _verify_directory(descriptor, "/")
+        walked = Path("/")
+        for part in resolved.parts[1:]:
+            walked = walked / part
+            try:
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, SAFE_DIR_MODE, dir_fd=descriptor)
+                nested = os.open(part, flags | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = nested
+            _verify_directory(descriptor, str(walked))
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def atomic_write(path, data, mode: int | None = None) -> None:
+    """Replace path with data, through a temporary in a verified directory."""
+    path = Path(path)
+    descriptor = open_dir(path.parent, create=True)
+    try:
+        atomic_write_at(descriptor, path.name, data, mode)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_write_at(descriptor: int, name: str, data, mode: int | None = None) -> None:
+    """atomic_write for a name in a directory already open and verified, so a
+    caller that walked there itself, following no link, keeps that walk."""
+    if name in ("", ".", "..") or "/" in name:
+        raise OSError(f"refusing to write {name!r}: not a plain file name")
+    if isinstance(data, str):
+        data = data.encode()
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(
+                os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode)
+        except (FileNotFoundError, OSError):
+            mode = 0o644
+    temporary = None
+    for _ in range(_TEMPORARY_ATTEMPTS):
+        candidate = f".{name}.{os.urandom(8).hex()}.tmp"
+        try:
+            opened = os.open(
+                candidate,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=descriptor,
+            )
+        except FileExistsError:
+            continue
+        temporary = candidate
+        break
+    if temporary is None:
+        raise OSError(f"could not create a temporary beside {name}")
+    try:
+        with os.fdopen(opened, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), mode)
+        os.replace(temporary, name,
+                   src_dir_fd=descriptor, dst_dir_fd=descriptor)
+        os.fsync(descriptor)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=descriptor)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def safe_read(path, limit: int) -> str | None:
+    """Read at most limit characters through a verified parent descriptor.
+
+    At most limit + 1 characters are read, so the size is judged from what was
+    actually read rather than from a stat that a swap could invalidate."""
+    path = Path(path)
+    try:
+        descriptor = open_dir(path.parent)
+    except OSError:
+        return None
+    try:
+        # O_NONBLOCK, and nothing but a regular file: a fifo planted at the path
+        # would otherwise block this unattended service indefinitely.
+        opened = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        regular = stat.S_ISREG(os.fstat(opened).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(opened)
+        return None
+    try:
+        with os.fdopen(opened, "r", encoding="utf-8", errors="strict") as handle:
+            content = handle.read(limit + 1)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    return None if len(content) > limit else content
+
+
+
+# ----------------------------------------------------------------- paths --
+
+THEME_NAME = "Omarchroma-Icons"
+ICON_SETS = ("reversal", "yaru")
+SET_LABELS = {"reversal": "Reversal", "yaru": "Yaru"}
+FOLDER_MODES = ("background", "accent", "border", "yaru")
+# Part of every stamp below. Bump when the geometry or the recolor rules change.
+VERSION = 3
+# A theme slug names a directory under ~/.config/omarchy/themes; anything that
+# could climb out of it is not one.
+_SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def home() -> Path:
+    return Path(os.environ.get("HOME") or os.path.expanduser("~"))
+
+
+def _xdg(name: str, fallback: str) -> Path:
+    value = os.environ.get(name, "")
+    return Path(value) if value.startswith("/") else home() / fallback
+
+
+def state_dir() -> Path:
+    return _xdg("XDG_STATE_HOME", ".local/state") / "hyprchroma" / "icons"
+
+
+def data_dir() -> Path:
+    return _xdg("XDG_DATA_HOME", ".local/share") / "hyprchroma" / "icons"
+
+
+def cover_store() -> Path:
+    return data_dir() / "apps"
+
+
+def place_store() -> Path:
+    return data_dir() / "places"
+
+
+def private_icons() -> Path:
+    """Where the generated icon theme lives: the app menu scans it before hicolor."""
+    return home() / ".icons"
+
+
+def public_icons() -> Path:
+    return _xdg("XDG_DATA_HOME", ".local/share") / "icons"
+
+
+def user_themes() -> Path:
+    return _xdg("XDG_CONFIG_HOME", ".config") / "omarchy" / "themes"
+
+
+def stock_themes() -> Path:
+    root = os.environ.get("OMARCHY_PATH", "")
+    return (Path(root) if root.startswith("/") else Path("/usr/share/omarchy")) / "themes"
+
+
+def omarchy_current() -> Path:
+    return _xdg("XDG_STATE_HOME", ".local/state") / "omarchy" / "current"
+
+
+def icon_roots() -> list[Path]:
+    """Installed icon themes, user first."""
+    roots = [public_icons()]
+    for entry in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if entry.startswith("/"):
+            roots.append(Path(entry) / "icons")
+    return roots
+
+
+def find_theme(name: str) -> Path | None:
+    for root in icon_roots():
+        if (root / name / "index.theme").is_file():
+            return root / name
+    return None
+
+
+def set_installed(icon_set: str) -> bool:
+    if icon_set == "reversal":
+        # The AUR package (reversal-icon-theme-git) installs only the default
+        # Reversal and Reversal-dark, under /usr/share/icons; that is enough.
+        return find_theme("Reversal") is not None
+    if icon_set == "yaru":
+        return find_theme("Yaru") is not None
+    return False
+
+
+def isolated() -> bool:
+    """Tests and scratch homes: never reach a session bus."""
+    return os.environ.get("HYPRCHROMA_ICONS_ISOLATED") == "1"
+
+
+# ------------------------------------------------------------- safe write --
+
+def write_text(path: Path, text: str, mode: int | None = None) -> None:
+    atomic_write(path, text.encode(), mode)
+
+
+def write_if_changed(path: Path, text: str, mode: int | None = None) -> bool:
+    if not path.is_symlink() and path.is_file():
+        try:
+            if path.read_text(errors="replace") == text:
+                return False
+        except OSError:
+            pass
+    write_text(path, text, mode)
+    return True
+
+
+def replace_symlink(link: Path, target: str) -> None:
+    """Point link at target, through a temporary in a verified directory."""
+    descriptor = open_dir(link.parent, create=True)
+    try:
+        for _ in range(_TEMPORARY_ATTEMPTS):
+            temporary = f".{link.name}.{os.urandom(8).hex()}.tmp"
+            try:
+                os.symlink(target, temporary, dir_fd=descriptor)
+            except FileExistsError:
+                continue
+            try:
+                os.replace(temporary, link.name, src_dir_fd=descriptor, dst_dir_fd=descriptor)
+            except BaseException:
+                os.unlink(temporary, dir_fd=descriptor)
+                raise
+            return
+        raise OSError(f"could not create a temporary beside {link}")
+    finally:
+        os.close(descriptor)
+
+
+def remove_entry(path: Path) -> None:
+    """Unlink one name (a file or a symlink, never followed) if it is there."""
+    try:
+        descriptor = open_dir(path.parent)
+    except OSError:
+        return
+    try:
+        os.unlink(path.name, dir_fd=descriptor)
+    except (FileNotFoundError, IsADirectoryError):
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def remove_tree(path: Path) -> None:
+    """Delete a directory we made. A symlink in its place is unlinked, not followed."""
+    if path.is_symlink():
+        remove_entry(path)
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def make_dir(path: Path) -> None:
+    os.close(open_dir(path, create=True))
+
+
+def read_json_file(path: Path, default):
+    text = safe_read(path, 4 << 20) if path.exists() else None
+    if text is None:
+        return default
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+def write_json_file(path: Path, value) -> None:
+    write_text(path, json.dumps(value, indent=2) + "\n", 0o644)
+
+
+class Lock:
+    """An flock on a private file in the state directory, created following no link."""
+
+    def __init__(self, name: str, blocking: bool = True):
+        self.name, self.blocking, self.handle = name, blocking, -1
+
+    def __enter__(self):
+        descriptor = open_dir(state_dir(), create=True)
+        try:
+            self.handle = os.open(self.name, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                  0o600, dir_fd=descriptor)
+        finally:
+            os.close(descriptor)
+        fcntl.flock(self.handle, fcntl.LOCK_EX | (0 if self.blocking else fcntl.LOCK_NB))
+        return self
+
+    def __exit__(self, *_):
+        os.close(self.handle)
+
+
+# --------------------------------------------------------------- settings --
+
+_DEFAULT_SETTINGS = {"icon_set": "reversal", "covers": True, "folder_mode": "background"}
+
+
+def settings() -> dict[str, object]:
+    data: dict[str, object] = dict(_DEFAULT_SETTINGS)
+    stored = read_json_file(state_dir() / "settings.json", {})
+    data.update({key: stored[key] for key in _DEFAULT_SETTINGS if key in stored})
+    if data["icon_set"] not in ICON_SETS:
+        data["icon_set"] = "reversal"
+    if data["folder_mode"] not in FOLDER_MODES:
+        data["folder_mode"] = "background"
+    data["covers"] = data["covers"] is not False
+    return data
+
+
+def save_setting(key: str, value: object) -> dict[str, object]:
+    if key not in _DEFAULT_SETTINGS:
+        raise SystemExit(f"unknown setting: {key}")
+    current = settings()
+    current[key] = value
+    write_json_file(state_dir() / "settings.json", current)
+    return current
+
+
+def icon_set() -> str:
+    return str(settings()["icon_set"])
+
+
+def folder_mode() -> str:
+    return str(settings()["folder_mode"])
+
+
+# ------------------------------------------------------------------ color --
+
+# Folder faces from Reversal's places artwork. The unsuffixed theme is gold.
+FOLDER_COLORS = {
+    "Reversal": "#f5aa1e",
+    "Reversal-blue": "#198cff",
+    "Reversal-brown": "#986a44",
+    "Reversal-cyan": "#14ccc6",
+    "Reversal-green": "#14b478",
+    "Reversal-lightblue": "#478cd1",
+    "Reversal-orange": "#ff820a",
+    "Reversal-pink": "#ff6ea0",
+    "Reversal-purple": "#8273ff",
+    "Reversal-red": "#f05050",
+    # Yaru sage (#657869) with saturation raised 15%. Reversal ships no sage;
+    # ensure_reversal_sage() builds it from green.
+    "Reversal-sage": "#627867",
+}
+# Yaru folder faces, sampled from each variant's 48x48 places/folder.png.
+YARU_COLORS = {
+    "Yaru": "#da5b2a",
+    "Yaru-blue": "#2686e6",
+    "Yaru-magenta": "#bc65bd",
+    "Yaru-olive": "#669427",
+    "Yaru-prussiangreen": "#4e9291",
+    "Yaru-purple": "#8a79dc",
+    "Yaru-red": "#dd5169",
+    "Yaru-sage": "#7c8c7f",
+    "Yaru-wartybrown": "#a08367",
+    "Yaru-yellow": "#b17d26",
+}
+HASH_COLORS = [
+    (245, 170, 30), (25, 140, 255), (152, 106, 68), (20, 204, 198), (20, 180, 120),
+    (71, 140, 209), (255, 130, 10), (255, 110, 160), (130, 115, 255), (240, 80, 80),
+    (98, 120, 103),
+]
+# Desktop icon names Reversal already ships under another name.
+ALIASES = {
+    "brave-origin": "brave-desktop",
+    "org.pwmt.zathura": "zathura",
+    "btop": "bashtop",
+    "imv": "image-viewer",
+    "steam_icon_8930": "civilization-v",
+    "alacritty": "Alacritty",
+    "org.mozilla.thunderbird": "thunderbird",
+    "org.mozilla.Thunderbird": "thunderbird",
+}
+
+_GREEN_FACE, _GREEN_SHADE = "#14b478", "#148c64"
+# Folder artwork colors in Reversal, and the role each plays: the default
+# (gold) set paints the back in its mid tone and the front in two lighter ones;
+# a color variant such as green paints the back in its tab color and the front
+# in its face. Templates come from the default set, which every install has.
+REVERSAL_FOLDER_HEXES = (
+    ("#ffc841", "face"), ("#f08705", "face"), ("#f5aa1e", "tab"),
+    (_GREEN_FACE, "face"), (_GREEN_SHADE, "tab"),
+)
+_SAGE_FACE, _SAGE_SHADE = "#627867", "#435848"
+_FALLBACK_COLOR = "#7f7f7f"
+
+
+def _lin(channel: float) -> float:
+    return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+
+
+def oklch(hex_color: str) -> tuple[float, float, float]:
+    hex_color = hex_color.lstrip("#")
+    red, green, blue = (_lin(int(hex_color[i:i + 2], 16) / 255) for i in (0, 2, 4))
+    long = 0.4122214708 * red + 0.5363325363 * green + 0.0514459929 * blue
+    mid = 0.2119034982 * red + 0.6806995451 * green + 0.1073969566 * blue
+    short = 0.0883024619 * red + 0.2817188376 * green + 0.6299787005 * blue
+    long, mid, short = long ** (1 / 3), mid ** (1 / 3), short ** (1 / 3)
+    lightness = 0.2104542553 * long + 0.7936177850 * mid - 0.0040720468 * short
+    aye = 1.9779984951 * long - 2.4285922050 * mid + 0.4505937099 * short
+    bee = 0.0259040371 * long + 0.7827717662 * mid - 0.8086757660 * short
+    return lightness, (aye * aye + bee * bee) ** 0.5, math.degrees(math.atan2(bee, aye)) % 360
+
+
+def _oklab_to_hex(lightness: float, aye: float, bee: float) -> str:
+    long = (lightness + 0.3963377774 * aye + 0.2158037573 * bee) ** 3
+    mid = (lightness - 0.1055613458 * aye - 0.0638541728 * bee) ** 3
+    short = (lightness - 0.0894841775 * aye - 1.2914855480 * bee) ** 3
+    red = 4.0767416621 * long - 3.3077115913 * mid + 0.2309699292 * short
+    green = -1.2684380046 * long + 2.6097574011 * mid - 0.3413193965 * short
+    blue = -0.0041960863 * long - 0.7034186147 * mid + 1.7076147010 * short
+
+    def channel(value: float) -> int:
+        value = max(0.0, min(1.0, value))
+        value = value * 12.92 if value <= 0.0031308 else 1.055 * (value ** (1 / 2.4)) - 0.055
+        return round(max(0.0, min(255.0, value * 255)))
+
+    return f"#{channel(red):02x}{channel(green):02x}{channel(blue):02x}"
+
+
+def _lch_to_hex(lightness: float, chroma: float, hue: float) -> str:
+    radians = math.radians(hue)
+    return _oklab_to_hex(lightness, chroma * math.cos(radians), chroma * math.sin(radians))
+
+
+_PALETTE_LCH = {name: oklch(value) for name, value in FOLDER_COLORS.items()}
+_YARU_LCH = {name: oklch(value) for name, value in YARU_COLORS.items()}
+
+
+def folder_colors(hex_color: str) -> tuple[str, str]:
+    """Folder face and tab: the face is the theme color exactly; the tab keeps
+    its hue and chroma, 0.07 darker in OKLCh, like Reversal's own tab."""
+    face = hex_color.lower()
+    lightness, chroma, hue = oklch(face)
+    return face, _lch_to_hex(max(0.0, lightness - 0.07), chroma, hue)
+
+
+def base_family(accent: str, chosen_set: str = "reversal") -> str:
+    """Closest color variant of the base set for an accent, without -dark."""
+    lightness, chroma, hue = oklch(accent)
+    palette = _YARU_LCH if chosen_set == "yaru" else _PALETTE_LCH
+    best_name, best_score = next(iter(palette)), 1e9
+    for name, (other_l, other_c, other_h) in palette.items():
+        distance = abs(hue - other_h) % 360
+        distance = min(distance, 360 - distance)
+        score = (distance / 50) ** 2 + ((lightness - other_l) * 2.8) ** 2 + ((chroma - other_c) * 4.0) ** 2
+        if score < best_score:
+            best_name, best_score = name, score
+    if chosen_set == "yaru":
+        # Yaru has no grey: near-grey accents take its quietest color.
+        return "Yaru-sage" if chroma < 0.03 else best_name
+    # Near-grey stays grey, unless it is green enough to be sage.
+    if chroma < 0.02 or (chroma < 0.04 and best_name != "Reversal-sage"):
+        return "Reversal-black" if lightness < 0.50 else "Reversal-grey"
+    return best_name
+
+
+def base_theme_name(accent: str | None, mode: str, fallback: str | None = None,
+                    chosen_set: str = "reversal") -> str:
+    base = "Yaru" if chosen_set == "yaru" else "Reversal"
+    if accent:
+        family = base_family(accent, chosen_set)
+    else:
+        family = fallback or ("Yaru-sage" if chosen_set == "yaru" else "Reversal-grey")
+    if mode == "light":
+        return family
+    return base + "-dark" if family == base else family + "-dark"
+
+
+def valid_slug(slug: str) -> str:
+    return slug if _SLUG.match(slug or "") else ""
+
+
+def theme_file(slug: str, name: str) -> Path | None:
+    """A theme's file: the user's copy first, then Omarchy's own."""
+    if not valid_slug(slug):
+        return None
+    for root in (user_themes(), stock_themes()):
+        candidate = root / slug / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _read(path: Path | None, limit: int = 1 << 16) -> str:
+    if path is None:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return ""
+
+
+def theme_color(slug: str, key: str) -> str | None:
+    texts = [_read(theme_file(slug, "colors.toml"))]
+    if slug and slug == current_theme_slug():
+        texts.insert(0, _read(omarchy_current() / "theme" / "colors.toml"))
+    for text in texts:
+        match = re.search(rf'^{re.escape(key)}\s*=\s*"?(#[0-9A-Fa-f]{{6}})\b', text, re.M)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def theme_mode(slug: str) -> str:
+    text = _read(theme_file(slug, "colors.toml"))
+    match = re.search(r'^mode\s*=\s*"?(\w+)', text, re.M)
+    if match:
+        return "light" if match.group(1) == "light" else "dark"
+    # Omarchy marks a light theme with this file; colors.toml may not say.
+    return "light" if theme_file(slug, "light.mode") else "dark"
+
+
+def base_theme_for(slug: str, chosen_set: str | None = None) -> str:
+    """What the generated theme inherits for this theme: Reversal-orange-dark, Yaru-sage, ..."""
+    chosen_set = chosen_set or icon_set()
+    accent = theme_color(slug, "accent")
+    fallbacks = {
+        "reversal": {"omacarchy": "Reversal-grey", "osaka-jade": "Reversal-green"},
+        "yaru": {"omacarchy": "Yaru-sage", "osaka-jade": "Yaru-prussiangreen"},
+    }[chosen_set]
+    name = base_theme_name(accent, theme_mode(slug), None if accent else fallbacks.get(slug), chosen_set)
+    if find_theme(name) is None:
+        # A color not installed (Reversal can be installed without its color
+        # variants) falls back to the set's own default rather than to nothing.
+        root = "Yaru" if chosen_set == "yaru" else "Reversal"
+        name = root if name in (root, f"{root}-sage") or not name.endswith("-dark") else f"{root}-dark"
+    return name
+
+
+def current_theme_slug() -> str:
+    text = _read(omarchy_current() / "theme.name", 256).strip().lower().replace(" ", "-")
+    return valid_slug(text)
+
+
+def theme_slugs() -> list[str]:
+    names: set[str] = set()
+    for root in (user_themes(), stock_themes()):
+        if not root.is_dir():
+            continue
+        for path in root.iterdir():
+            if path.is_dir() and valid_slug(path.name):
+                names.add(path.name)
+    return sorted(names)
+
+
+def _mix(base: str, over: str, amount: float) -> str:
+    one = [int(base[i:i + 2], 16) for i in (1, 3, 5)]
+    two = [int(over[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(one, two))
+
+
+def sidebar_highlight(slug: str) -> str | None:
+    """The selected row of a GTK sidebar (Home in Files): libadwaita draws it as
+    10% foreground over lighter_background. Not the theme's selection key."""
+    surface = theme_color(slug, "lighter_background") or theme_color(slug, "background")
+    foreground = theme_color(slug, "foreground")
+    if surface and foreground:
+        return _mix(surface, foreground, 0.10)
+    return surface
+
+
+def _first_color(value: str) -> str | None:
+    """First color of a Hyprland color or gradient string, as #rrggbb."""
+    match = re.search(r"rgba?\(\s*([0-9A-Fa-f]{6})(?:[0-9A-Fa-f]{2})?\s*\)|#([0-9A-Fa-f]{6})", value)
+    return "#" + (match.group(1) or match.group(2)).lower() if match else None
+
+
+def border_color(slug: str) -> str | None:
+    """First stop of the theme's active window border."""
+    if slug and slug == current_theme_slug():
+        match = re.search(r'^active-border\s*=\s*"([^"]+)"',
+                          _read(omarchy_current() / "theme" / "shell.toml"), re.M)
+        if match and _first_color(match.group(1)):
+            return _first_color(match.group(1))
+    match = re.search(r'^hyprland_active_border\s*=\s*"([^"]+)"', _read(theme_file(slug, "colors.toml")), re.M)
+    if match and _first_color(match.group(1)):
+        return _first_color(match.group(1))
+    return theme_color(slug, "accent")
+
+
+def original_icon_theme(slug: str) -> str:
+    """The icon set the theme itself names, before Icons pointed it elsewhere:
+    the copy saved when it was first changed, else the theme's own file, else
+    Omarchy's stock copy of it."""
+    if not valid_slug(slug):
+        return ""
+    candidates = [state_dir() / "icons-theme-backup" / slug / "icons.theme",
+                  user_themes() / slug / "icons.theme", stock_themes() / slug / "icons.theme"]
+    for path in candidates:
+        value = _read(path, 256).strip()
+        if value and value != THEME_NAME:
+            return value
+    return ""
+
+
+def yaru_color(slug: str) -> str | None:
+    """The folder color of the Yaru variant the theme names (Yaru-blue, Yaru-sage-dark, ...)."""
+    name = original_icon_theme(slug).removesuffix("-dark")
+    return YARU_COLORS.get(name)
+
+
+def mode_source(slug: str, mode: str) -> str:
+    background = sidebar_highlight(slug)
+    accent = theme_color(slug, "accent") or background or _FALLBACK_COLOR
+    background = background or accent
+    if mode == "yaru":
+        # A theme naming no Yaru color (Papirus, or Yaru-grey, which Yaru
+        # does not ship) takes its accent instead.
+        return yaru_color(slug) or accent
+    if mode == "border":
+        return border_color(slug) or accent
+    if mode == "accent":
+        return accent
+    return background
+
+
+def yaru_roles(face: str) -> dict[str, str]:
+    """Every Yaru folder role for a new face, keeping Yaru's own steps: each
+    role keeps its OKLCh lightness ratio (darker roles) or offset (lighter),
+    its chroma ratio and its hue offset from Yaru's orange face."""
+    base_l, base_c, base_h = oklch(ROLES["face"])
+    face_l, face_c, face_h = oklch(face)
+    roles = {}
+    for role, value in ROLES.items():
+        if role == "face":
+            roles[role] = face.lower()
+            continue
+        role_l, role_c, role_h = oklch(value)
+        lightness = face_l * role_l / base_l if role_l < base_l else min(0.98, face_l + role_l - base_l)
+        chroma = face_c * (role_c / base_c if base_c else 1.0)
+        roles[role] = _lch_to_hex(lightness, chroma, face_h + (role_h - base_h))
+    return roles
+
+
+def folder_palette(slug: str, mode: str | None = None, chosen_set: str | None = None) -> dict[str, str]:
+    chosen = mode if mode in FOLDER_MODES else folder_mode()
+    chosen_set = chosen_set or icon_set()
+    source = mode_source(slug, chosen)
+    if chosen_set == "yaru":
+        roles = yaru_roles(source)
+        face, shade = roles["face"], roles["tab"]
+    else:
+        face, shade = folder_colors(source)
+    return {"mode": chosen, "face": face, "shade": shade, "source": source, "slug": slug, "icon_set": chosen_set}
+
+
+# ------------------------------------------------------------- base sets --
+
+def reversal_dir() -> Path | None:
+    return find_theme("Reversal")
+
+
+def _walk_icons(root: Path, follow: bool = False):
+    for directory, _dirs, files in os.walk(root, followlinks=follow):
+        if "/apps" not in directory and "/devices" not in directory:
+            continue
+        yield directory, files
+
+
+def reversal_icon_names() -> dict[str, Path]:
+    """Icon stem to one scalable (or any) SVG in the base Reversal theme."""
+    found: dict[str, tuple[int, Path]] = {}
+    root = reversal_dir()
+    if root is None:
+        return {}
+    for directory, files in _walk_icons(root, follow=True):
+        text = directory + "/"
+        score = 3 if "/apps/scalable/" in text else 2 if "/apps/" in text else 1 if "/scalable/" in text else 0
+        for name in files:
+            if name.endswith(".svg"):
+                current = found.get(name[:-4])
+                if current is None or score > current[0]:
+                    found[name[:-4]] = (score, Path(directory) / name)
+    return {stem: path for stem, (_score, path) in found.items()}
+
+
+def yaru_icon_names() -> dict[str, Path]:
+    """Best file per app or device stem in Yaru: SVG, else the largest PNG."""
+    best: dict[str, tuple[int, Path]] = {}
+    root = find_theme("Yaru")
+    if root is None:
+        return {}
+    for directory, files in _walk_icons(root):
+        match = re.match(r"(\d+)x\d+(?:@(\d)x)?", Path(directory).parent.name)
+        size = int(match.group(1)) * int(match.group(2) or 1) if match else 0
+        for name in files:
+            stem, _dot, suffix = name.rpartition(".")
+            if suffix not in {"png", "svg"}:
+                continue
+            score = 10_000 if suffix == "svg" else size
+            current = best.get(stem)
+            if current is None or score > current[0]:
+                best[stem] = (score, Path(directory) / name)
+    return {stem: path for stem, (_score, path) in best.items()}
+
+
+def base_icon_names(chosen_set: str) -> dict[str, Path]:
+    return yaru_icon_names() if chosen_set == "yaru" else reversal_icon_names()
+
+
+def _copy_theme(source: Path, destination: Path) -> None:
+    """Hard links where allowed (a user's own Reversal), a copy otherwise
+    (a system Reversal, which protected_hardlinks will not let us link)."""
+    linked = subprocess.run(["cp", "-al", "--", str(source), str(destination)], capture_output=True)
+    if linked.returncode != 0:
+        remove_tree(destination)
+        subprocess.run(["cp", "-a", "--reflink=auto", "--", str(source), str(destination)],
+                       check=True, capture_output=True)
+
+
+def ensure_reversal_sage() -> None:
+    """Build Reversal-sage and Reversal-sage-dark from the green variant.
+
+    Only the folder artwork differs: green's face and tab become sage. Every
+    rewrite replaces the file (a hard link in the copy) rather than writing
+    through it, or the green theme would change too."""
+    icons = public_icons()
+    # Sage is made from green; a Reversal installed without its color
+    # variants has none, and themes simply inherit Reversal itself then.
+    if find_theme("Reversal-green") is None or find_theme("Reversal-green-dark") is None:
+        return
+    sage_folder = icons / "Reversal-sage/places/scalable/folder.svg"
+    if (sage_folder.is_file() and _SAGE_FACE in _read(sage_folder).lower()
+            and (icons / "Reversal-sage-dark/index.theme").is_file()):
+        return
+    for source_name, dest_name in (("Reversal-green", "Reversal-sage"), ("Reversal-green-dark", "Reversal-sage-dark")):
+        source = find_theme(source_name)
+        if source is None:
+            raise SystemExit(f"Reversal's {source_name} theme is not installed")
+        destination = icons / dest_name
+        make_dir(icons)
+        remove_tree(destination)
+        _copy_theme(source, destination)
+        remove_entry(destination / "icon-theme.cache")
+        index = destination / "index.theme"
+        write_text(index, _read(index, 1 << 20).replace(source_name, dest_name), 0o644)
+        for svg in (destination / "places/scalable").glob("*.svg"):
+            if svg.is_symlink():
+                continue
+            body = _read(svg, 1 << 22)
+            updated = re.sub(_GREEN_FACE, _SAGE_FACE, body, flags=re.I)
+            updated = re.sub(_GREEN_SHADE, _SAGE_SHADE, updated, flags=re.I)
+            if updated != body:
+                write_text(svg, updated, 0o644)
+        tool = shutil.which("gtk-update-icon-cache")
+        if tool:
+            subprocess.run([tool, "-f", "-q", str(destination)], check=False, capture_output=True)
+
+
+# ----------------------------------------------------------- app covers --
+
+CANVAS = 256
+# 4.5/64, 55/64 and 12/64 of a 256px tile, measured from Reversal's plates.
+PLATE = (18, 18, 220, 220)
+RADIUS = 48
+SHRINK = 0.93
+SAFE = 0.62
+
+
+def _icon_bases() -> list[Path]:
+    bases = [private_icons(), public_icons()]
+    for entry in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if entry.startswith("/"):
+            bases.append(Path(entry) / "icons")
+    return bases
+
+
+def _skipped_theme(path: Path) -> bool:
+    return any(part.startswith(("Reversal", "Yaru", THEME_NAME)) for part in path.parts)
+
+
+def artwork_index() -> dict[str, Path]:
+    """Best artwork for each icon name outside the base sets, scanned once."""
+    best: dict[str, tuple[int, Path]] = {}
+
+    def consider(path: Path, score: int) -> None:
+        if _skipped_theme(path):
+            return
+        current = best.get(path.stem)
+        if current is None or score > current[0]:
+            best[path.stem] = (score, path)
+
+    for base in _icon_bases():
+        if not base.is_dir():
+            continue
+        for directory, files in _walk_icons(base):
+            text = directory + "/"
+            for name in files:
+                if not name.endswith((".svg", ".png")):
+                    continue
+                score = (100 if name.endswith(".svg") else 0) + (40 if "/scalable/" in text else 0)
+                score += 10 if "/hicolor/" in text else 0
+                parent = Path(directory).name
+                if parent.isdigit():
+                    score += min(int(parent), 512) // 32
+                consider(Path(directory) / name, score)
+    pixmaps = Path("/usr/share/pixmaps")
+    if pixmaps.is_dir():
+        for path in pixmaps.iterdir():
+            if path.suffix in {".svg", ".png"}:
+                consider(path, 5 if path.suffix == ".svg" else 1)
+    return {stem: path for stem, (_score, path) in best.items()}
+
+
+def application_dirs() -> list[Path]:
+    roots = [_xdg("XDG_DATA_HOME", ".local/share") / "applications"]
+    for entry in os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share").split(":"):
+        if entry.startswith("/"):
+            roots.append(Path(entry) / "applications")
+    return roots
+
+
+def desktop_entries() -> list[tuple[str, Path]]:
+    """Visible (icon, desktop file) pairs, first of each file name. Icon may be absolute."""
+    seen: set[str] = set()
+    entries: list[tuple[str, Path]] = []
+    for root in application_dirs():
+        if not root.is_dir():
+            continue
+        for path in sorted(root.rglob("*.desktop")):
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            text = _read(path, 1 << 18)
+            if "NoDisplay=true" in text or "Hidden=true" in text:
+                continue
+            match = re.search(r"^Icon=(.+)$", text, re.M)
+            if match and match.group(1).strip():
+                entries.append((match.group(1).strip(), path))
+    return entries
+
+
+def _safe_stem(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._+-]", "-", name).strip(".-") or "icon"
+
+
+def _rewrite_absolute(path: Path, icon_name: str, originals: dict[str, str]) -> None:
+    """An absolute Icon= cannot be themed, so a desktop file of the user's own
+    names the cover instead. Its original line is kept for revert. Never a
+    symlink -- that file belongs to whatever put the link there."""
+    try:
+        path.relative_to(home())
+    except ValueError:
+        return
+    if path.is_symlink() or not path.is_file():
+        return
+    text = _read(path, 1 << 18)
+    match = re.search(r"^Icon=(.*)$", text, re.M)
+    if not match or match.group(1).strip() == icon_name:
+        return
+    originals.setdefault(str(path), match.group(1).strip())
+    write_text(path, text[:match.start(1)] + icon_name + text[match.end(1):])
+
+
+def _pil():
+    try:
+        from PIL import Image, ImageChops, ImageDraw, ImageFilter
+    except ImportError as error:
+        raise SystemExit("python-pillow is not installed; app-icon covers need it") from error
+    return Image, ImageChops, ImageDraw, ImageFilter
+
+
+def plate_mask():
+    Image, _chops, ImageDraw, _filter = _pil()
+    mask = Image.new("L", (CANVAS, CANVAS), 0)
+    left, top, width, height = PLATE
+    ImageDraw.Draw(mask).rounded_rectangle((left, top, left + width - 1, top + height - 1), radius=RADIUS, fill=255)
+    return mask
+
+
+def _pixels(image):
+    flattened = getattr(image, "get_flattened_data", None)
+    return flattened() if flattened else image.getdata()
+
+
+def metrics(image) -> dict[str, float] | None:
+    binary = image.getchannel("A").point(lambda pixel: 255 if pixel > 24 else 0)
+    box = binary.getbbox()
+    if box is None:
+        return None
+    left, top, right, bottom = box
+    width, height = right - left, bottom - top
+    if width < 2 or height < 2:
+        return None
+    opaque = sum(1 for pixel in _pixels(binary.crop(box)) if pixel)
+    return {"fill": opaque / (width * height), "cover_w": width / CANVAS, "cover_h": height / CANVAS,
+            "aspect": width / height, "left": left, "top": top, "right": right, "bottom": bottom}
+
+
+def is_filled_plate(info: dict[str, float]) -> bool:
+    return (info["cover_w"] >= 0.80 and info["cover_h"] >= 0.80
+            and 0.85 <= info["aspect"] <= 1.18 and info["fill"] >= 0.58)
+
+
+def hash_color(name: str) -> tuple[int, int, int]:
+    return HASH_COLORS[hashlib.sha256(name.encode()).digest()[0] % len(HASH_COLORS)]
+
+
+def contrast_plate(color: tuple[int, int, int], glyph_luma: float) -> tuple[int, int, int]:
+    hue, saturation, _value = colorsys.rgb_to_hsv(*(channel / 255 for channel in color))
+    saturation = min(1.0, max(saturation, 0.38))
+    value = 0.40 if glyph_luma >= 0.55 else 0.90
+    if glyph_luma < 0.55:
+        saturation = min(saturation, 0.62)
+    red, green, blue = colorsys.hsv_to_rgb(hue, saturation, value)
+    return (round(red * 255), round(green * 255), round(blue * 255))
+
+
+def dominant_color(image, name: str) -> tuple[int, int, int]:
+    pixels = [pixel for pixel in _pixels(image) if pixel[3] > 140]
+    if len(pixels) < 8:
+        return hash_color(name)
+    buckets: list[list[tuple[int, int, int, float]]] = [[] for _ in range(16)]
+    for red, green, blue, _alpha in pixels:
+        hue, saturation, value = colorsys.rgb_to_hsv(red / 255, green / 255, blue / 255)
+        if saturation >= 0.18 and value >= 0.12:
+            buckets[int(hue * 16) % 16].append((red, green, blue, saturation))
+    ranked = sorted(range(16), key=lambda index: sum(item[3] for item in buckets[index]), reverse=True)
+    chosen = buckets[ranked[0]]
+    if not chosen:
+        return hash_color(name)
+    mean = tuple(sum(item[channel] for item in chosen) // len(chosen) for channel in range(3))
+    luma = sum((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 for r, g, b, _a in pixels) / len(pixels)
+    return contrast_plate(mean, luma)
+
+
+def _shift(color: tuple[int, int, int], delta: float) -> tuple[int, int, int]:
+    hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in color))
+    red, green, blue = colorsys.hsv_to_rgb(hue, saturation, min(1.0, max(0.0, value + delta)))
+    return (round(red * 255), round(green * 255), round(blue * 255))
+
+
+def _shadow():
+    Image, _chops, ImageDraw, ImageFilter = _pil()
+    shadow = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    left, top, width, height = PLATE
+    ImageDraw.Draw(shadow).rounded_rectangle((left, top + 6, left + width - 1, top + height + 5),
+                                             radius=RADIUS, fill=(0, 0, 0, 78))
+    return shadow.filter(ImageFilter.GaussianBlur(7))
+
+
+def _clip(image, mask):
+    Image, ImageChops, _draw, _filter = _pil()
+    red, green, blue, alpha = image.split()
+    return Image.merge("RGBA", (red, green, blue, ImageChops.multiply(alpha, mask)))
+
+
+def render_clip(image, mask):
+    Image = _pil()[0]
+    size = max(1, round(CANVAS * SHRINK))
+    scaled = image.resize((size, size), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    canvas.paste(scaled, ((CANVAS - size) // 2,) * 2, scaled)
+    return Image.alpha_composite(_shadow(), _clip(canvas, mask))
+
+
+def render_plate(image, info, color, mask):
+    Image, _chops, ImageDraw, _filter = _pil()
+    top, bottom = _shift(color, 0.10), _shift(color, -0.08)
+    plate = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(plate)
+    for y in range(CANVAS):
+        blend = y / (CANVAS - 1)
+        draw.line((0, y, CANVAS, y), fill=tuple(round(top[c] * (1 - blend) + bottom[c] * blend) for c in range(3)) + (255,))
+    left, top_edge, width, height = PLATE
+    glyph = image.crop((int(info["left"]), int(info["top"]), int(info["right"]), int(info["bottom"])))
+    safe = max(1, round(width * SAFE))
+    scale = min(safe / glyph.width, safe / glyph.height)
+    glyph = glyph.resize((max(1, round(glyph.width * scale)), max(1, round(glyph.height * scale))),
+                         Image.Resampling.LANCZOS)
+    plate.paste(glyph, (left + (width - glyph.width) // 2, top_edge + (height - glyph.height) // 2), glyph)
+    return Image.alpha_composite(_shadow(), _clip(plate, mask))
+
+
+def render_plain(image):
+    Image = _pil()[0]
+    canvas = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+    art = image.copy()
+    art.thumbnail((CANVAS, CANVAS), Image.Resampling.LANCZOS)
+    canvas.alpha_composite(art, ((CANVAS - art.width) // 2, (CANVAS - art.height) // 2))
+    return canvas
+
+
+def _looks_like_svg(path: Path) -> bool:
+    if path.suffix.lower() == ".svg":
+        return True
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(256).lstrip().lower()
+    except OSError:
+        return False
+    return head.startswith((b"<?xml", b"<svg"))
+
+
+def _render_svg(path: Path):
+    Image = _pil()[0]
+    import io
+    try:
+        result = subprocess.run(["rsvg-convert", "-w", str(CANVAS), "-h", str(CANVAS), "--", str(path)],
+                                check=True, capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        return Image.open(io.BytesIO(result.stdout)).convert("RGBA")
+    except OSError:
+        return None
+
+
+def load_artwork(path: Path):
+    Image = _pil()[0]
+    if _looks_like_svg(path):
+        return _render_svg(path)
+    try:
+        image = Image.open(path)
+        # Icons, not posters: anything this large is not app artwork.
+        if image.width * image.height > 4096 * 4096:
+            return None
+        image = image.convert("RGBA")
+    except (OSError, Image.DecompressionBombError):
+        return _render_svg(path)
+    if image.size != (CANVAS, CANVAS):
+        fitted = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
+        scale = min(CANVAS / image.width, CANVAS / image.height)
+        resized = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))),
+                               Image.Resampling.LANCZOS)
+        fitted.paste(resized, ((CANVAS - resized.width) // 2, (CANVAS - resized.height) // 2), resized)
+        return fitted
+    return image
+
+
+def svg_document(png: bytes) -> str:
+    """A cover is an SVG around its PNG: the app menu takes every SVG before
+    any PNG, so a PNG cover would lose to an hicolor SVG of the same name."""
+    import base64
+    payload = base64.b64encode(png).decode()
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+            'width="64" height="64" viewBox="0 0 64 64">\n'
+            f'<image width="64" height="64" href="data:image/png;base64,{payload}" '
+            f'xlink:href="data:image/png;base64,{payload}"/>\n</svg>\n')
+
+
+def write_icon(image, destination: Path) -> None:
+    import io
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", optimize=True)
+    write_text(destination, svg_document(buffer.getvalue()), 0o644)
+
+
+def build_icon(artwork, name: str, mask):
+    info = metrics(artwork) or {"fill": 0, "cover_w": 0, "cover_h": 0, "aspect": 1,
+                                "left": 96, "top": 96, "right": 160, "bottom": 160}
+    if is_filled_plate(info):
+        return render_clip(artwork, mask), "clip"
+    return render_plate(artwork, info, dominant_color(artwork, name), mask), "plate"
+
+
+def _link_into(store: Path, stem: str, source: Path) -> None:
+    link = store / f"{stem}.svg"
+    target = os.path.relpath(source, store)
+    if not (link.is_symlink() and os.readlink(link) == target):
+        replace_symlink(link, target)
+
+
+def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
+    """App-icon covers. With covers off, only desktop files that pointed at an
+    absolute path get an entry (their Icon= was rewritten to a name), drawn
+    as-is; everything else falls through to the base set and hicolor."""
+    names = base_icon_names(chosen_set)
+    lower = {stem.lower(): stem for stem in names}
+    sources = artwork_index()
+    mask = None
+    counts = {"clip": 0, "plate": 0, "plain": 0, "alias": 0, "skipped": 0}
+    wanted: set[str] = set()
+    originals = read_json_file(state_dir() / "absolute-icons.json", {})
+    absolute_sources = read_json_file(state_dir() / "absolute-sources.json", {})
+    cache = read_json_file(state_dir() / "cache.json", {})
+    if cache.get("version") != VERSION or not isinstance(cache.get("icons"), dict):
+        cache = {"version": VERSION, "icons": {}}
+    make_dir(store)
+
+    for icon, desktop in desktop_entries():
+        remembered = None
+        if icon.startswith("/"):
+            source = Path(icon)
+            if not source.is_file():
+                counts["skipped"] += 1
+                continue
+            stem = _safe_stem(desktop.stem)
+            _rewrite_absolute(desktop, stem, originals)
+            absolute_sources[stem] = str(source)
+        else:
+            stem = icon
+            if "/" in stem or stem.startswith("."):
+                counts["skipped"] += 1
+                continue
+            source = None
+            remembered = absolute_sources.get(stem)
+            if isinstance(remembered, str) and Path(remembered).is_file():
+                source = Path(remembered)
+
+        # Yaru: the menu takes the first SVG it finds, and Reversal's SVGs would
+        # win over Yaru's PNGs, so every visible app gets an entry: Yaru's own
+        # icon, else the app's own, drawn as-is. Plates are Reversal's shape.
+        draw_plain = not covers or chosen_set == "yaru"
+        if chosen_set == "yaru" and not icon.startswith("/"):
+            yaru_path = names.get(stem)
+            if yaru_path is not None and yaru_path.suffix == ".svg":
+                _link_into(store, stem, yaru_path)
+                wanted.add(f"{stem}.svg")
+                continue
+            source = yaru_path or source or sources.get(stem)
+            if source is None or not source.is_file():
+                counts["skipped"] += 1
+                continue
+        alias = ALIASES.get(stem) if chosen_set == "reversal" else None
+        alias = alias or (lower.get(stem.lower()) if stem not in names else None)
+        if alias and alias in names and names[alias].suffix == ".svg" and not icon.startswith("/"):
+            _link_into(store, stem, names[alias])
+            wanted.add(f"{stem}.svg")
+            counts["alias"] += 1
+            continue
+        if chosen_set != "yaru" and stem in names and not icon.startswith("/"):
+            continue
+        if chosen_set != "yaru" and not covers and not icon.startswith("/") and not remembered:
+            continue
+        source = source or sources.get(stem)
+        if source is None or not source.is_file():
+            counts["skipped"] += 1
+            continue
+        destination = store / f"{stem}.svg"
+        stamp = f"{VERSION}:{'plain' if draw_plain else 'cover'}:{source}:{source.stat().st_mtime_ns}"
+        if (cache["icons"].get(stem) == stamp and destination.is_file()
+                and not destination.is_symlink()):
+            wanted.add(destination.name)
+            continue
+        artwork = load_artwork(source)
+        if artwork is None:
+            counts["skipped"] += 1
+            continue
+        if draw_plain:
+            image, kind = render_plain(artwork), "plain"
+        else:
+            mask = mask or plate_mask()
+            image, kind = build_icon(artwork, stem, mask)
+        if destination.is_symlink():
+            remove_entry(destination)
+        write_icon(image, destination)
+        write_text(store / f".{stem}.mode", kind + "\n", 0o644)
+        cache["icons"][stem] = stamp
+        wanted.add(destination.name)
+
+    for existing in list(store.iterdir()):
+        if existing.name.startswith("."):
+            if existing.name.endswith(".mode") and existing.name[1:-5] + ".svg" not in wanted:
+                remove_entry(existing)
+            continue
+        if existing.name not in wanted:
+            remove_entry(existing)
+            cache["icons"].pop(existing.stem, None)
+    write_json_file(state_dir() / "absolute-icons.json", originals)
+    write_json_file(state_dir() / "absolute-sources.json", absolute_sources)
+    write_json_file(state_dir() / "cache.json", cache)
+    # Totals from the store itself, so the summary matches what is there.
+    counts = {"clip": 0, "plate": 0, "plain": 0, "alias": 0, "skipped": counts["skipped"]}
+    for path in store.iterdir():
+        if path.suffix == ".svg" and path.is_symlink():
+            counts["alias"] += 1
+        elif path.name.startswith(".") and path.name.endswith(".mode"):
+            kind = _read(path, 16).strip()
+            if kind in counts:
+                counts[kind] += 1
+    return counts
+
+
+# --------------------------------------------------------------- folders --
+
+def ensure_yaru_templates() -> Path:
+    """Trace Yaru's folder PNGs to SVG once. The stamp is the tracer version
+    and every source file's time, so a Yaru update re-traces."""
+    root = find_theme("Yaru")
+    if root is None:
+        raise SystemExit("Yaru is not installed (yaru-icon-theme)")
+    source = root / "256x256@2x/places"
+    if not source.is_dir():
+        source = root / "256x256/places"
+    target = data_dir() / "templates" / "yaru"
+    files = sorted(source.glob("*.png"))
+    stamp = f"{TRACE_VERSION}|" + "|".join(f"{p.name}:{p.lstat().st_mtime_ns}" for p in files)
+    if _read(target / ".stamp") == stamp:
+        return target
+    remove_tree(target)
+    make_dir(target)
+    traced = set()
+    for png in files:
+        if not png.is_symlink():
+            svg = vectorize(png)
+            if svg:
+                write_text(target / f"{png.stem}.svg", svg, 0o644)
+                traced.add(png.stem)
+    for png in files:
+        if png.is_symlink() and Path(os.readlink(png)).stem in traced:
+            replace_symlink(target / f"{png.stem}.svg", f"{Path(os.readlink(png)).stem}.svg")
+    write_text(target / ".stamp", stamp, 0o644)
+    return target
+
+
+def folder_templates(chosen_set: str) -> tuple[Path, tuple[tuple[str, str], ...]]:
+    """Template folder artwork and its (template hex, role) pairs."""
+    if chosen_set == "yaru":
+        return ensure_yaru_templates(), tuple((value, role) for role, value in ROLES.items())
+    reversal = find_theme("Reversal")
+    if reversal is None:
+        raise SystemExit("Reversal is not installed")
+    return reversal / "places/scalable", REVERSAL_FOLDER_HEXES
+
+
+def recolor_folders(slug: str = "", mode: str | None = None) -> dict[str, str]:
+    """Rewrite the shared folder icons for the theme and mode. Takes its own
+    short lock, so a folder change does not wait behind a whole apply."""
+    slug = valid_slug(slug) or current_theme_slug()
+    with Lock("folders.lock"):
+        palette = _recolor_folders_locked(slug, mode)
+    return palette
+
+
+def _recolor_folders_locked(slug: str, mode: str | None) -> dict[str, str]:
+    palette = folder_palette(slug, mode)
+    chosen_set = palette["icon_set"]
+    store = place_store()
+    make_dir(store)
+    stamp = f"{chosen_set}|{slug}|{palette['mode']}|{palette['face']}|{palette['shade']}|{VERSION}"
+    stamp_path = state_dir() / "folder-stamp"
+    if _read(stamp_path) == stamp and any(store.glob("*.svg")):
+        palette["unchanged"] = "true"
+        return palette
+    templates, template_roles = folder_templates(chosen_set)
+    if not templates.is_dir():
+        raise SystemExit(f"missing folder templates: {templates}")
+    targets = yaru_roles(palette["face"]) if chosen_set == "yaru" else {"face": palette["face"], "tab": palette["shade"]}
+    pattern = re.compile("|".join(re.escape(value) for value, _role in template_roles), re.I)
+    by_hex = {value.lower(): targets[role] for value, role in template_roles}
+    written: set[str] = set()
+    for svg in templates.glob("*.svg"):
+        if svg.is_symlink():
+            continue
+        body = _read(svg, 1 << 22)
+        updated = pattern.sub(lambda match: by_hex[match.group(0).lower()], body)
+        if updated != body:
+            destination = store / svg.name
+            if destination.is_symlink():
+                remove_entry(destination)
+            write_text(destination, updated, 0o644)
+            written.add(svg.name)
+    for svg in templates.glob("*.svg"):
+        if svg.is_symlink() and Path(os.readlink(svg)).name in written:
+            replace_symlink(store / svg.name, Path(os.readlink(svg)).name)
+            written.add(svg.name)
+    for stale in store.iterdir():
+        if stale.name not in written:
+            remove_entry(stale)
+    write_text(stamp_path, stamp, 0o644)
+    palette["written"] = str(len(written))
+    refresh_icon_cache()
+    return palette
+
+
+# ----------------------------------------------------------------- theme --
+
+def _index_theme(inherits: str) -> str:
+    return (
+        "[Icon Theme]\n"
+        f"Name={THEME_NAME}\n"
+        f"Comment={inherits} with folders and app covers from Omarchroma\n"
+        f"Inherits={inherits},hicolor\n"
+        "Example=folder\n"
+        "Directories=apps/scalable,places/scalable\n\n"
+        "[apps/scalable]\nSize=64\nContext=Applications\nMinSize=16\nMaxSize=512\nType=Scalable\n\n"
+        "[places/scalable]\nSize=64\nContext=Places\nMinSize=16\nMaxSize=512\nType=Scalable\n"
+    )
+
+
+def _link_dir_contents(source: Path, destination: Path) -> None:
+    """destination holds exactly one relative symlink per .svg in source."""
+    if destination.is_symlink():
+        remove_entry(destination)
+    make_dir(destination)
+    live = {path.name for path in source.iterdir() if path.suffix == ".svg"} if source.is_dir() else set()
+    for existing in destination.iterdir():
+        if existing.name not in live:
+            remove_entry(existing)
+    for name in live:
+        link = destination / name
+        target = os.path.relpath(source / name, destination)
+        if not (link.is_symlink() and os.readlink(link) == target):
+            replace_symlink(link, target)
+
+
+def theme_dir() -> Path:
+    return private_icons() / THEME_NAME
+
+
+def inherited_base() -> str:
+    match = re.search(r"^Inherits=([^,\n]+)", _read(theme_dir() / "index.theme"), re.M)
+    return match.group(1).strip() if match else ""
+
+
+def install_theme(base: str) -> bool:
+    """Build ~/.icons/Omarchroma-Icons inheriting base; True when Inherits= changed.
+
+    The tree lives in ~/.icons, which the app menu scans before hicolor; a
+    directory symlink in ~/.local/share/icons lets Qt/KDE (Omarchroma's own
+    KDE icon list among them) find it by name without the menu seeing it twice."""
+    changed = inherited_base() != base
+    _link_dir_contents(cover_store(), theme_dir() / "apps" / "scalable")
+    _link_dir_contents(place_store(), theme_dir() / "places" / "scalable")
+    write_if_changed(theme_dir() / "index.theme", _index_theme(base), 0o644)
+    link = public_icons() / THEME_NAME
+    target = os.path.relpath(theme_dir(), public_icons())
+    if not (link.is_symlink() and os.readlink(link) == target):
+        if link.is_symlink() or not link.exists():
+            replace_symlink(link, target)
+    return changed
+
+
+def refresh_icon_cache() -> None:
+    tool = shutil.which("gtk-update-icon-cache")
+    if tool and (theme_dir() / "index.theme").is_file():
+        subprocess.run([tool, "-f", "-t", "-q", str(theme_dir())], check=False, capture_output=True)
+
+
+# Each theme's own icons.theme, saved before it is first pointed elsewhere --
+# themes added later included -- so switching Icons off puts back exactly what
+# each theme had, and removes what it did not have.
+def _backup_dir() -> Path:
+    return state_dir() / "icons-theme-backup"
+
+
+def _backup_manifest() -> dict:
+    manifest = read_json_file(_backup_dir() / "manifest.json", {})
+    for key in ("files", "created", "overlays"):
+        if not isinstance(manifest.get(key), list):
+            manifest[key] = []
+    return manifest
+
+
+def _remember_original(manifest: dict, slug: str, path: Path, overlay: bool) -> bool:
+    known = slug in manifest["files"] or slug in manifest["created"]
+    if known:
+        return False
+    if path.is_file() and not path.is_symlink():
+        write_text(_backup_dir() / slug / "icons.theme", _read(path, 4096), 0o644)
+        manifest["files"].append(slug)
+    else:
+        manifest["created"].append(slug)
+    if overlay and slug not in manifest["overlays"]:
+        manifest["overlays"].append(slug)
+    return True
+
+
+def write_theme_pointers(base_changed: bool) -> None:
+    """Point every Omarchy theme, the staged current theme and GTK at the generated theme.
+
+    The name never changes, so GTK would not notice a new Inherits= line; when
+    it changed, gsettings goes to the base for a moment and back, which makes
+    running GTK apps load the theme again."""
+    manifest = _backup_manifest()
+    dirty = False
+    if "gsettings" not in manifest:
+        manifest["gsettings"] = gsettings_get()
+        dirty = True
+    pointer = THEME_NAME + "\n"
+    for slug in theme_slugs():
+        directory = user_themes() / slug
+        overlay = not directory.exists()
+        if overlay and not (stock_themes() / slug).is_dir():
+            continue
+        path = directory / "icons.theme"
+        if _read(path) == pointer:
+            # Already pointing here with no record of what it was (the state
+            # folder was removed): there is no original to put back, so switching
+            # off removes the pointer and Omarchy's own (if any) shows again.
+            if slug not in manifest["files"] and slug not in manifest["created"]:
+                manifest["created"].append(slug)
+                if not any(p.name != "icons.theme" for p in directory.iterdir()) and (stock_themes() / slug).is_dir():
+                    manifest["overlays"].append(slug)
+                dirty = True
+            continue
+        dirty |= _remember_original(manifest, slug, path, overlay)
+        make_dir(directory)
+        write_text(path, pointer, 0o644)
+    staged = omarchy_current() / "theme" / "icons.theme"
+    if staged.parent.is_dir() and _read(staged) != pointer:
+        if "staged" not in manifest:
+            manifest["staged"] = staged.is_file()
+            if staged.is_file():
+                write_text(_backup_dir() / "staged-icons.theme", _read(staged, 4096), 0o644)
+            dirty = True
+        write_text(staged, pointer, 0o644)
+    if dirty:
+        write_json_file(_backup_dir() / "manifest.json", manifest)
+    if base_changed or gsettings_get() != THEME_NAME:
+        nudge_gtk()
+
+
+# ------------------------------------------------- telling running apps --
+
+def _session_env() -> dict[str, str]:
+    env = dict(os.environ)
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        runtime = env.get("XDG_RUNTIME_DIR", "")
+        if runtime.startswith("/") and os.path.exists(f"{runtime}/bus"):
+            env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime}/bus"
+    return env
+
+
+def gsettings_get() -> str:
+    if isolated():
+        return ""
+    try:
+        result = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "icon-theme"],
+                                check=True, capture_output=True, text=True, env=_session_env(), timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip().strip("'\"")
+
+
+def gsettings_set(name: str) -> None:
+    if isolated() or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$", name or ""):
+        return
+    subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", "icon-theme", name],
+                   check=False, capture_output=True, env=_session_env(), timeout=5)
+
+
+def nudge_gtk() -> None:
+    """Running GTK apps reload an icon theme only when its name changes. This one's
+    name never does, so going to the base set for a moment and back is what
+    makes them repaint folders and app icons now."""
+    base = inherited_base()
+    if base and gsettings_get() == THEME_NAME:
+        gsettings_set(base)
+    gsettings_set(THEME_NAME)
+
+
+def nudge_kde() -> None:
+    """KIconLoader in every running KDE app reloads its icons on this signal --
+    what System Settings sends after an icon change. Best-effort: no KDE app
+    listening is the ordinary case."""
+    if isolated() or not shutil.which("gdbus"):
+        return
+    subprocess.run(["gdbus", "emit", "--session", "--object-path", "/KIconLoader",
+                    "--signal", "org.kde.KIconLoader.iconChanged", "0"],
+                   check=False, capture_output=True, env=_session_env(), timeout=5)
+
+
+# ---------------------------------------------------------------- status --
+
+def last_apply() -> dict:
+    return read_json_file(state_dir() / "last-apply.json", {})
+
+
+def write_status(palette: dict | None = None, **extra) -> dict:
+    """What the panel shows. Rewritten after every recolor and around every apply."""
+    previous = read_json_file(state_dir() / "status.json", {})
+    slug = current_theme_slug()
+    current = settings()
+    chosen_set = str(current["icon_set"])
+    palette = palette or folder_palette(slug)
+    status = {
+        **{key: palette[key] for key in ("mode", "face", "shade", "source", "slug")},
+        "icon_set": chosen_set,
+        "covers": current["covers"],
+        "sets": {name: {"label": SET_LABELS[name], "installed": set_installed(name)} for name in ICON_SETS},
+        "modes": {name: {"face": folder_palette(slug, name, chosen_set)["face"], "source": mode_source(slug, name)}
+                  for name in FOLDER_MODES},
+        "theme": THEME_NAME,
+        "applying": bool(previous.get("applying", False)),
+        "error": str(previous.get("error", ""))[:200],
+        "last_apply": last_apply(),
+        "base": inherited_base() or (base_theme_for(slug, chosen_set) if slug else ""),
+        "active": theme_dir().is_dir(),
+    }
+    status.update(extra)
+    write_json_file(state_dir() / "status.json", status)
+    return status
+
+
+# ------------------------------------------------------------------ apply --
+
+def apply(slug: str = "") -> dict:
+    """The whole framework, for the active theme: folders first (what shows at
+    once), then app covers, the generated theme, every theme's pointer, and a
+    nudge so running apps repaint."""
+    chosen_set = icon_set()
+    if not set_installed(chosen_set):
+        message = f"{SET_LABELS[chosen_set]} is not installed"
+        write_status(applying=False, error=message)
+        raise MissingSet(message)
+    write_status(applying=True, error="")
+    try:
+        with Lock("apply.lock"):
+            if chosen_set == "reversal":
+                ensure_reversal_sage()
+            slug = valid_slug(slug) or current_theme_slug()
+            palette = recolor_folders(slug)
+            counts = generate(cover_store(), bool(settings()["covers"]), chosen_set)
+            base = base_theme_for(slug, chosen_set) if slug else (
+                "Yaru-dark" if chosen_set == "yaru" else "Reversal-dark")
+            base_changed = install_theme(base)
+            refresh_icon_cache()
+            write_theme_pointers(base_changed or "written" in palette)
+            if base_changed or "written" in palette:
+                nudge_kde()
+    except BaseException as error:
+        write_status(applying=False, error=str(error) or type(error).__name__)
+        raise
+    summary = {"theme": THEME_NAME, "base": base, "slug": slug, "icon_set": chosen_set,
+               "folders": palette["mode"], "face": palette["face"],
+               "changed": bool(base_changed or "written" in palette),
+               "applied_at": int(time.time()), **counts}
+    write_json_file(state_dir() / "last-apply.json", summary)
+    write_status(palette, applying=False, error="")
+    return summary
+
+
+def set_folders(mode: str, apply_now: bool) -> dict:
+    """Choose the folder color source; recolor at once when the framework is on."""
+    if mode == "next":
+        order = FOLDER_MODES
+        mode = order[(order.index(folder_mode()) + 1) % len(order)]
+    if mode not in FOLDER_MODES:
+        raise SystemExit("folder color must be background, accent, border, yaru or next")
+    save_setting("folder_mode", mode)
+    if not apply_now:
+        return write_status()
+    if not set_installed(icon_set()):
+        return write_status(error=f"{SET_LABELS[icon_set()]} is not installed")
+    palette = recolor_folders(current_theme_slug(), mode)
+    if "written" in palette:
+        nudge_gtk()
+        nudge_kde()
+    return write_status(palette, error="")
+
+
+def revert() -> None:
+    """Put every theme's icons.theme back as it was, and take the generated theme away.
+
+    The base sets themselves stay installed; so does the sage variant, which is
+    an ordinary Reversal theme of its own."""
+    with Lock("apply.lock"):
+        backup = _backup_dir()
+        manifest = _backup_manifest()
+        for slug in manifest["files"]:
+            if not valid_slug(slug):
+                continue
+            saved = backup / slug / "icons.theme"
+            destination = user_themes() / slug / "icons.theme"
+            if saved.is_file() and destination.parent.is_dir():
+                write_text(destination, _read(saved, 4096), 0o644)
+        for slug in manifest["created"]:
+            path = user_themes() / slug / "icons.theme"
+            if valid_slug(slug) and _read(path).strip() == THEME_NAME:
+                remove_entry(path)
+        for slug in manifest["overlays"]:
+            directory = user_themes() / slug
+            if valid_slug(slug) and directory.is_dir() and not directory.is_symlink():
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass  # something else of the user's is in it now
+        staged = omarchy_current() / "theme" / "icons.theme"
+        if staged.parent.is_dir() and _read(staged).strip() == THEME_NAME:
+            if (backup / "staged-icons.theme").is_file():
+                write_text(staged, _read(backup / "staged-icons.theme", 4096), 0o644)
+            else:
+                remove_entry(staged)
+        originals = read_json_file(state_dir() / "absolute-icons.json", {})
+        for path_text, icon in originals.items():
+            path = Path(path_text)
+            if not isinstance(icon, str) or "\n" in icon or path.is_symlink() or not path.is_file():
+                continue
+            try:
+                path.relative_to(home())
+            except ValueError:
+                continue
+            text = _read(path, 1 << 18)
+            match = re.search(r"^Icon=.*$", text, re.M)
+            if match:
+                write_text(path, text[:match.start()] + "Icon=" + icon + text[match.end():])
+        link = public_icons() / THEME_NAME
+        if link.is_symlink():
+            remove_entry(link)
+        remove_tree(theme_dir())
+        remove_tree(data_dir())
+        for name in ("absolute-icons.json", "absolute-sources.json", "cache.json", "folder-stamp",
+                     "last-apply.json"):
+            remove_entry(state_dir() / name)
+        saved_gsettings = manifest.get("gsettings")
+        if isinstance(saved_gsettings, str) and saved_gsettings and saved_gsettings != THEME_NAME:
+            gsettings_set(saved_gsettings)
+        # Forget the baseline: the next time Icons is switched on, what each
+        # theme has then is what it goes back to.
+        remove_tree(backup)
+    write_status(applying=False, error="")
+
+
+class MissingSet(SystemExit):
+    pass
+
+
+# ------------------------------------------------------------ vectorize --
+# Yaru's folders are flat color regions (rim, tab, face, top highlight,
+# engraved emblem), so each traces cleanly: classify every pixel of the 512px
+# artwork by nearest role color, stack the roles as nested masks, and trace
+# each mask with marching squares. One fill per role keeps recoloring a plain
+# hex replacement, as it is for Reversal. numpy and PIL load only here.
+
+TRACE_VERSION = 1
+# Yaru (orange) role colors, measured from 256x256@2x/places/folder.png and
+# folder-music.png, in paint order.
+ROLES = {
+    "rim": "#822514",
+    "tab": "#a22805",
+    "face": "#da5b2a",
+    "highlight": "#e17c55",
+    "emblem": "#731505",
+    "emblem-deep": "#550805",
+}
+# Each layer is its own role plus every role painted above it inside it, so
+# stacked layers leave no seams.
+_LAYERS = (
+    ("rim", None),
+    ("tab", ("tab", "face", "highlight", "emblem", "emblem-deep")),
+    ("face", ("face", "highlight", "emblem", "emblem-deep")),
+    ("highlight", ("highlight",)),
+    ("emblem", ("emblem", "emblem-deep")),
+    ("emblem-deep", ("emblem-deep",)),
+)
+# Share of opaque pixels that must sit near a role color: icons with other
+# artwork (Dropbox, the distributor logo) are not folders.
+_MIN_FIT = 0.97
+
+
+def _numpy():
+    try:
+        import numpy
+    except ImportError as error:
+        raise SystemExit("python-numpy is not installed; Yaru folders need it") from error
+    return numpy
+
+
+def classify(image):
+    np = _numpy()
+    data = np.asarray(image.convert("RGBA"), dtype=np.float32)
+    alpha = data[..., 3] / 255.0
+    palette = np.stack([np.array([int(v[i:i + 2], 16) for i in (1, 3, 5)], dtype=np.float32)
+                        for v in ROLES.values()])
+    distance = np.linalg.norm(data[..., :3][..., None, :] - palette[None, None, :, :], axis=-1)
+    roles = distance.argmin(axis=-1)
+    solid = alpha > 0.9
+    fit = float((distance.min(axis=-1)[solid] < 40).mean()) if solid.any() else 0.0
+    return alpha, roles, fit
+
+
+def _soften(mask):
+    np = _numpy()
+    field = np.pad(mask.astype(np.float32), 1, mode="edge")
+    kernel = (1.0, 2.0, 1.0)
+    rows = sum(weight * field[:, i:i + mask.shape[1]] for i, weight in enumerate(kernel)) / 4.0
+    return sum(weight * rows[i:i + mask.shape[0], :] for i, weight in enumerate(kernel)) / 4.0
+
+
+def contours(field, level: float = 0.5) -> list[list[tuple[float, float]]]:
+    """Closed iso-lines of a 2D field (marching squares), in pixel-center coordinates."""
+    np = _numpy()
+    f = np.pad(field.astype(np.float32), 1, mode="constant", constant_values=0.0)
+    inside = f > level
+    case = (inside[:-1, :-1].astype(np.uint8) * 8 + inside[:-1, 1:] * 4
+            + inside[1:, 1:] * 2 + inside[1:, :-1])
+    cells = np.argwhere((case != 0) & (case != 15))
+
+    def point(edge):
+        kind, y, x = edge
+        if kind == "h":
+            a, b = f[y, x], f[y, x + 1]
+            t = (level - a) / (b - a) if b != a else 0.5
+            return (x + t - 1, y - 1)
+        a, b = f[y, x], f[y + 1, x]
+        t = (level - a) / (b - a) if b != a else 0.5
+        return (x - 1, y + t - 1)
+
+    links: dict[tuple, list[tuple]] = {}
+
+    def join(a, b):
+        links.setdefault(a, []).append(b)
+        links.setdefault(b, []).append(a)
+
+    for y, x in cells:
+        c = int(case[y, x])
+        top, right, bottom, left = ("h", y, x), ("v", y, x + 1), ("h", y + 1, x), ("v", y, x)
+        if c in (1, 14):
+            join(left, bottom)
+        elif c in (2, 13):
+            join(bottom, right)
+        elif c in (3, 12):
+            join(left, right)
+        elif c in (4, 11):
+            join(top, right)
+        elif c in (6, 9):
+            join(top, bottom)
+        elif c in (7, 8):
+            join(left, top)
+        else:  # saddles 5 and 10: the cell center decides
+            center = (f[y, x] + f[y, x + 1] + f[y + 1, x] + f[y + 1, x + 1]) / 4 > level
+            if (c == 5) == center:
+                join(left, top)
+                join(bottom, right)
+            else:
+                join(left, bottom)
+                join(top, right)
+
+    loops, seen = [], set()
+    for start in links:
+        if start in seen:
+            continue
+        loop, previous, current = [start], None, start
+        seen.add(start)
+        while True:
+            options = [edge for edge in links[current] if edge != previous and edge not in seen]
+            if not options:
+                break
+            previous, current = current, options[0]
+            seen.add(current)
+            loop.append(current)
+        if len(loop) >= 3:
+            loops.append([point(edge) for edge in loop])
+    return loops
+
+
+def simplify(points, epsilon: float):
+    """Ramer-Douglas-Peucker on a closed loop."""
+    np = _numpy()
+    if len(points) < 4:
+        return points
+    array = np.array(points, dtype=np.float64)
+    far = int(np.hypot(*(array - array[0]).T).argmax())
+    closed = np.vstack([array, array[:1]])
+
+    def rdp(start, end, keep):
+        if end - start < 2:
+            return
+        a, b = closed[start], closed[end]
+        rel = closed[start + 1:end] - a
+        dx, dy = b - a
+        length = float(np.hypot(dx, dy))
+        distance = np.hypot(rel[:, 0], rel[:, 1]) if length == 0 else np.abs(dx * rel[:, 1] - dy * rel[:, 0]) / length
+        index = int(distance.argmax())
+        if distance[index] > epsilon:
+            middle = start + 1 + index
+            rdp(start, middle, keep)
+            keep.append(middle)
+            rdp(middle, end, keep)
+
+    keep = [0, far]
+    rdp(0, far, keep)
+    rdp(far, len(points), keep)
+    return [tuple(closed[i]) for i in sorted(set(keep)) if i < len(points)]
+
+
+def _path(loops) -> str:
+    parts = []
+    for loop in loops:
+        points = simplify(loop, 0.35)
+        if len(points) >= 3:
+            parts.append("M" + " ".join(f"{x + 0.5:.1f},{y + 0.5:.1f}" for x, y in points) + "Z")
+    return "".join(parts)
+
+
+def vectorize(source: Path) -> str | None:
+    """SVG for a Yaru folder PNG, or None when the artwork is not a flat folder."""
+    np = _numpy()
+    Image = _pil()[0]
+    image = Image.open(source)
+    if image.size[0] < 256 or image.size[0] > 2048:
+        return None
+    alpha, roles, fit = classify(image)
+    if fit < _MIN_FIT:
+        return None
+    names, size, solid = list(ROLES), image.size[0], alpha > 0.5
+    silhouette = _path(contours(alpha))
+    body = [  # Yaru's soft shadow, as two offset copies of the silhouette.
+        f'<path d="{silhouette}" fill="#000000" fill-opacity="0.10" fill-rule="evenodd" transform="translate(0 {size * 0.012:.1f})"/>',
+        f'<path d="{silhouette}" fill="#000000" fill-opacity="0.08" fill-rule="evenodd" transform="translate(0 {size * 0.004:.1f})"/>',
+    ]
+    for role, members in _LAYERS:
+        if members is None:
+            data = silhouette
+        else:
+            mask = np.isin(roles, [names.index(name) for name in members]) & solid
+            if not mask.any():
+                continue
+            data = _path(contours(_soften(mask)))
+        if data:
+            body.append(f'<path d="{data}" fill="{ROLES[role]}" fill-rule="evenodd"/>')
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}">\n'
+            f"<!-- Traced by Omarchroma from Yaru ({source.name}). Yaru: CC BY-SA 4.0, Ubuntu community. -->\n"
+            + "\n".join(body) + "\n</svg>\n")
+
+
+# -------------------------------------------------------------------- cli --
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="hyprchroma-icons")
+    sub = parser.add_subparsers(dest="command", required=True)
+    run = sub.add_parser("apply")
+    run.add_argument("--theme", default="")
+    sub.add_parser("revert")
+    sub.add_parser("status")
+    folders = sub.add_parser("folders")
+    folders.add_argument("mode", nargs="?", default="")
+    folders.add_argument("--save-only", action="store_true")
+    choose = sub.add_parser("set")
+    choose.add_argument("icon_set", choices=ICON_SETS)
+    covers = sub.add_parser("covers")
+    covers.add_argument("value", choices=("on", "off"))
+    args = parser.parse_args()
+
+    if args.command == "status":
+        print(json.dumps(write_status()))
+        return 0
+    if args.command == "folders":
+        status = set_folders(args.mode or folder_mode(), not args.save_only)
+        print(f"folders from {status['mode']}: {status['face']}")
+        return 0
+    if args.command == "set":
+        if not set_installed(args.icon_set):
+            print(f"{SET_LABELS[args.icon_set]} is not installed", file=sys.stderr)
+            return 3
+        save_setting("icon_set", args.icon_set)
+        write_status()
+        return 0
+    if args.command == "covers":
+        save_setting("covers", args.value == "on")
+        write_status()
+        return 0
+    if args.command == "revert":
+        revert()
+        print("reverted; Reversal and Yaru stay installed")
+        return 0
+    try:
+        summary = apply(args.theme)
+    except MissingSet as error:
+        print(str(error), file=sys.stderr)
+        return 3
+    drawn = summary["clip"] + summary["plate"] + summary["plain"]
+    print(f"{summary['base']}; folders from {summary['folders']} {summary['face']}; "
+          f"{drawn} app icons drawn, {summary['alias']} aliased"
+          + ("" if summary["changed"] else "; unchanged"))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as error:  # one line for the log, not a traceback
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        sys.exit(1)

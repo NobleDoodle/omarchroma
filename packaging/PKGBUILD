@@ -6,9 +6,9 @@
 # and, for a published listing, from the exact commit that was reviewed. A
 # tarball would let those differ.
 pkgname=hyprchroma
-pkgver=3.2.7
+pkgver=4.0.0
 pkgrel=1
-pkgdesc="Carry the active Omarchy theme palette into GTK, Qt/KDE, Dark Reader and Pear Desktop"
+pkgdesc="Carry the active Omarchy theme palette into GTK, Qt/KDE, Dark Reader, Pear Desktop and your icons"
 arch=('any')
 url="https://github.com/NobleDoodle/omarchroma"
 license=('MIT')
@@ -20,6 +20,10 @@ optdepends=(
   'python-plyvel: Dark Reader theming in Chromium-family browsers'
   'libnotify: desktop notifications when a sync defers'
   'flatpak: Flatpak apps follow the theme too, when switched on'
+  'python-pillow: Icons - covers for app icons the icon set lacks, and Yaru folders'
+  'python-numpy: Icons - Yaru folders, traced once so they recolor'
+  'librsvg: Icons - covers drawn from SVG app artwork'
+  'yaru-icon-theme: Icons - Yaru as the icon set (Reversal is installed by the setup script)'
 )
 source=()
 sha256sums=()

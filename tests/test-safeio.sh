@@ -146,7 +146,7 @@ chk "no generator embeds a writer of its own" \
 # theme's index and directory keeper. The three writers added for Additional
 # Apps are the saved switch state, the removed-row list, and the restore.
 chk "every generator write goes through the helper" \
-  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "19"
+  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "20"
 # Nine: settings on a toggle, status, the Dark Reader theme, the Pear config,
 # the removed-framework list, the restart mode, and the three Additional Apps
 # writes (saved switches, the removed row, and the restore).

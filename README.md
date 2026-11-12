@@ -7,7 +7,9 @@
 Omarchroma applies your active palette to GTK 3/4, libadwaita, GNOME settings,
 Qt/KDE Frameworks, Dark Reader, Flatpak apps, Thunderbird, Pear Desktop
 (YouTube Music), and the browsers Omarchy does not theme itself: Firefox,
-Floorp, Zen, LibreWolf, Waterfox and Vivaldi.
+Floorp, Zen, LibreWolf, Waterfox and Vivaldi. If you like, it themes your icons
+too: Reversal or Yaru in the color nearest your theme's accent, with folders
+that take their color from the theme and change with it.
 
 It runs as a standalone user service (`hyprchroma`) with an optional Omarchy
 bar widget for convenience.
@@ -62,9 +64,12 @@ this restart, and the Omarchy shell's own, automatically.
 ```bash
 hyprchroma                        # sync only what changed
 hyprchroma --force                # rewrite everything
-hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak | browsers | thunderbird
+hyprchroma --target=gtk --force   # gtk | qt-kde | dark-reader | pear | flatpak | browsers | thunderbird | icons
 hyprchroma framework remove apps  # hide Additional Apps and revert both
 hyprchroma framework restore apps # put the row back, as each switch was
+hyprchroma icons folders next     # folder color: background | accent | border | yaru | next
+hyprchroma icons set yaru         # icon set: reversal | yaru
+hyprchroma icons covers off       # covers for app icons Reversal lacks: on | off
 hyprchroma palette --capture      # pin the current palette to a file
 hyprchroma restore --stock        # revert everything to stock defaults
 hyprchroma restart-stale          # close and relaunch every stale application
@@ -76,9 +81,16 @@ With the bar widget:
 | Input | Action |
 |---|---|
 | Left click palette icon | Open/close the panel |
+| Right click palette icon | Next folder color, while Icons is on |
 | `1` – `5` | Toggle a framework |
-| `6` | Open or close the Additional Apps drop-down |
-| `7`, `8` (while it is open) | Thunderbird, then Pear Desktop (YouTube Music) |
+| `6` | Open Icons |
+| `7` | Open or close the Additional Apps drop-down |
+| `8`, `9` (while it is open) | Thunderbird, then Pear Desktop (YouTube Music) |
+| `i` (in Icons) | Switch Icons on or off |
+| `1` – `4` (in Icons) | Folder color: sidebar highlight, accent, window border, the theme's Yaru color |
+| `r`, `y` (in Icons) | Icon set: Reversal, Yaru |
+| `c` (in Icons) | Covers for app icons Reversal lacks |
+| `a` (in Icons) | Apply again |
 | `r` | Refresh every enabled framework |
 | `/` | Show apps still using the old theme |
 | `Ctrl+Enter` (in that list) | Restart All: lists what will close, then Ctrl+Enter again to go ahead |
@@ -90,7 +102,7 @@ With the bar widget:
 | `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
 | `b` (in Settings) | Show the bar icon's alert color and count. On unless you turn it off |
-| `1` – `4` (in Settings) | Show an optional framework in the panel, or remove it |
+| `1` – `5` (in Settings) | Show an optional framework in the panel, or remove it |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
 
@@ -110,9 +122,19 @@ With the bar widget:
   that looks in your theme's set first (its dark variant on a dark theme) and
   then in `breeze-dark` (or `breeze` on a light theme). Without it, the icons a set
   like Yaru lacks fell back to light-background Breeze: dark on a dark window.
-  The GTK icon setting is left exactly as Omarchy sets it.
+  The GTK icon setting is left exactly as Omarchy sets it, unless Icons is on.
+* **Icons** is off until you switch it on (`6`, then `i`). Every Omarchy theme
+  then points at one icon theme, `Omarchroma-Icons`, that inherits the Reversal or Yaru
+  color nearest the theme's accent (its dark variant on a dark theme). Folders
+  take the theme's sidebar highlight, accent or window border, or the color of
+  the Yaru variant the theme itself names (Yaru-blue, Yaru-sage), as you choose,
+  and change with every theme switch. Open GTK apps repaint their icons at once,
+  and running KDE apps are told to reload theirs. App icons Reversal lacks can be put on its rounded plate (covers);
+  a newly installed app gets its cover at the next window event. Yaru ships its
+  folders as images, so Omarchroma traces them to vectors once and recolors
+  those. Switching Icons off puts every theme's own `icons.theme` back.
 * GTK and Qt/KDE are always included. Dark Reader, Flatpak apps, Additional
-  browsers and Additional Apps are optional. Additional Apps holds Thunderbird
+  browsers, Icons and Additional Apps are optional. Additional Apps holds Thunderbird
   (off until you switch it on) and Pear Desktop (YouTube Music). Install the
   Dark Reader browser extension manually for it to theme on the next sync.
 * Dark Reader is themed in every browser profile it is installed in, not only
@@ -211,6 +233,9 @@ stops and changes nothing.
 | [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
 | Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
+| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) or `yaru-icon-theme` | Icons | Setup installs the one you pick; Reversal only once its AUR recipe matches the reviewed one |
+| `python-pillow`, `librsvg` | Icons: app covers | Setup offers to install them |
+| `python-numpy` | Icons: Yaru folders | Setup offers to install it with Yaru |
 | Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |
 
 ## What it changes
@@ -242,6 +267,15 @@ pacman installation requires sudo).
   link (dotfiles, arkenfox) is left alone. Switching it off removes exactly what
   it added, byte for byte, and puts your own Vivaldi theme back.
 
+* **Icons** (only when switched on): writes `icons.theme` in each Omarchy
+  theme's folder under `~/.config/omarchy/themes` (a stock theme gets a folder
+  holding only that file), builds the `Omarchroma-Icons` icon theme in `~/.icons` with a
+  link to it in `~/.local/share/icons`, and sets GTK's icon theme. Each theme's
+  own `icons.theme` is saved first and put back when Icons is switched off.
+  With covers on, a desktop file of your own whose `Icon=` is a full path is
+  changed to name its cover, and changed back on switch-off. Reversal's sage
+  color is built from its green one when the color variants are installed.
+
 Generated output is never included in backups.
 
 ```text
@@ -261,6 +295,9 @@ Generated output is never included in backups.
 <browser profile>/chrome/userChrome.css  one @import line, nothing else
 <browser profile>/user.js                one preference line, nothing else
 <Vivaldi profile>/Preferences            the Omarchy theme, selected
+~/.config/omarchy/themes/*/icons.theme   Icons only: "Omarchroma-Icons"
+~/.icons/Omarchroma-Icons, ~/.local/share/icons/Omarchroma-Icons  Icons only
+~/.local/share/hyprchroma/icons/         Icons only: folders and covers
 ```
 
 ## Global Keybindings
@@ -278,6 +315,8 @@ o.bind("SUPER + ALT + P", "Omarchroma: toggle Pear Desktop", om .. " togglePear"
 o.bind("SUPER + ALT + T", "Omarchroma: toggle Thunderbird", om .. " toggleThunderbird")
 o.bind("SUPER + ALT + F", "Omarchroma: toggle Flatpak apps", om .. " toggleFlatpak")
 o.bind("SUPER + ALT + B", "Omarchroma: toggle additional browsers", om .. " toggleBrowsers")
+o.bind("SUPER + ALT + I", "Omarchroma: toggle icons", om .. " toggleIcons")
+o.bind("SUPER + ALT + O", "Omarchroma: next folder color", om .. " nextFolderColor")
 o.bind("SUPER + ALT + R", "Omarchroma: refresh", om .. " refresh")
 o.bind("SUPER + ALT + A", "Omarchroma: restart stale applications", om .. " restartStaleApps")
 ```

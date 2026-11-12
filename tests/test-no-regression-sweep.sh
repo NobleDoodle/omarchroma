@@ -89,7 +89,11 @@ chk "the one indirect privileged call names a literal package too" \
   "$(grep -c 'pkg aur add pear-desktop-bin' bin/hyprchroma-setup)" "2"
 
 # Nothing is fetched and then executed: the build runs on the checkout.
-chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -cE 'curl|wget|git clone')" "0"
+chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -E 'curl|wget|git clone' | grep -cv 'curl -fsSL --max-time 20 --proto')" "0"
+# One fetch exists: Reversal's AUR recipe, read only to compare its checksum
+# with the reviewed one before handing the install to the AUR helper.
+chk "...the one fetch is hashed, never run" \
+  "$(grep -A1 'curl -fsSL --max-time 20 --proto' bin/hyprchroma-setup | grep -c 'aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=$REVERSAL_AUR" | sha256sum)')" "1"
 chk "it builds from its own location" \
   "$(grep -c 'realpath -- "\${BASH_SOURCE\[0\]}"' bin/hyprchroma-setup)" "1"
 

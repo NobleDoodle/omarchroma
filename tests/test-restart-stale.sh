@@ -777,7 +777,7 @@ rm -rf "$ROOT"
 cd -- "$REPO" || exit 1
 
 chk "Restart All is Ctrl+Enter: in the list it only opens the confirmation; no single key restarts" \
-  "$(grep -c 'key === "a"' Panel.qml),$(grep -c 'onActivated: root.confirmRestartOpen ? root.confirmRestart() : root.openRestartConfirm()' Panel.qml),$(grep -c 'enabled: (root.confirmRestartOpen || root.guideOpen) && root.staleWindowCount > 0' Panel.qml),$(grep -c 'root.runRestart()' Panel.qml)" "0,1,1,1"
+  "$(grep 'key === "a"' Panel.qml | grep -vc 'root.reapplyIcons()'),$(grep -c 'onActivated: root.confirmRestartOpen ? root.confirmRestart() : root.openRestartConfirm()' Panel.qml),$(grep -c 'enabled: (root.confirmRestartOpen || root.guideOpen) && root.staleWindowCount > 0' Panel.qml),$(grep -c 'root.runRestart()' Panel.qml)" "0,1,1,1"
 chk "...a double press or a held key cannot run both steps" \
   "$(grep -c 'autoRepeat: false' Panel.qml),$(grep -c '!root.restartArmed' Panel.qml),$(grep -c 'if (root.confirmRestartOpen) restartArmTimer.restart()' Panel.qml)" "1,1,1"
 chk "the global hotkey opens the same popup the guide's button does, via IPC" \

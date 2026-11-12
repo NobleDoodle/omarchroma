@@ -48,6 +48,7 @@ body:
         - Pear Desktop
         - Flatpak apps
         - Additional browsers
+        - Icons
         - Restarting apps
         - Panel or bar icon
         - Setup or update
@@ -60,7 +61,7 @@ body:
     attributes:
       label: Omarchroma version
       description: Press `?` in the panel to see the plugin and service versions.
-      placeholder: Plugin 3.2.7, service hyprchroma 3.2.7
+      placeholder: Plugin 4.0.0, service hyprchroma 4.0.0
     validations:
       required: true
 

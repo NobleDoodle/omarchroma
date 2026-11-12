@@ -100,6 +100,9 @@ chk "hyprchroma itself has no AUR dependency" \
   "$(countcode 'pkg aur add|yay -S' Panel.qml)" "0"
 chk "the only AUR calls that exist are for Pear Desktop, not hyprchroma" \
   "$(countcode 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
+# ...and for Reversal, the icon set the user picked, once its recipe checks out.
+chk "...and Reversal, only after its recipe is verified" \
+  "$(countcode 'pkg aur add "\$REVERSAL_AUR"' bin/hyprchroma-setup),$(grep -B9 'omarchy pkg aur add "$REVERSAL_AUR"' bin/hyprchroma-setup | grep -c 'reversal_recipe_verified')" "1,1"
 chk "it runs in a terminal the user can see" \
   "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
 # Four: this one, the Escape handler that has always been there, the

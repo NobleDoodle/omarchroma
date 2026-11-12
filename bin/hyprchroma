@@ -169,6 +169,7 @@ target_key() {
     flatpak) printf 'flatpak' ;;
     browsers) printf 'browsers' ;;
     thunderbird) printf 'thunderbird' ;;
+    icons) printf 'icons' ;;
     *) return 1 ;;
   esac
 }
@@ -295,6 +296,11 @@ case "${1:-}" in
     done
     "$HYPRCHROMA_LIB/hyprchroma-dark-reader" --restore --mode="$mode" \
       --state-dir "$STATE_DIR" --status "$STATUS_FILE" || exit $?
+    # Omarchy has no icon theming of its own to go back to, so stock and
+    # captured both mean each theme's own icons.theme, as it was.
+    if [[ -d $STATE_DIR/icons ]]; then
+      "$HYPRCHROMA_LIB/hyprchroma-icons" revert || exit $?
+    fi
     "$HYPRCHROMA_LIB/hyprchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restore --mode "$mode"
     exit $?
@@ -433,8 +439,37 @@ PY
       report-stale-apps --since-last-sync --record >/dev/null 2>&1 || true
     exit 0
     ;;
+  icons)
+    # The Icons framework's own controls, for the panel: which set, whether
+    # missing app icons get covers, and where folders take their color. A
+    # choice made while Icons is off is only saved; it applies once it is on.
+    shift
+    icons_on=0
+    [[ $(jq -r '.frameworks.icons // false' "$SETTINGS_FILE" 2>/dev/null) == true ]] && icons_on=1
+    case "${1:-status}" in
+      status)
+        exec "$HYPRCHROMA_LIB/hyprchroma-icons" status ;;
+      folders)
+        # Fast on its own: only the folder artwork is rewritten, and running
+        # apps are told to repaint. A full apply would also rescan every app.
+        if (( icons_on )); then
+          exec "$HYPRCHROMA_LIB/hyprchroma-icons" folders "${2:-next}"
+        fi
+        exec "$HYPRCHROMA_LIB/hyprchroma-icons" folders "${2:-next}" --save-only ;;
+      set|covers)
+        "$HYPRCHROMA_LIB/hyprchroma-icons" "$1" "${2:-}" || exit $?
+        (( icons_on )) && exec "$HYPRCHROMA_SELF" --target=icons --force --quiet
+        exit 0 ;;
+      apply)
+        (( icons_on )) || { echo "Hyprchroma: icons are switched off" >&2; exit 1; }
+        exec "$HYPRCHROMA_SELF" --target=icons --force --quiet ;;
+      *)
+        echo "Usage: hyprchroma icons (status | folders [background|accent|border|yaru|next] | set reversal|yaru | covers on|off | apply)" >&2
+        exit 2 ;;
+    esac
+    ;;
   --version|version)
-    echo "hyprchroma 3.2.7"
+    echo "hyprchroma 4.0.0"
     exit 0
     ;;
 esac
@@ -459,17 +494,19 @@ for argument in "$@"; do
     --target=flatpak) target="flatpak" ;;
     --target=browsers) target="browsers" ;;
     --target=thunderbird) target="thunderbird" ;;
+    --target=icons) target="icons" ;;
     --set-enabled=true) set_enabled="true" ;;
     --set-enabled=false) set_enabled="false" ;;
     --restart-mode=confirm) restart_mode="confirm" ;;
     --restart-mode=off) restart_mode="off" ;;
     -h|--help)
       cat <<'USAGE'
-Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers|thunderbird]
+Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers|thunderbird|icons]
                   [--set-enabled=true|false] [--force] [--quiet] [--notify]
        hyprchroma daemon           watch for changes and keep everything in step
        hyprchroma install-hooks    place the Omarchy theme and font hooks
        hyprchroma framework (list|remove <target>|restore <target>)
+       hyprchroma icons (status|folders [mode|next]|set reversal|yaru|covers on|off|apply)
        hyprchroma palette [--all|--capture|--template|--source]
        hyprchroma stale-apps       list apps still showing the old theme, and their windows
        hyprchroma restart-stale [--notify]   close and relaunch every one of them
@@ -515,6 +552,20 @@ theme_outputs() {
     "${XDG_DATA_HOME:-$HOME/.local/share}/color-schemes/Hyprchroma.colors" \
     "${XDG_CONFIG_HOME:-$HOME/.config}/kdeglobals" \
     "$HOME/.config/YouTube Music/hyprchroma.css" 2>/dev/null || true
+}
+
+# Where desktop entries live. A folder's time moves when an entry is added to
+# or removed from it, which is what decides whether app covers need another pass.
+icon_apps_signature() {
+  local entry dirs=("${XDG_DATA_HOME:-$HOME/.local/share}/applications")
+  local -a data_dirs
+  IFS=: read -r -a data_dirs <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+  for entry in "${data_dirs[@]}"; do
+    [[ $entry == /* ]] && dirs+=("$entry/applications")
+  done
+  # A folder that does not exist (no Flatpak, say) is simply absent from the
+  # list: stat failing for it must not fail the pipeline, and with it the sync.
+  { stat -c '%n %Y' -- "${dirs[@]}" 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
 }
 
 # Windows already open cannot be restyled in place, and nothing here touches
@@ -592,6 +643,7 @@ command -v python3 >/dev/null || fail "python3 is not available"
 [[ -f "$HYPRCHROMA_SHARE/pear-theme.css.template" ]] || fail "Pear CSS template is missing"
 [[ -x "$HYPRCHROMA_LIB/hyprchroma-dark-reader" ]] || fail "Dark Reader helper is missing"
 [[ -x "$HYPRCHROMA_LIB/hyprchroma-state" ]] || fail "state helper is missing"
+[[ -x "$HYPRCHROMA_LIB/hyprchroma-icons" ]] || fail "icons helper is missing"
 
 
 target_enabled() {
@@ -600,8 +652,9 @@ target_enabled() {
   # Flatpak is opt-in: it widens what every sandboxed app may read, which is
   # not something an install, an upgrade or a different toggle may do on the
   # user's behalf. Additional browsers and Thunderbird are too: each writes
-  # into profiles. Only a recorded true turns any of these on.
-  [[ $key == flatpak || $key == browsers || $key == thunderbird ]] && default=false
+  # into profiles. So is Icons: it points every Omarchy theme at another icon
+  # theme. Only a recorded true turns any of these on.
+  [[ $key == flatpak || $key == browsers || $key == thunderbird || $key == icons ]] && default=false
   # Not "// true": jq's alternative operator treats false as empty as well as
   # null, so a framework switched off read back as enabled and every sync
   # re-applied the theme the toggle had just reverted. Only a missing key means
@@ -663,6 +716,7 @@ for name in ("gtk", "qtKde", "darkReader", "pear"):
 frameworks.setdefault("flatpak", False)
 frameworks.setdefault("browsers", False)
 frameworks.setdefault("thunderbird", False)
+frameworks.setdefault("icons", False)
 frameworks[key] = enabled
 atomic_write(path, json.dumps(settings, indent=2) + "\n")
 PY
@@ -737,6 +791,14 @@ if [[ $set_enabled == "false" ]]; then
       log "$target disabled; it reverts when the browser exits"
       notify_user "Dark Reader disabled; it reverts when the browser exits"
       exit 0
+    fi
+  elif [[ $target == "icons" ]]; then
+    # Each theme's own icons.theme comes back, the generated icon theme goes,
+    # and GTK is set back to the icon theme it had. The base sets stay
+    # installed. Only once Icons has run here: a framework never switched on
+    # has nothing to revert, and switching it off writes nothing.
+    if [[ -d $STATE_DIR/icons ]]; then
+      "$HYPRCHROMA_LIB/hyprchroma-icons" revert >/dev/null || revert_exit=$?
     fi
   else
     if [[ $target == "qt-kde" ]]; then
@@ -831,13 +893,14 @@ fingerprint=$(
 )
 
 previous_fingerprint="" dark_reader_state="" qt_kde_state="" browsers_previous="" thunderbird_previous=""
+icons_apps_previous=""
 if [[ -f "$STATUS_FILE" ]]; then
   # One read of the status, not one per field. Joined on the unit separator,
   # not a tab: a tab is whitespace to read, which runs empty fields together
   # and shifts every later value into the wrong variable. Each value is
   # stripped of the separator first, so none can spill into the next.
-  IFS=$'\x1f' read -r previous_fingerprint dark_reader_state qt_kde_state browsers_previous thunderbird_previous < <(
-    jq -r '[.fingerprint, .darkReader, .qtKde, .browsers, .thunderbird]
+  IFS=$'\x1f' read -r previous_fingerprint dark_reader_state qt_kde_state browsers_previous thunderbird_previous icons_apps_previous < <(
+    jq -r '[.fingerprint, .darkReader, .qtKde, .browsers, .thunderbird, .iconsApps]
            | map(. // "" | tostring | gsub("\u001f"; " ")) | join("\u001f")' \
       "$STATUS_FILE" 2>/dev/null) || true
 fi
@@ -905,6 +968,21 @@ if (( thunderbird_resume )); then
     sync-thunderbird --resume >/dev/null 2>&1 || true
 fi
 
+# Icons: an app installed or removed since the last sync gets its cover (or
+# loses it) on the next window event, without counting as a theme change --
+# which would list every open window as stale. Only the applications folders'
+# times are compared here, so a quiet window event costs one stat.
+icons_apps_signature=""
+if [[ $target == "all" || $target == "icons" ]] && target_enabled icons; then
+  icons_apps_signature=$(icon_apps_signature)
+  if (( ! force )) && [[ $target == "all" && -n $icons_apps_previous &&
+        $icons_apps_signature != "$icons_apps_previous" && $fingerprint == "$previous_fingerprint" ]]; then
+    "$HYPRCHROMA_LIB/hyprchroma-icons" apply >/dev/null 2>&1 || true
+    jq --arg signature "$icons_apps_signature" '.iconsApps = $signature' "$STATUS_FILE" 2>/dev/null |
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$STATUS_FILE" --mode 644 || true
+  fi
+fi
+
 if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
    [[ $dark_reader_state != "pending-browser-exit" ]] && \
    [[ $qt_kde_state != "deferred" ]] && [[ $target == "all" ]]; then
@@ -913,6 +991,23 @@ if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
 fi
 
 outputs_before=$(theme_outputs)
+# Icons first: GTK and Qt/KDE read each theme's icons.theme, which this points
+# at Omarchroma-Icons, so they pick the same icon theme up in this same run. A failure
+# here is reported and the other frameworks still synchronize.
+icons_state="disabled"
+icons_summary=""
+if [[ ( $target == "all" || $target == "icons" ) ]] && target_enabled icons; then
+  log "synchronizing icons"
+  icons_exit=0
+  icons_output=$("$HYPRCHROMA_LIB/hyprchroma-icons" apply 2>&1) || icons_exit=$?
+  icons_summary=${icons_output##*$'\n'}
+  case $icons_exit in
+    0) icons_state="synchronized" ;;
+    3) icons_state="missing" ;;
+    *) icons_state="failed"; notify_error_once ;;
+  esac
+  log "icons: $icons_summary"
+fi
 if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   log "synchronizing GTK"
   "$HYPRCHROMA_LIB/hyprchroma-state" \
@@ -1184,7 +1279,7 @@ if [[ $fingerprint != "$previous_fingerprint" || $outputs_before != "$(theme_out
   theme_changed=1
 fi
 
-python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$thunderbird_state" "$theme_changed" <<'PY'
+python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$thunderbird_state" "$theme_changed" "$icons_state" "$icons_apps_signature" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -1216,7 +1311,8 @@ state.update({
     "fingerprint": sys.argv[3],
     "lastSync": datetime.now(timezone.utc).isoformat(),
 })
-pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state, thunderbird_state, theme_changed = sys.argv[4:]
+(pear_state, target, dark_reader_exit, qt_kde_deferred, flatpak_state, browsers_state,
+ thunderbird_state, theme_changed, icons_state, icons_apps) = sys.argv[4:]
 # The baseline every stale-application question measures against; moved only
 # by a real change, never by a sync that found everything already current.
 if theme_changed == "1" or "themeChangedAt" not in state:
@@ -1235,6 +1331,10 @@ if target in {"all", "browsers"}:
     state["browsers"] = browsers_state
 if target in {"all", "thunderbird"}:
     state["thunderbird"] = thunderbird_state
+if target in {"all", "icons"}:
+    state["icons"] = icons_state
+if icons_apps:
+    state["iconsApps"] = icons_apps
 # Nothing for darkReader: the Dark Reader helper records its own outcome --
 # which browsers are done, which it waits on, or that none has it installed --
 # and writing "synchronized" over that here claimed all of them, including
@@ -1273,6 +1373,11 @@ else
                    not-installed) message="Thunderbird is not installed" ;;
                    *) message="Thunderbird is switched off" ;;
                  esac ;;
+    icons) case "$icons_state" in
+             synchronized) message="Icons synchronized: $icons_summary" ;;
+             missing|failed) message="Icons: $icons_summary" ;;
+             *) message="Icons are switched off" ;;
+           esac ;;
     *) # Name what this run actually did. The fixed list claimed GTK and Qt/KDE
        # every time, which was invisible only while no toggle could really
        # disable anything.
@@ -1286,6 +1391,7 @@ else
        [[ $flatpak_state == "synchronized" ]] && synced+=("Flatpak apps")
        [[ $browsers_state == "synchronized" || $browsers_state == "pending" ]] && synced+=("additional browsers")
        [[ $thunderbird_state == "synchronized" || $thunderbird_state == "pending" ]] && synced+=("Thunderbird")
+       [[ $icons_state == "synchronized" ]] && synced+=("icons")
        if (( ${#synced[@]} == 0 )); then
          message="nothing to synchronize; every framework is switched off"
        else

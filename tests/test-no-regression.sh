@@ -41,7 +41,7 @@ chk "no shell script creates its own temporary" \
 # Two more in the Qt/KDE generator: the Omarchroma icon theme's index and the
 # file that keeps its one declared directory in place.
 chk "shell writes route through the audited helper" \
-  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "9"
+  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "10"
 
 chk "restore_file no longer uses copy2" "$(count 'shutil\.copy2\(snapshot_dir' lib/hyprchroma-state)" "0"
 chk "privileged block reads with O_NOFOLLOW" "$(count 'read_text\(\)' install.sh)" "0"

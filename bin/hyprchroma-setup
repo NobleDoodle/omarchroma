@@ -216,6 +216,38 @@ BROWSERS
   if ask "Include additional browsers"; then want_browsers=yes; fi
 fi
 
+# --- icons ------------------------------------------------------------------
+head2 "Icons"
+cat <<'ICONS'
+Hyprchroma can give every Omarchy theme a matching icon set, Reversal or Yaru,
+in the color nearest the theme's accent. Folders take their color from the
+theme -- its sidebar highlight, its accent or its window border, your choice
+in the panel -- and change with it. App icons Reversal does not have can be
+put on its rounded plate, so the app menu matches.
+
+It points each theme at an icon theme of its own, so it is off unless you say
+so. Switching it off puts every theme's own icon setting back.
+ICONS
+settings_dir="${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma"
+if [[ $(jq -r '.frameworks.icons // false' "$settings_dir/settings.json" 2>/dev/null) == true ]]; then
+  note "It is on now; answer yes to keep it."
+fi
+want_icons=no
+icon_set=$(jq -r '.icon_set // "reversal"' "$settings_dir/icons/settings.json" 2>/dev/null || echo reversal)
+[[ $icon_set == yaru ]] || icon_set=reversal
+if ask "Include icons"; then
+  want_icons=yes
+  say ""
+  say "  1) Reversal  colorful rounded icons, with covers for apps it lacks"
+  say "  2) Yaru      Ubuntu's icons; every app keeps its own"
+  default_choice=1; [[ $icon_set == yaru ]] && default_choice=2
+  read -r -p "Icon set [$default_choice]: " set_choice
+  case ${set_choice:-$default_choice} in
+    2) icon_set=yaru ;;
+    *) icon_set=reversal ;;
+  esac
+fi
+
 # --- restarting apps after a theme change ---------------------------------
 # Yes always means on. It used to ask "Turn it off" when it was already on,
 # and a yes typed out of habit switched it off. Instead the default follows
@@ -248,6 +280,26 @@ explain=()
 if ! pacman -Qq adw-gtk-theme &>/dev/null; then
   missing+=(adw-gtk-theme)
   explain+=("adw-gtk-theme  GTK 3 apps follow the theme. Without it they keep the system default.")
+fi
+if [[ $want_icons == yes ]]; then
+  if ! pacman -Qq python-pillow &>/dev/null; then
+    missing+=(python-pillow)
+    explain+=("python-pillow  Icons draws app covers and reads Yaru's folders with it.")
+  fi
+  if ! pacman -Qq librsvg &>/dev/null; then
+    missing+=(librsvg)
+    explain+=("librsvg  Icons draws covers from apps whose own icon is an SVG.")
+  fi
+  if [[ $icon_set == yaru ]]; then
+    pacman -Qq python-numpy &>/dev/null || {
+      missing+=(python-numpy)
+      explain+=("python-numpy  Yaru's folders are traced once so they can take the theme's color.")
+    }
+    pacman -Qq yaru-icon-theme &>/dev/null || {
+      missing+=(yaru-icon-theme)
+      explain+=("yaru-icon-theme  The Yaru icon set itself.")
+    }
+  fi
 fi
 if [[ $want_dark == yes ]] && ! pacman -Qq python-plyvel &>/dev/null; then
   missing+=(python-plyvel)
@@ -294,6 +346,48 @@ if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
     fi
   else
     note "Skipped. The panel will still offer Pear Desktop once you install it yourself."
+  fi
+fi
+
+# Reversal is not in the official repos. It comes from its AUR package, the
+# way Pear Desktop does above -- but only once that package's recipe is the
+# one reviewed for this release: it builds Reversal from its GitHub
+# repository and installs Reversal and Reversal-dark under /usr/share/icons,
+# nothing else. A recipe that has changed since is not built here; the AUR
+# page is named so it can be read first. Checked right before the install,
+# against what the AUR serves now.
+REVERSAL_AUR=reversal-icon-theme-git
+REVERSAL_PKGBUILD_SHA256=dd4cecbf36c25f0be53d19c0373935a7d90739d876a07a621b956d180fee01a4
+reversal_installed() {
+  [[ -f ${XDG_DATA_HOME:-$HOME/.local/share}/icons/Reversal/index.theme ||
+     -f /usr/share/icons/Reversal/index.theme ]]
+}
+reversal_recipe_verified() {
+  local sum
+  sum=$(curl -fsSL --max-time 20 --proto '=https' \
+          "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=$REVERSAL_AUR" | sha256sum) || return 1
+  [[ ${sum%% *} == "$REVERSAL_PKGBUILD_SHA256" ]]
+}
+if [[ $want_icons == yes && $icon_set == reversal ]] && ! reversal_installed; then
+  say ""
+  note "Reversal is not installed. It comes from the AUR:"
+  say "  omarchy pkg aur add $REVERSAL_AUR"
+  say ""
+  if ask "Install it now"; then
+    if ! command -v omarchy >/dev/null; then
+      note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
+    elif ! reversal_recipe_verified; then
+      note "The AUR recipe for $REVERSAL_AUR is not the one this release was checked against"
+      note "(or the AUR could not be reached), so it was not built. Read it first:"
+      note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
+      note "then install it with the command above if it looks right. Icons waits until then."
+    else
+      note "Recipe verified: it builds Reversal from github.com/yeyushengfan258/Reversal-icon-theme."
+      omarchy pkg aur add "$REVERSAL_AUR" ||
+        note "Could not install $REVERSAL_AUR; you can run the command above later."
+    fi
+  else
+    note "Skipped. Icons stays waiting until Reversal is installed, or choose Yaru in the panel."
   fi
 fi
 
@@ -402,6 +496,15 @@ if [[ $want_browsers == yes ]]; then
   hyprchroma framework restore browsers
 else
   hyprchroma framework remove browsers
+fi
+# Opt-in like Flatpak: the set first, so switching it on applies that one.
+if [[ $want_icons == yes ]]; then
+  hyprchroma icons set "$icon_set" >/dev/null 2>&1 ||
+    note "Could not choose $icon_set yet (is it installed?); the panel can: open Icons."
+  hyprchroma framework restore icons ||
+    note "Could not switch Icons on; the panel can do it: open Icons, then press i."
+else
+  hyprchroma framework remove icons
 fi
 hyprchroma --restart-mode="$want_restart" >/dev/null ||
   note "Could not save the restart setting; it can be set in the panel: press s."

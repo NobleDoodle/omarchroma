@@ -1,9 +1,12 @@
-# What's new in 3.2.7
+# What's new in 4.0.0
 
-- Thunderbird follows your theme. Off until you switch it on, and it picks up
-  the colors when it next starts.
-- Additional Apps (6) is now a drop-down, with Thunderbird and Pear Desktop.
-- Dark Reader follows your theme in Brave Origin, and an open Brave Origin no
-  longer holds Brave's colors back.
-- Fewer notifications: routine ones are gone, and errors show once per session.
-  Settings can hide the bar icon's alert. Thanks to @ryantm.
+- Icons: an opt-in framework (6 on the main list) that gives every Omarchy
+  theme Reversal or Yaru in the color nearest its accent. Folders take the
+  theme's sidebar highlight, accent, window border or its own Yaru color, and
+  change with it.
+- Open GTK apps repaint their icons at a theme change, with no restart.
+- App icons Reversal lacks can sit on its rounded plate, new apps included.
+- Setup installs your icon set: Yaru with pacman, Reversal from the AUR once
+  its recipe matches the reviewed one.
+- Keys moved: Additional Apps is now 7, with Thunderbird 8 and Pear 9.
+  Right-click the bar icon for the next folder color.
