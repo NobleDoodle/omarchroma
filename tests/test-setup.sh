@@ -42,7 +42,7 @@ chk "declining exits non-zero rather than continuing" \
 # unmodified script never reaches this section at all on the machine running
 # it -- confirmed against $S itself rather than a probe.
 chk "the real script finds nothing missing on this machine" \
-  "$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
+  "$(printf 'n\nn\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
 
 # --- sudo's own credential cache is kept warm, not left to expire cold ----
 # A live session on this exact hardware showed a cold prompt -- one that
@@ -71,7 +71,7 @@ chk "the keep-alive is torn down on exit alongside the build directory" \
   "$(grep -c 'kill .\$keepalive_pid. 2>/dev/null' $S)" "1"
 
 # --- nothing is built without the consent we had before --------------------
-out=$(printf 'n\nn\nno\n' | timeout 30 ./$S 2>&1)
+out=$(printf 'n\nn\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
 chk "a wrong answer cancels" "$(grep -c 'Setup cancelled; nothing was changed' <<<"$out")" "1"
 # The consent text used to open straight into "built from source and
@@ -131,7 +131,7 @@ chmod +x "$probe"
 # n Thunderbird, n Pear, y Dark Reader. The next n declines whatever follows
 # (Flatpak, when it is installed here) so the Dark Reader dependency is the
 # one this run is about.
-want=$(printf 'n\nn\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
+want=$(printf 'n\nn\nn\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
 chk "a missing dependency is named" "$(grep -c 'These are missing' <<<"$want")" "1"
 chk "with what it is for" "$(grep -c 'GTK 3 apps follow the theme' <<<"$want")" "1"
 chk "and the command to get it" "$(grep -c 'sudo pacman -S --needed' <<<"$want")" "1"
@@ -139,7 +139,7 @@ chk "declining leaves it uninstalled and says so" \
   "$(grep -c 'installs and runs without them' <<<"$want")" "1"
 
 # Dark Reader's dependency is only relevant if Dark Reader was wanted.
-skip=$(printf 'n\nn\nno\n' | timeout 30 "$probe" 2>&1)
+skip=$(printf 'n\nn\nn\nno\n' | timeout 30 "$probe" 2>&1)
 chk "the Dark Reader dependency is not raised when it was declined" \
   "$(grep -c 'also-not-a-package' <<<"$skip")" "0"
 # Twice: once in the list of what is missing, once in the command to get it.
@@ -159,13 +159,24 @@ chk "the check happens right where the question is answered, not after the build
 # browser happens to be this machine's actual default.
 dr_home=$(mktemp -d); trap 'rm -rf "$dr_home"' EXIT
 dr_out=$(export HOME="$dr_home"
-         printf 'n\nn\ny\nno\n' | timeout 30 "./$S" 2>&1)
+         printf 'n\nn\nn\ny\nno\n' | timeout 30 "./$S" 2>&1)
 chk "the store links appear live, at the point Dark Reader is chosen" \
   "$(grep -c 'Chrome Web Store' <<<"$dr_out")" "1"
 chk "before the build even starts" \
   "$(grep -cE '==> Making package|Finished making' <<<"$dr_out")" "0"
 chk "where it is installed is read from the helper, by its own path" \
   "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "1"
+
+# --- every framework at once ------------------------------------------------
+all_home=$(mktemp -d)
+all_out=$(export HOME="$all_home"
+          printf 'y\nno\nno\nno\nno\nno\nno\n' | timeout 30 "./$S" 2>&1)
+rm -rf "$all_home"
+chk "yes to every framework asks none of them one by one" \
+  "$(grep -cE 'Include (Thunderbird|Pear Desktop|Dark Reader|Flatpak apps|additional browsers|icons)' <<<"$all_out")" "0"
+chk "...and says what it switched on" "$(grep -c '^Switching on:' <<<"$all_out")" "1"
+chk "...then still offers what they need: Reversal, and the Dark Reader links" \
+  "$(grep -c 'omarchy pkg aur add reversal-icon-theme-git' <<<"$all_out"),$(grep -c 'Chrome Web Store' <<<"$all_out")" "1,1"
 
 # --- Pear Desktop is offered for install when wanted and missing ---------
 # A real machine may already have pear-desktop, or a ~/.config/YouTube Music
@@ -181,7 +192,7 @@ pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
 # before the build. Answering yes to the Pear install offer would really try
 # to run "omarchy pkg aur add" against this machine.
 pear_out=$(export HOME="$pear_home"
-           printf 'n\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
+           printf 'n\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
 chk "a missing, wanted Pear Desktop is named" \
   "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
 # -bin specifically, not the plain package: that one builds a full Electron

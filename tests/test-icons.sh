@@ -224,3 +224,10 @@ rm -rf "$SHARE"
 U=$REPO/bin/hyprchroma-setup
 chk "setup offers Reversal whichever set is picked, unless its AUR package is there" \
   "$(grep -c '^if \[\[ $want_icons == yes \]\] && ! pacman -Qq "$REVERSAL_AUR" &>/dev/null; then$' "$U")" "1"
+chk "setup asks first whether to enable every framework" \
+  "$(awk '/ask "Enable every framework"/{a=NR} /ask "Include Thunderbird"/{b=NR} END{print (a && b && a < b) ? "first" : "not first"}' "$U")" "first"
+chk "...and every framework question answers yes on its own when it does" \
+  "$(grep -cE '\[\[ \$all_frameworks == yes \]\] \|\| ask "Include ' "$U")" "6"
+chk "...while dependencies are checked the same way either way" \
+  "$(grep -c 'all_frameworks' <(sed -n '/^head2 "Dependencies"/,/^head2 "What this installs"/p' "$U"))" "0"
+

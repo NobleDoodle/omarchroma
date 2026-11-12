@@ -32,8 +32,9 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 ```
 
 Open the panel and press **i**. A setup terminal shows what is new in this
-version, prompts you to select optional frameworks and whether to restart apps
-at theme change, then verifies the dependencies those need. Type
+version and asks whether to enable every optional framework at once or choose
+them one by one, then whether to restart apps at theme change, and verifies the
+dependencies your choices need. Type
 `I understand` to build.
 
 **Standalone (service only):**

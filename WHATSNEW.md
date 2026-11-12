@@ -8,5 +8,7 @@
 - App icons Reversal lacks can sit on its rounded plate, new apps included.
 - Yaru ships with Omarchy. For Reversal, setup installs it from the AUR once
   its recipe matches the reviewed one.
+- Setup asks first whether to enable every framework at once, or to choose
+  them one by one; either way it then checks and offers what they need.
 - Keys moved: Additional Apps is now 7, with Thunderbird 8 and Pear 9.
   Right-click the bar icon for the next folder color.

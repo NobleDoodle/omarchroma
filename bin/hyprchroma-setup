@@ -130,25 +130,41 @@ if [[ -f $here/WHATSNEW.md ]]; then
 fi
 
 # --- the optional frameworks ----------------------------------------------
-head2 "Additional Apps"
-cat <<'TB'
+# One question first: every framework at once, or one at a time. Either way,
+# what they need is checked and offered afterwards, the same way.
+head2 "Frameworks"
+cat <<'ALL'
+GTK and Qt/KDE are always on. The others -- Thunderbird, Pear Desktop, Dark
+Reader, Flatpak apps, Additional browsers and Icons -- are optional.
+
+Yes switches on every one that has something to theme here, then checks what
+they need. No goes through them one at a time, each with what it changes.
+ALL
+all_frameworks=no
+if ask "Enable every framework"; then all_frameworks=yes; fi
+# One at a time, each section explains itself; all at once, a summary follows.
+explain() { if [[ $all_frameworks == yes ]]; then cat >/dev/null; else cat; fi; }
+section() { [[ $all_frameworks == yes ]] || head2 "$@"; }
+
+section "Additional Apps"
+explain <<'TB'
 Thunderbird does not pick up the GTK theme in its own window. Hyprchroma
 colors it the same way it colors Firefox, which Thunderbird reads the next
 time it starts. This writes into your mail profiles, so it is off unless
 you say so.
 TB
 want_thunderbird=no
-if ask "Include Thunderbird"; then want_thunderbird=yes; fi
-cat <<'PEAR'
+if [[ $all_frameworks == yes ]] || ask "Include Thunderbird"; then want_thunderbird=yes; fi
+explain <<'PEAR'
 Pear Desktop is a desktop app for YouTube Music. Hyprchroma can generate a
 stylesheet for it so its window matches your theme instead of staying black
 regardless of what the rest of the desktop looks like.
 PEAR
 want_pear=no
-if ask "Include Pear Desktop (YouTube Music)"; then want_pear=yes; fi
+if [[ $all_frameworks == yes ]] || ask "Include Pear Desktop (YouTube Music)"; then want_pear=yes; fi
 
-head2 "Dark Reader"
-cat <<'DR'
+section "Dark Reader"
+explain <<'DR'
 Dark Reader is a browser extension that darkens web pages. Hyprchroma can push
 your theme's colors into it, so pages are tinted to match the rest of the
 desktop rather than the extension's own grey.
@@ -158,7 +174,7 @@ browser's store. This only decides whether it syncs to it, in every browser
 and profile it is installed in, not only your default browser.
 DR
 want_dark=no
-if ask "Include Dark Reader"; then
+if [[ $all_frameworks == yes ]] || ask "Include Dark Reader"; then
   want_dark=yes
   # Right where the question was answered, not after the build finishes
   # minutes from now: the point is to hand over the store link while it is
@@ -183,8 +199,8 @@ fi
 # answers no without being asked, which also keeps the row out of the panel.
 want_flatpak=no
 if command -v flatpak >/dev/null; then
-  head2 "Flatpak apps"
-  cat <<'FLATPAK'
+  section "Flatpak apps"
+  explain <<'FLATPAK'
 Flatpak apps read their settings from a folder of their own, so they miss the
 GTK and Qt/KDE colors above. Hyprchroma can let every Flatpak app read them:
 four read-only permissions -- your two GTK folders, kdeglobals, and your KDE
@@ -193,7 +209,7 @@ color schemes -- and nothing else. Each app picks it up on its next launch.
 This changes a permission for every Flatpak app you have, which is why it is
 off unless you say so. Switching it off later removes exactly those four.
 FLATPAK
-  if ask "Include Flatpak apps"; then want_flatpak=yes; fi
+  if [[ $all_frameworks == yes ]] || ask "Include Flatpak apps"; then want_flatpak=yes; fi
 fi
 
 # The same helper the service uses decides what is installed, so this asks
@@ -201,8 +217,8 @@ fi
 want_browsers=no
 found_browsers=$("$here/lib/hyprchroma-state" detect-browsers 2>/dev/null | paste -sd, - | sed 's/,/, /g')
 if [[ -n $found_browsers ]]; then
-  head2 "Additional browsers"
-  cat <<BROWSERS
+  section "Additional browsers"
+  explain <<BROWSERS
 Omarchy colors Chromium, Chrome, Brave and Helium itself, but not these,
 which Hyprchroma found here: $found_browsers.
 
@@ -213,12 +229,12 @@ once Vivaldi is closed. Each browser picks it up on its next start.
 It changes files inside your browser profiles, which is why it is off unless
 you say so. Switching it off removes exactly what it added.
 BROWSERS
-  if ask "Include additional browsers"; then want_browsers=yes; fi
+  if [[ $all_frameworks == yes ]] || ask "Include additional browsers"; then want_browsers=yes; fi
 fi
 
 # --- icons ------------------------------------------------------------------
-head2 "Icons"
-cat <<'ICONS'
+section "Icons"
+explain <<'ICONS'
 Hyprchroma can give every Omarchy theme a matching icon set, Reversal or Yaru,
 in the color nearest the theme's accent. Folders take their color from the
 theme -- its sidebar highlight, its accent or its window border, your choice
@@ -229,23 +245,38 @@ It points each theme at an icon theme of its own, so it is off unless you say
 so. Switching it off puts every theme's own icon setting back.
 ICONS
 settings_dir="${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma"
-if [[ $(jq -r '.frameworks.icons // false' "$settings_dir/settings.json" 2>/dev/null) == true ]]; then
+if [[ $all_frameworks == no && $(jq -r '.frameworks.icons // false' "$settings_dir/settings.json" 2>/dev/null) == true ]]; then
   note "It is on now; answer yes to keep it."
 fi
 want_icons=no
 icon_set=$(jq -r '.icon_set // "reversal"' "$settings_dir/icons/settings.json" 2>/dev/null || echo reversal)
 [[ $icon_set == yaru ]] || icon_set=reversal
-if ask "Include icons"; then
+if [[ $all_frameworks == yes ]] || ask "Include icons"; then
   want_icons=yes
+  # All at once keeps the recorded set (Reversal the first time); the panel
+  # switches it with r / y.
+  if [[ $all_frameworks == no ]]; then
+    say ""
+    say "  1) Reversal  colorful rounded icons, with covers for apps it lacks"
+    say "  2) Yaru      Ubuntu's icons, already part of Omarchy; every app keeps its own"
+    default_choice=1; [[ $icon_set == yaru ]] && default_choice=2
+    read -r -p "Icon set [$default_choice]: " set_choice
+    case ${set_choice:-$default_choice} in
+      2) icon_set=yaru ;;
+      *) icon_set=reversal ;;
+    esac
+  fi
+fi
+
+if [[ $all_frameworks == yes ]]; then
   say ""
-  say "  1) Reversal  colorful rounded icons, with covers for apps it lacks"
-  say "  2) Yaru      Ubuntu's icons, already part of Omarchy; every app keeps its own"
-  default_choice=1; [[ $icon_set == yaru ]] && default_choice=2
-  read -r -p "Icon set [$default_choice]: " set_choice
-  case ${set_choice:-$default_choice} in
-    2) icon_set=yaru ;;
-    *) icon_set=reversal ;;
-  esac
+  say "Switching on:"
+  say "  Thunderbird, Pear Desktop (YouTube Music), Dark Reader"
+  [[ $want_flatpak == yes ]] && say "  Flatpak apps"
+  [[ $want_browsers == yes ]] && say "  Additional browsers: $found_browsers"
+  say "  Icons, with $([[ $icon_set == yaru ]] && echo Yaru || echo Reversal) (the panel switches sets: r / y)"
+  command -v flatpak >/dev/null || note "No Flatpak here, so Flatpak apps stays off."
+  [[ -n $found_browsers ]] || note "No additional browser found, so Additional browsers stays off."
 fi
 
 # --- restarting apps after a theme change ---------------------------------
