@@ -6,7 +6,7 @@
   change with it.
 - Open GTK apps repaint their icons at a theme change, with no restart.
 - App icons Reversal lacks can sit on its rounded plate, new apps included.
-- Setup installs your icon set: Yaru with pacman, Reversal from the AUR once
+- Yaru ships with Omarchy. For Reversal, setup installs it from the AUR once
   its recipe matches the reviewed one.
 - Keys moved: Additional Apps is now 7, with Thunderbird 8 and Pear 9.
   Right-click the bar icon for the next folder color.

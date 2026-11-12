@@ -1802,7 +1802,7 @@ Panel {
               { value: "reversal", label: "Reversal" + (root.setInstalled("reversal") ? "" : " (missing)"),
                 tooltip: root.setInstalled("reversal") ? "" : "Not installed: setup can install it, from the AUR (reversal-icon-theme-git)" },
               { value: "yaru", label: "Yaru" + (root.setInstalled("yaru") ? "" : " (missing)"),
-                tooltip: root.setInstalled("yaru") ? "" : "Not installed: sudo pacman -S yaru-icon-theme" }
+                tooltip: root.setInstalled("yaru") ? "" : "Not installed (Omarchy normally ships it): sudo pacman -S yaru-icon-theme" }
             ]
             onChanged: function(value) { root.setIconSet(value) }
           }

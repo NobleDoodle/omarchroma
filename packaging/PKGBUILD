@@ -22,8 +22,7 @@ optdepends=(
   'flatpak: Flatpak apps follow the theme too, when switched on'
   'python-pillow: Icons - covers for app icons the icon set lacks, and Yaru folders'
   'python-numpy: Icons - Yaru folders, traced once so they recolor'
-  'librsvg: Icons - covers drawn from SVG app artwork'
-  'yaru-icon-theme: Icons - Yaru as the icon set (Reversal is installed by the setup script)'
+  'yaru-icon-theme: Icons - Yaru as the icon set (Omarchy ships it; setup installs Reversal)'
 )
 source=()
 sha256sums=()

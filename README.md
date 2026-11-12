@@ -233,8 +233,9 @@ stops and changes nothing.
 | [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
 | Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
-| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) or `yaru-icon-theme` | Icons | Setup installs the one you pick; Reversal only once its AUR recipe matches the reviewed one |
-| `python-pillow`, `librsvg` | Icons: app covers | Setup offers to install them |
+| `yaru-icon-theme` | Icons with Yaru | Ships with Omarchy |
+| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) | Icons with Reversal | Setup installs it from the AUR, once its recipe matches the reviewed one |
+| `python-pillow` | Icons: app covers and Yaru folders | Setup offers to install it |
 | `python-numpy` | Icons: Yaru folders | Setup offers to install it with Yaru |
 | Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |
 

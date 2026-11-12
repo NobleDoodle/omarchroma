@@ -239,7 +239,7 @@ if ask "Include icons"; then
   want_icons=yes
   say ""
   say "  1) Reversal  colorful rounded icons, with covers for apps it lacks"
-  say "  2) Yaru      Ubuntu's icons; every app keeps its own"
+  say "  2) Yaru      Ubuntu's icons, already part of Omarchy; every app keeps its own"
   default_choice=1; [[ $icon_set == yaru ]] && default_choice=2
   read -r -p "Icon set [$default_choice]: " set_choice
   case ${set_choice:-$default_choice} in
@@ -286,10 +286,6 @@ if [[ $want_icons == yes ]]; then
     missing+=(python-pillow)
     explain+=("python-pillow  Icons draws app covers and reads Yaru's folders with it.")
   fi
-  if ! pacman -Qq librsvg &>/dev/null; then
-    missing+=(librsvg)
-    explain+=("librsvg  Icons draws covers from apps whose own icon is an SVG.")
-  fi
   if [[ $icon_set == yaru ]]; then
     pacman -Qq python-numpy &>/dev/null || {
       missing+=(python-numpy)
@@ -297,7 +293,7 @@ if [[ $want_icons == yes ]]; then
     }
     pacman -Qq yaru-icon-theme &>/dev/null || {
       missing+=(yaru-icon-theme)
-      explain+=("yaru-icon-theme  The Yaru icon set itself.")
+      explain+=("yaru-icon-theme  The Yaru icon set. Omarchy ships it, but it is not installed here.")
     }
   fi
 fi
