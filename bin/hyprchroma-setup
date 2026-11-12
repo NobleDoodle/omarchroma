@@ -364,26 +364,41 @@ reversal_recipe_verified() {
           "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=$REVERSAL_AUR" | sha256sum) || return 1
   [[ ${sum%% *} == "$REVERSAL_PKGBUILD_SHA256" ]]
 }
-if [[ $want_icons == yes && $icon_set == reversal ]] && ! reversal_installed; then
+# Offered whenever Icons is included, whichever set was picked: Reversal is
+# one key away in the panel (r), and covers are drawn in its shape. Only the
+# AUR package itself counts as installed here -- a copy put in the icon folders
+# by hand works, but nothing keeps it current.
+if [[ $want_icons == yes ]] && ! pacman -Qq "$REVERSAL_AUR" &>/dev/null; then
   say ""
-  note "Reversal is not installed. It comes from the AUR:"
+  if reversal_installed; then
+    note "Reversal is in your icon folders, but not from its AUR package, so nothing"
+    note "updates it. The package installs a kept-current copy; yours in ~/.local/share/icons"
+    note "is still used first while it is there."
+  elif [[ $icon_set == reversal ]]; then
+    note "Reversal is not installed. It comes from the AUR:"
+  else
+    note "Reversal is not installed. Yaru works without it; with it, the panel can"
+    note "switch between the two (r / y). It comes from the AUR:"
+  fi
   say "  omarchy pkg aur add $REVERSAL_AUR"
   say ""
-  if ask "Install it now"; then
+  if ask "Install Reversal from the AUR now"; then
     if ! command -v omarchy >/dev/null; then
       note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
     elif ! reversal_recipe_verified; then
       note "The AUR recipe for $REVERSAL_AUR is not the one this release was checked against"
       note "(or the AUR could not be reached), so it was not built. Read it first:"
       note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
-      note "then install it with the command above if it looks right. Icons waits until then."
+      note "then install it with the command above if it looks right."
     else
       note "Recipe verified: it builds Reversal from github.com/yeyushengfan258/Reversal-icon-theme."
       omarchy pkg aur add "$REVERSAL_AUR" ||
         note "Could not install $REVERSAL_AUR; you can run the command above later."
     fi
+  elif [[ $icon_set == reversal ]] && ! reversal_installed; then
+    note "Skipped. Icons waits until Reversal is installed, or choose Yaru in the panel (y)."
   else
-    note "Skipped. Icons stays waiting until Reversal is installed, or choose Yaru in the panel."
+    note "Skipped."
   fi
 fi
 

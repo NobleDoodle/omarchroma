@@ -219,3 +219,8 @@ chk "switching icons off reverts it" "$([[ -e $HOME/.icons/Omarchroma-Icons ]] &
 chk "while off, a folder choice is only saved" \
   "$(jq -r '.folder_mode' "$HOME/.local/state/hyprchroma/icons/settings.json")-$([[ -e $HOME/.icons/Omarchroma-Icons ]] && echo built || echo none)" "accent-none"
 rm -rf "$SHARE"
+
+# --- setup offers Reversal whenever Icons is included -------------------------
+U=$REPO/bin/hyprchroma-setup
+chk "setup offers Reversal whichever set is picked, unless its AUR package is there" \
+  "$(grep -c '^if \[\[ $want_icons == yes \]\] && ! pacman -Qq "$REVERSAL_AUR" &>/dev/null; then$' "$U")" "1"
