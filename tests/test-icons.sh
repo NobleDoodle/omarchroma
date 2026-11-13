@@ -139,14 +139,30 @@ chk("the staged current theme points at Omarchroma-Icons", (current / "theme/ico
 chk("the stock theme itself is untouched", (stock / "latte/icons.theme").read_text(), "Yaru-blue\n")
 desktop = (apps / "my-tool.desktop").read_text()
 chk("an absolute Icon= names its cover instead", "Icon=my-tool\n" in desktop, True)
+theme_apps = H / ".icons/Omarchroma-Icons/apps"
+generations = sorted(p.name for p in theme_apps.iterdir())
+chk("app covers sit in one directory named after them", len(generations), 1)
 chk("the cover is an SVG in the theme",
-    (H / ".icons/Omarchroma-Icons/apps/scalable/my-tool.svg").resolve().read_text().startswith("<?xml"), True)
+    (theme_apps / generations[0] / "my-tool.svg").resolve().read_text().startswith("<?xml"), True)
+chk("index.theme names that directory",
+    f"Directories=apps/{generations[0]},places/scalable" in index.read_text(), True)
 status = json.loads((H / ".local/state/hyprchroma/icons/status.json").read_text())
 chk("status says what is applied", (status["base"], status["mode"], status["active"], status["applying"]),
     ("Reversal-dark", "accent", True, False))
 
 again = cli("apply")
 chk("a second apply changes nothing", again.stdout.strip().endswith("unchanged"), True)
+chk("...and keeps the covers' directory", sorted(p.name for p in theme_apps.iterdir()), generations)
+
+# The app launcher keeps every icon it has drawn by its path; a cover redrawn
+# in place kept its old picture until the shell restarted. Changed covers get
+# a new directory, so a new path, and the old one goes.
+cli("covers", "off"); cli("apply")
+after_off = sorted(p.name for p in theme_apps.iterdir())
+chk("switching covers off moves the covers to a new directory", (len(after_off), after_off != generations), (1, True))
+chk("...which index.theme follows", f"Directories=apps/{after_off[0]},places/scalable" in index.read_text(), True)
+cli("covers", "on"); cli("apply")
+chk("switching them back on returns to the same name", sorted(p.name for p in theme_apps.iterdir()), generations)
 
 run = cli("folders", "background")
 chk("the sidebar highlight is one key away", ic.sidebar_highlight("tokyo-night") in (places / "folder.svg").read_text(), True)

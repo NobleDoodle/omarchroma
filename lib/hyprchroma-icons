@@ -1418,17 +1418,36 @@ def _recolor_folders_locked(slug: str, mode: str | None) -> dict[str, str]:
 
 # ----------------------------------------------------------------- theme --
 
-def _index_theme(inherits: str) -> str:
+def _index_theme(inherits: str, apps: str = "apps/scalable") -> str:
     return (
         "[Icon Theme]\n"
         f"Name={THEME_NAME}\n"
         f"Comment={inherits} with folders and app covers from Omarchroma\n"
         f"Inherits={inherits},hicolor\n"
         "Example=folder\n"
-        "Directories=apps/scalable,places/scalable\n\n"
-        "[apps/scalable]\nSize=64\nContext=Applications\nMinSize=16\nMaxSize=512\nType=Scalable\n\n"
+        f"Directories={apps},places/scalable\n\n"
+        f"[{apps}]\nSize=64\nContext=Applications\nMinSize=16\nMaxSize=512\nType=Scalable\n\n"
         "[places/scalable]\nSize=64\nContext=Places\nMinSize=16\nMaxSize=512\nType=Scalable\n"
     )
+
+
+def _covers_generation() -> str:
+    """A name for the app-icon directory that changes whenever any cover does.
+
+    The Omarchy app launcher finds icons by scanning for files and keeps every
+    picture it has drawn, keyed by its path, until the shell restarts. A cover
+    redrawn in place -- covers switched off, the other set chosen -- kept its
+    path and so its old picture. In a directory named after the covers'
+    contents, a changed cover is a new path, and the launcher's next scan
+    (each time it opens) draws it afresh. GTK and Qt look icons up through
+    index.theme, which names the directory, so they are unaffected."""
+    digest = hashlib.sha256()
+    store = cover_store()
+    if store.is_dir():
+        for svg in sorted(store.glob("*.svg")):
+            digest.update(svg.name.encode() + b"\0")
+            digest.update(hashlib.sha256(_read(svg, 1 << 22).encode()).digest())
+    return digest.hexdigest()[:12]
 
 
 def _link_dir_contents(source: Path, destination: Path) -> None:
@@ -1463,9 +1482,19 @@ def install_theme(base: str) -> bool:
     directory symlink in ~/.local/share/icons lets Qt/KDE (Omarchroma's own
     KDE icon list among them) find it by name without the menu seeing it twice."""
     changed = inherited_base() != base
-    _link_dir_contents(cover_store(), theme_dir() / "apps" / "scalable")
+    generation = _covers_generation()
+    apps = theme_dir() / "apps"
+    _link_dir_contents(cover_store(), apps / generation)
+    # Earlier generations (and the fixed apps/scalable of older versions) go.
+    for old in list(apps.iterdir()):
+        if old.name == generation:
+            continue
+        if old.is_dir() and not old.is_symlink():
+            remove_tree(old)
+        else:
+            remove_entry(old)
     _link_dir_contents(place_store(), theme_dir() / "places" / "scalable")
-    write_if_changed(theme_dir() / "index.theme", _index_theme(base), 0o644)
+    write_if_changed(theme_dir() / "index.theme", _index_theme(base, f"apps/{generation}"), 0o644)
     link = public_icons() / THEME_NAME
     target = os.path.relpath(theme_dir(), public_icons())
     if not (link.is_symlink() and os.readlink(link) == target):
