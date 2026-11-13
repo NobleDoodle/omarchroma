@@ -209,19 +209,21 @@ chk("...and the same whatever OMARCHY_PATH the asker has", sorted(real.omarchy_r
 E
 
 # -- a pending service update: the same alert, counted as one -------------------
-chk "a service older than the plugin counts as one on the icon, beside any windows" \
-  "$(grep -c 'root.staleCount + (root.updatePending ? 1 : 0)' BarWidget.qml)" "1"
+chk "a service older than the plugin, or not installed, counts as one on the icon, beside any windows" \
+  "$(grep -c 'root.staleCount + (root.updatePending || root.installPending ? 1 : 0)' BarWidget.qml)" "1"
 chk "...which is the panel's own outdated check" \
   "$(grep -c 'panelLoader.item.outdated === true' BarWidget.qml)" "1"
 chk "...and the tooltip says so, with the windows after it" \
-  "$(grep -cE '"1 service update pending"|", and "' BarWidget.qml)" "2"
+  "$(grep -cE '"1 install pending \(press i\)"|"1 service update pending"|", and "' BarWidget.qml)" "3"
+chk "not installed is the panel's own check, once it has run" \
+  "$(grep -c 'panelLoader.item.installPending === true' BarWidget.qml),$(grep -c 'readonly property bool installPending: dependencyChecked && !dependencyPresent' Panel.qml)" "1,1"
 chk "the version is asked as the shell starts, not only when the panel opens" \
   "$(grep -c 'Component.onCompleted: presenceProcess.running = true' Panel.qml)" "1"
 chk "...again when the plugin's manifest changes" \
   "$(awk '/id: manifestFile/,/^  }/' Panel.qml | grep -cE 'watchChanges: true|onFileChanged: reload\(\)')" "2"
 chk "...and when pacman replaces the service's binary" \
   "$(awk '/id: serviceBinary/,/^  }/' Panel.qml | grep -cE 'path: "/usr/bin/hyprchroma"|watchChanges: true|presenceProcess.running = true')" "3"
-chk "the Update button is lit in the urgent color while an update is pending: a fill and a border of it" \
-  "$(grep -c 'background: root.outdated ? Util.alpha(alertColor, 0.30) : "transparent"' Panel.qml),$(grep -cE 'border.color: parent.alertColor' Panel.qml)" "1,1"
+chk "the Install and Update button is lit in the urgent color while either is pending: a fill and a border of it" \
+  "$(grep -c 'background: root.serviceAlert ? Util.alpha(alertColor, 0.30) : "transparent"' Panel.qml),$(grep -cE 'border.color: parent.alertColor' Panel.qml),$(grep -c 'readonly property bool serviceAlert: root.outdated || root.installPending' Panel.qml)" "1,1,1"
 chk "...drawn by the panel, not the kit's selected state, which a theme may fix to its own color" \
   "$(grep -cE '^\s+selected: root.outdated' Panel.qml)" "0"

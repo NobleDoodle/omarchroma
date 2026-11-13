@@ -111,6 +111,11 @@ Panel {
   property string pluginAuthor: ""
   readonly property bool outdated: dependencyPresent && installedVersion !== ""
     && expectedVersion !== "" && root.olderThan(installedVersion, expectedVersion)
+  // The service not installed at all: the same alert as an update, since the
+  // same button clears it. Only once the check has run, so the bar does not
+  // flash an alert while the panel is still finding out.
+  readonly property bool installPending: dependencyChecked && !dependencyPresent
+  readonly property bool serviceAlert: root.outdated || root.installPending
 
   FileView {
     id: manifestFile
@@ -2062,11 +2067,11 @@ Panel {
           // theme may fix to a color of its own.
           readonly property color alertColor: root.bar ? root.bar.urgent : Commons.Color.urgent
           foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
-          background: root.outdated ? Util.alpha(alertColor, 0.30) : "transparent"
+          background: root.serviceAlert ? Util.alpha(alertColor, 0.30) : "transparent"
 
           Rectangle {
             anchors.fill: parent
-            visible: root.outdated
+            visible: root.serviceAlert
             color: "transparent"
             radius: parent.radius
             border.width: 1

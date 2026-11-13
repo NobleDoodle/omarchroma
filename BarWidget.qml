@@ -24,8 +24,10 @@ BarWidget {
   // so the same way: the icon in the urgent color, counting it as one. The
   // panel's Update button, lit in the same color, is what clears it.
   readonly property bool updatePending: panelLoader.item ? panelLoader.item.outdated === true : false
+  // Not installed at all counts as one too, cleared by the panel's Install.
+  readonly property bool installPending: panelLoader.item ? panelLoader.item.installPending === true : false
   readonly property int alertCount: root.barAlert
-    ? root.staleCount + (root.updatePending ? 1 : 0) : 0
+    ? root.staleCount + (root.updatePending || root.installPending ? 1 : 0) : 0
 
   function open() { if (panelLoader.item) panelLoader.item.open() }
   function close() { if (panelLoader.item) panelLoader.item.close() }
@@ -130,8 +132,9 @@ BarWidget {
     tooltipText: root.opened ? "Close Omarchroma"
       : root.alertCount === 0 ? "Open Omarchroma"
       : "Open Omarchroma: "
-        + (root.updatePending ? "1 service update pending" : "")
-        + (root.updatePending && root.staleCount > 0 ? ", and " : "")
+        + (root.installPending ? "1 install pending (press i)"
+            : root.updatePending ? "1 service update pending" : "")
+        + ((root.updatePending || root.installPending) && root.staleCount > 0 ? ", and " : "")
         + (root.staleCount > 0
             ? panelLoader.item.windowsPhrase(root.staleCount) + " to close for the new theme" : "")
     onPressed: function(buttonCode) {

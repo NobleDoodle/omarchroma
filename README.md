@@ -18,7 +18,8 @@ Theme changes and panel actions do not send routine desktop notifications.
 Synchronization errors show at most one notification per desktop session,
 shared across the service, hooks and panel actions. Further errors remain in
 the logs. The bar icon still takes the theme's alert color, with a count,
-while applications are on the previous theme or a service update is waiting.
+while applications are on the previous theme, or the service is waiting to be
+installed or updated (press `i` in the panel).
 Settings (`s`, then `b`) hides that display. The panel list stays either way.
 `--notify` remains accepted for compatibility, but no longer enables routine
 popups.
