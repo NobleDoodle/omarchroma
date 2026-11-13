@@ -2773,6 +2773,11 @@ def window_executable(pid):
 # including the friends list and settings, not just the main one.
 UNTHEMED_CLASSES = {"steam"}
 
+# Window classes that repaint in place when the theme changes, so restarting
+# them changes nothing either. Lower-case, like UNTHEMED_CLASSES. Nautilus,
+# observed on Omarchy taking the new theme and icons while open.
+LIVE_REPAINT_CLASSES = {"org.gnome.nautilus"}
+
 
 def stale_open_windows(since=None):
     """{name: windows open} for apps whose process started before the current
@@ -2809,7 +2814,7 @@ def stale_open_windows(since=None):
         # is already enough: refresh_idle_apps recycles its backend then.
         if pid in portals:
             continue
-        if klass in UNTHEMED_CLASSES:
+        if klass in UNTHEMED_CLASSES or klass.lower() in LIVE_REPAINT_CLASSES:
             continue
         name = app_display_name(title, klass, *process_identity(pid))
         counts[name] = counts.get(name, 0) + 1
@@ -2960,7 +2965,7 @@ def stale_window_groups(since=None):
         pid = record["pid"]
         if pid in portals or window_executable(pid) in reloaded:
             continue
-        if record["class"] in UNTHEMED_CLASSES:
+        if record["class"] in UNTHEMED_CLASSES or record["class"].lower() in LIVE_REPAINT_CLASSES:
             continue
         by_pid.setdefault(pid, []).append(record)
     groups = []

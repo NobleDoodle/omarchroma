@@ -181,13 +181,16 @@ chk("a bus that does not answer reads as a backend not back, not an exception",
 
 # -- the stale-apps report names applications, not a file chooser ----------
 st.open_windows = lambda: [("All Files", "xdg-desktop-portal-gtk", PORTAL_PID),
-                           ("Files", "org.gnome.Nautilus", 2000)]
+                           ("Files", "org.gnome.Nautilus", 2000),
+                           ("Signal", "signal", 2001)]
 st.process_started_at = lambda pid: BEFORE
 st.omarchy_reloaded_executables = lambda: set()
 st.window_executable = lambda pid: "whatever"
 st.connection_pid = lambda name: PORTAL_PID if name == GTK else None
-chk("an open portal dialog is not reported as an app to restart",
-    st.stale_open_windows(since=THEME_SWITCH), {"Nautilus": 1})
+stale = st.stale_open_windows(since=THEME_SWITCH)
+chk("an open portal dialog is not reported as an app to restart", "All Files" in str(stale), False)
+chk("nor Nautilus, which repaints in place", [n for n in stale if "autilus" in n or n == "Files"], [])
+chk("while an app that needs restarting still is", len(stale), 1)
 E
 
 # -- running_binary against real processes, since what /proc reports for a
@@ -228,3 +231,5 @@ finally:
 
 chk("a pid that does not exist has no binary", st.running_binary(2**22 + 7), None)
 E
+chk "Nautilus is also kept out of what Restart All closes" \
+  "$(grep -c 'record\["class"\].lower() in LIVE_REPAINT_CLASSES' "$REPO/lib/hyprchroma-state"),$(grep -c '^LIVE_REPAINT_CLASSES = {"org.gnome.nautilus"}$' "$REPO/lib/hyprchroma-state")" "1,1"
