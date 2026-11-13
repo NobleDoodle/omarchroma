@@ -116,6 +116,70 @@ themes_using_reversal() {
     sed 's|.*/themes/\([^/]*\)/icons.theme|\1|' | sort -u | paste -sd, - | sed 's/,/, /g'
 }
 
+# Each theme still pointing at Omarchroma-Icons after a restore -- its own
+# setting lost with a deleted settings folder -- goes back to Yaru: an overlay
+# Omarchroma made for a stock theme is removed, so the stock theme's own
+# setting applies again; any other theme gets plain Yaru. Then the current
+# theme's setting is staged and handed to GTK, and the generated theme goes.
+icons_fallback() {
+  local themes=$HOME/.config/omarchy/themes file dir slug fixed=0 staged current own
+  for file in "$themes"/*/icons.theme; do
+    [[ -f $file && ! -L $file ]] || continue
+    grep -qx 'Omarchroma-Icons' -- "$file" || continue
+    dir=${file%/icons.theme}; slug=${dir##*/}
+    if [[ -d /usr/share/omarchy/themes/$slug && $(ls -A -- "$dir") == icons.theme ]]; then
+      rm -f -- "$file" && rmdir -- "$dir"
+    else
+      printf 'Yaru\n' > "$file"
+    fi
+    fixed=$((fixed + 1))
+  done
+  staged=$HOME/.local/state/omarchy/current/theme/icons.theme
+  if [[ -f $staged ]] && grep -qx 'Omarchroma-Icons' -- "$staged"; then
+    current=$(cat -- "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)
+    own=$(cat -- "$themes/$current/icons.theme" 2>/dev/null ||
+          cat -- "/usr/share/omarchy/themes/$current/icons.theme" 2>/dev/null || echo Yaru)
+    printf '%s\n' "$own" > "$staged"
+  fi
+  if [[ $(gsettings get org.gnome.desktop.interface icon-theme 2>/dev/null) == "'Omarchroma-Icons'" ]]; then
+    gsettings set org.gnome.desktop.interface icon-theme "$(cat -- "$staged" 2>/dev/null || echo Yaru)" 2>/dev/null
+  fi
+  [[ -L $HOME/.local/share/icons/Omarchroma-Icons ]] && rm -f -- "$HOME/.local/share/icons/Omarchroma-Icons"
+  [[ -d $HOME/.icons/Omarchroma-Icons ]] && rm -rf -- "$HOME/.icons/Omarchroma-Icons"
+  (( fixed )) && note "$fixed themes still pointed at Omarchroma's icons with no record of their own; they use Yaru now."
+  return 0
+}
+
+# Put theming and icons back: from the snapshot, or Omarchy's defaults when
+# the snapshot is gone or asked for. Then the icon fallback, either way.
+restored=no
+run_restore() {
+  local mode=$1
+  if [[ -z $hc ]]; then
+    note "The hyprchroma command is not here, so only the icons can be put back."
+  elif "$hc" restore --"$mode"; then
+    note "Put back."
+  elif [[ $mode == captured ]] && "$hc" restore --stock; then
+    note "The snapshot from before Omarchroma was not there; put back to Omarchy's defaults."
+  else
+    note "Some of it could not be put back; the output above says what."
+  fi
+  icons_fallback
+  restored=yes
+}
+
+# Before anything that theming depends on is removed -- hyprchroma, Reversal,
+# the helpers, the snapshot itself -- theming and icons are put back if that
+# has not happened yet: otherwise apps keep Omarchroma's colors with nothing
+# left to change them, and themes point at icons that are gone.
+ensure_restored() {
+  [[ $restored == yes ]] && return 0
+  note "First, your apps' theming and icons are put back (step 2 was skipped):"
+  note "removing this would leave Omarchroma's colors with nothing to update them,"
+  note "and themes pointing at icons that are gone."
+  run_restore captured
+}
+
 keepalive_pid=""
 run_sudo() {
   sudo "$@" || return $?
@@ -145,8 +209,8 @@ main() {
 Omarchroma uninstall
 
 This takes Omarchroma off this computer, one step at a time. Each step says
-what it changes and asks first; answering no (or pressing return) skips it
-and nothing in it is changed. Nothing is downloaded. Your password is asked
+what it changes and asks first. Return puts your apps' theming and icons back;
+at every later step it means no, and nothing in that step is changed. Nothing is downloaded. Your password is asked
 for only by the steps that remove packages. Ctrl+C stops at any point.
 INTRO
 
@@ -178,33 +242,28 @@ STEP
   fi
 
   # --- put the apps' theming back ----------------------------------------
-  step "Put your apps' theming back"
+  step "Put your apps' theming and icons back"
   cat <<'STEP'
 Omarchroma changed files in your home folder so apps follow your theme. This
-puts them back: GTK and Qt/KDE settings, each theme's icon setting, the
-stylesheets in your browser and Thunderbird profiles, Pear Desktop's and Dark
-Reader's colors, and the Flatpak permissions it added. Only files in your home
-folder are touched.
+puts them back: GTK and Qt/KDE settings, every theme's icons (back to its own
+Yaru), the stylesheets in your browser and Thunderbird profiles, Pear
+Desktop's and Dark Reader's colors, and the Flatpak permissions it added.
+Only files in your home folder are touched.
 
   1) As they were before Omarchroma, from the snapshot it took (recommended)
   2) Omarchy's own defaults, ignoring the snapshot
-  3) Leave them as they are
+  3) Leave them, keeping hyprchroma installed (removing it, Reversal or the
+     settings below still puts them back first)
 STEP
-  if [[ -z $hc ]]; then
-    note "The hyprchroma command is not here, so this cannot be done; skipping."
-  else
-    # Return leaves them, like every other step: putting them back is a
-    # choice to type, not the default.
-    local choice
-    read -r -p "Choice (1, 2 or 3) [3]: " choice
-    case ${choice:-3} in
-      1) "$hc" restore --captured && note "Put back as they were." ||
-           note "The restore did not finish; the output above says where. Later steps still run." ;;
-      2) "$hc" restore --stock && note "Put back to Omarchy's defaults." ||
-           note "The restore did not finish; the output above says where. Later steps still run." ;;
-      *) note "Skipped; apps keep their current theming." ;;
-    esac
-  fi
+  # Return puts them back: an uninstall that leaves Omarchroma's colors and
+  # icons behind, with nothing left to update them, is a broken desktop.
+  local choice
+  read -r -p "Choice (1, 2 or 3) [1]: " choice
+  case ${choice:-1} in
+    2) run_restore stock ;;
+    3) note "Left as they are." ;;
+    *) run_restore captured ;;
+  esac
 
   # --- theme hooks -------------------------------------------------------
   if (( ${#found_hooks[@]} )); then
@@ -229,6 +288,7 @@ then lists what it removes and asks once more:
   sudo pacman -R hyprchroma
 STEP
     if ask "Remove the hyprchroma package"; then
+      ensure_restored
       run_sudo pacman -R hyprchroma || note "pacman did not finish; you can run the command above later."
     else
       note "Skipped; the package stays installed."
@@ -248,6 +308,7 @@ STEP
     using=$(themes_using_reversal)
     [[ -n $using ]] && note "These themes name Reversal as their own icons and would fall back to another set: $using"
     if ask "Remove the Reversal icons"; then
+      ensure_restored
       run_sudo pacman -R "$reversal_package" || note "pacman did not finish; you can run the command above later."
     else
       note "Skipped; Reversal stays installed."
@@ -275,6 +336,7 @@ STEP
     say "Removing them needs your password (sudo):"
     say "  sudo pacman -R ${helpers[*]}"
     if ask "Remove them"; then
+      ensure_restored
       run_sudo pacman -R "${helpers[@]}" || note "pacman did not finish; you can run the command above later."
     else
       note "Skipped; they stay installed."
@@ -292,6 +354,7 @@ STEP
     say "Keep them to reinstall later with the same choices, or to put your apps'"
     say "theming back later. Deleted, they cannot be brought back."
     if ask "Delete them"; then
+      ensure_restored
       rm -rf -- "${leftovers[@]}" && note "Deleted." || note "Some could not be deleted."
     else
       note "Skipped; they stay."

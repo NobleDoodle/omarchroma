@@ -90,7 +90,7 @@ count_left() {
 
 stage; rm -f "$work/calls"
 out=$(run '\n\n\n\n\n\n')
-chk "return at the restore step runs no restore" "$(calls)" ""
+chk "return at the restore step puts theming back, from the snapshot" "$(calls)" "restore --captured"
 chk "holding return removes nothing" \
   "$(count_left),$([[ -f $H/.local/state/hyprchroma/settings.json ]] && echo kept)" "2,kept"
 chk "it says up front that every step asks, and nothing is downloaded" \
@@ -98,9 +98,9 @@ chk "it says up front that every step asks, and nothing is downloaded" \
 chk "it lists what it found" "$(grep -c 'Theme hooks             2 of 2' <<<"$out")" "1"
 chk "the restore step names what it puts back" \
   "$(grep -c 'stylesheets in your browser and Thunderbird profiles' <<<"$out")" "1"
-chk "return at the restore step leaves theming as it is" \
-  "$(grep -c 'Choice (1, 2 or 3) \[3\]' "$U"),$(grep -c 'case ${choice:-3} in' "$U")" "1,1"
-chk "a skipped step says so" "$(grep -c 'Skipped' <<<"$out")" "3"
+chk "return at the restore step means 1" \
+  "$(grep -c 'Choice (1, 2 or 3) \[1\]' "$U"),$(grep -c 'case ${choice:-1} in' "$U")" "1,1"
+chk "a skipped step says so" "$(grep -c 'Skipped' <<<"$out")" "2"
 chk "and the panel is left alone when it is not in this home" \
   "$(grep -c 'Not installed in your Omarchy plugins' <<<"$out")" "1"
 
@@ -111,9 +111,11 @@ stage; rm -f "$work/calls"
 out=$(run '2\n\n\n\n')
 chk "2 puts back Omarchy's defaults" "$(calls)" "restore --stock"
 
-stage
+stage; rm -f "$work/calls"
 # 3: leave theming as it is. y: remove the hooks. y: delete settings.
 out=$(run '3\ny\ny\n\n')
+chk "deleting the settings after leaving theming still puts it back first" \
+  "$(calls),$(grep -c 'step 2 was skipped' <<<"$out")" "restore --captured,1"
 chk "yes removes exactly our two hooks, and no other" \
   "$(count_left),$([[ -f $H/.config/omarchy/hooks/theme-set.d/someone-else ]] && echo kept)" "0,kept"
 chk "yes deletes the settings and snapshots" \
@@ -126,3 +128,27 @@ printf '#!/bin/sh\nmy own hook\n' > "$H/.config/omarchy/hooks/font-set.d/hyprchr
 out=$(run '3\ny\n\n\n')
 chk "a hook named hyprchroma that is not ours is left" \
   "$([[ -f $H/.config/omarchy/hooks/font-set.d/hyprchroma ]] && echo kept),$(grep -c 'Theme hooks             1 of 2' <<<"$out")" "kept,1"
+
+chk "removing hyprchroma, Reversal or the helpers puts theming back first too" \
+  "$(grep -A1 -E 'if ask "(Remove the hyprchroma package|Remove the Reversal icons|Remove them|Delete them)"' "$U" | grep -c '^      ensure_restored$')" "4"
+chk "hyprchroma restore runs every part even when one fails" \
+  "$(awk '/^  restore\)/,/^    ;;/' "$REPO/bin/hyprchroma" | grep -c '|| exit \$?'),$(awk '/^  restore\)/,/^    ;;/' "$REPO/bin/hyprchroma" | grep -c '|| restore_status=\$?')" "0,3"
+
+# --- icons left pointing at Omarchroma-Icons with no record go back to Yaru --
+stage; rm -f "$work/calls"
+T=$H/.config/omarchy/themes
+stock_slug=$(ls /usr/share/omarchy/themes 2>/dev/null | head -1)
+mkdir -p "$T/mine" "$T/$stock_slug" "$H/.local/state/omarchy/current/theme" "$H/.icons/Omarchroma-Icons" "$H/.local/share/icons"
+printf 'Omarchroma-Icons\n' > "$T/mine/icons.theme"; printf 'x\n' > "$T/mine/colors.toml"
+printf 'Omarchroma-Icons\n' > "$T/$stock_slug/icons.theme"
+printf 'Omarchroma-Icons\n' > "$H/.local/state/omarchy/current/theme/icons.theme"
+printf 'mine\n' > "$H/.local/state/omarchy/current/theme.name"
+ln -s ../../../.icons/Omarchroma-Icons "$H/.local/share/icons/Omarchroma-Icons"
+out=$(run '\n\n\n\n\n')
+chk "a theme of your own goes back to Yaru" "$(cat "$T/mine/icons.theme"),$([[ -f $T/mine/colors.toml ]] && echo kept)" "Yaru,kept"
+chk "an overlay made for a stock theme is removed, so the stock setting applies" \
+  "$([[ -n $stock_slug && ! -e $T/$stock_slug ]] && echo gone)" "gone"
+chk "the current theme's setting is staged again" "$(cat "$H/.local/state/omarchy/current/theme/icons.theme")" "Yaru"
+chk "and the generated icon theme is gone" \
+  "$([[ -e $H/.icons/Omarchroma-Icons || -L $H/.local/share/icons/Omarchroma-Icons ]] && echo left || echo gone)" "gone"
+chk "it says so" "$(grep -c 'they use Yaru now' <<<"$out")" "1"

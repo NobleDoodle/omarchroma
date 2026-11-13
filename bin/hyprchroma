@@ -294,16 +294,20 @@ case "${1:-}" in
         *) echo "hyprchroma restore: unknown option: $argument" >&2; exit 2 ;;
       esac
     done
+    # Every part runs even when one fails, and the failure is reported at the
+    # end: Dark Reader missing python-plyvel once stopped this before GTK and
+    # the rest were put back, on an uninstall that then removed the service.
+    restore_status=0
     "$HYPRCHROMA_LIB/hyprchroma-dark-reader" --restore --mode="$mode" \
-      --state-dir "$STATE_DIR" --status "$STATUS_FILE" || exit $?
+      --state-dir "$STATE_DIR" --status "$STATUS_FILE" || restore_status=$?
     # Omarchy has no icon theming of its own to go back to, so stock and
     # captured both mean each theme's own icons.theme, as it was.
     if [[ -d $STATE_DIR/icons ]]; then
-      "$HYPRCHROMA_LIB/hyprchroma-icons" revert || exit $?
+      "$HYPRCHROMA_LIB/hyprchroma-icons" revert || restore_status=$?
     fi
     "$HYPRCHROMA_LIB/hyprchroma-state" \
-      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restore --mode "$mode"
-    exit $?
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" restore --mode "$mode" || restore_status=$?
+    exit $restore_status
     ;;
   framework)
     # A framework the user does not want is not the same as one switched off.

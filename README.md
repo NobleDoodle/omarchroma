@@ -131,8 +131,8 @@ With the bar widget:
   then points at one icon theme, `Omarchroma-Icons`, that inherits the Reversal or Yaru
   color nearest the theme's accent (its dark variant on a dark theme). Folders
   take the theme's sidebar highlight, accent or window border, or the color of
-  the Yaru variant the theme itself names (Yaru-blue, Yaru-sage), as you choose,
-  and change with every theme switch. Open GTK apps repaint their icons at once,
+  the Yaru variant the theme itself names (Yaru-blue, Yaru-sage), as you choose
+  (the accent to start with), and change with every theme switch. Open GTK apps repaint their icons at once,
   and running KDE apps are told to reload theirs. App icons Reversal lacks can be put on its rounded plate (covers);
   a newly installed app gets its cover at the next window event. Yaru ships its
   folders as images, so Omarchroma traces them to vectors once and recolors
@@ -333,11 +333,12 @@ instead.
 
 Open the panel, press `s` for Settings, then `u` (or click **Uninstall
 Omarchroma...**). A terminal walks through each step, says what it changes,
-and asks first; holding return skips everything:
+and asks first. Return at step 2 puts your apps' theming and icons back; at
+every other step it means no:
 
 1. Stop and disable `hyprchromad.service`.
-2. Put your apps' theming back, from the snapshot taken before Omarchroma or
-   to Omarchy's defaults.
+2. Put your apps' theming and icons back, from the snapshot taken before
+   Omarchroma or to Omarchy's defaults. Every theme returns to its own Yaru.
 3. Remove the two theme hooks it added.
 4. Remove the `hyprchroma` package (sudo).
 5. Remove Reversal, if setup installed it (sudo).
@@ -345,7 +346,9 @@ and asks first; holding return skips everything:
 7. Delete Omarchroma's settings and snapshots.
 8. Remove the panel itself.
 
-Only steps that apply are shown. By hand, the same thing:
+Saying yes to 4 to 7 after leaving step 2 puts theming and icons back first,
+so nothing is left pointing at what was removed. Only steps that apply are
+shown. By hand, the same thing:
 
 ```bash
 hyprchroma restore --stock        # Do this first (or use --captured)
