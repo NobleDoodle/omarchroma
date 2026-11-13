@@ -210,6 +210,8 @@ Panel {
       root.dependencyChecked = true
       if (root.dependencyPresent) {
         daemonProcess.running = true
+        // Setup may have just made the state folder; read what it wrote.
+        root.reloadStateFiles()
         // Asked here rather than when the panel opens: the stale list comes
         // from the same binary, so it can only be asked once presence is
         // settled, and presence is settled asynchronously.
@@ -718,7 +720,8 @@ Panel {
     path: root.stateDir + "/icons/status.json"
     printErrors: false
     watchChanges: true
-    onLoaded: root.readIconStatus(text())
+    onLoadFailed: root.iconStatusLoaded = false
+    onLoaded: { root.iconStatusLoaded = true; root.readIconStatus(text()) }
     onFileChanged: reload()
   }
 
@@ -961,6 +964,7 @@ Panel {
     printErrors: false
     watchChanges: true
     onLoaded: {
+      root.settingsLoaded = true
       try {
         var parsed = JSON.parse(text())
         var frameworks = parsed.frameworks || {}
@@ -986,6 +990,7 @@ Panel {
       }
     }
     onLoadFailed: {
+      root.settingsLoaded = false
       root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false, thunderbird: false, icons: false }
       root.restartMode = "off"
     }
@@ -1001,7 +1006,9 @@ Panel {
     path: root.statusPath
     printErrors: false
     watchChanges: true
+    onLoadFailed: root.statusLoaded = false
     onLoaded: {
+      root.statusLoaded = true
       try {
         var status = JSON.parse(text())
         var names = status.staleApps
@@ -1016,6 +1023,31 @@ Panel {
       }
     }
     onFileChanged: reload()
+  }
+
+  // A file whose folder does not exist yet is never watched: the folder is
+  // made later -- by setup, on a first install or after Uninstall removed
+  // it -- and the file appears without a word. Measured on Quickshell: a
+  // missing file in an existing folder is noticed when it is created; one in
+  // a missing folder is not, until reload() loads it, after which changes
+  // are watched as usual. So while the service is here and a file has not
+  // loaded, it is asked again every two seconds; once all have, this stops.
+  property bool settingsLoaded: false
+  property bool statusLoaded: false
+  property bool iconStatusLoaded: false
+  function reloadStateFiles() {
+    if (!root.settingsLoaded) settingsFile.reload()
+    if (!root.statusLoaded) statusFile.reload()
+    if (!root.iconStatusLoaded && root.targetEnabled("icons")) iconsStatusFile.reload()
+  }
+  Timer {
+    id: stateFileRetry
+    interval: 2000
+    repeat: true
+    running: root.dependencyPresent
+      && (!root.settingsLoaded || !root.statusLoaded
+          || (!root.iconStatusLoaded && root.targetEnabled("icons")))
+    onTriggered: root.reloadStateFiles()
   }
 
   KeyboardPanel {

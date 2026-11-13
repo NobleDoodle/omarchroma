@@ -710,6 +710,18 @@ fi
 hyprchroma --restart-mode="$want_restart" >/dev/null ||
   note "Could not save the restart setting; it can be set in the panel: press s."
 
+# Then one full, forced sync of everything switched on -- what r in the panel
+# runs. Each choice above synchronizes only its own framework, yet records the
+# whole palette as synchronized; the service's own sync on the way up then
+# found nothing to do, and on a fresh install GTK and Qt/KDE stayed unwritten
+# until r was pressed by hand.
+say "Synchronizing every framework you switched on..."
+if hyprchroma --target=all --force --quiet; then
+  note "Done: your apps follow the current theme."
+else
+  note "The first sync did not finish; press r in the panel to run it again."
+fi
+
 # Restarted, not only started. "enable --now" starts the service only when it
 # is not already running -- on an update it was, so it went on executing the
 # version it had loaded, and pacman does not restart a running service either:

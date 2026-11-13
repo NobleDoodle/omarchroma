@@ -170,11 +170,22 @@ chk "before the build even starts" \
 chk "where it is installed is read from the helper, by its own path" \
   "$(grep -c '"\$here/lib/hyprchroma-dark-reader" --info' $S)" "1"
 
+# --- a full sync once the choices are applied --------------------------------
+# Each choice syncs only its own framework but records the palette as synced,
+# so the service's startup sync skipped GTK and Qt/KDE on a fresh install.
+chk "setup runs one full, forced sync after the last choice is applied" \
+  "$(grep -c '^if hyprchroma --target=all --force --quiet; then$' $S),$(awk '/hyprchroma --restart-mode=/{a=NR} /^if hyprchroma --target=all --force --quiet/{b=NR} /^systemctl --user restart hyprchromad.service/{c=NR} END{print (a < b && b < c) ? "in order" : "out of order"}' $S)" "1,in order"
+
 # --- every framework at once ------------------------------------------------
+# Reversal made absent, so whether this machine has it does not decide what is
+# offered. The probe sits in the checkout so it finds lib/ and WHATSNEW.md.
 all_home=$(mktemp -d)
+all_probe=$(mktemp -p bin .all-probe.XXXXXX)
+sed -e 's|pacman -Qq "$REVERSAL_AUR"|false|g' -e 's|-f /usr/share/icons/Reversal/index.theme|-f /nonexistent|' $S > "$all_probe"
+chmod +x "$all_probe"
 all_out=$(export HOME="$all_home"
-          printf '\ny\nno\nno\nno\nno\nno\nno\n' | timeout 30 "./$S" 2>&1)
-rm -rf "$all_home"
+          printf '\ny\nno\nno\nno\nno\nno\nno\n' | timeout 30 "./$all_probe" 2>&1)
+rm -rf "$all_home" "$all_probe"
 chk "yes to every framework asks none of them one by one" \
   "$(grep -cE 'Include (Thunderbird|Pear Desktop|Dark Reader|Flatpak apps|additional browsers|icons)' <<<"$all_out")" "0"
 chk "...and says what it switched on" "$(grep -c '^Switching on:' <<<"$all_out")" "1"

@@ -227,3 +227,16 @@ chk "the Install and Update button is lit in the urgent color while either is pe
   "$(grep -c 'background: root.serviceAlert ? Util.alpha(alertColor, 0.30) : "transparent"' Panel.qml),$(grep -cE 'border.color: parent.alertColor' Panel.qml),$(grep -c 'readonly property bool serviceAlert: root.outdated || root.installPending' Panel.qml)" "1,1,1"
 chk "...drawn by the panel, not the kit's selected state, which a theme may fix to its own color" \
   "$(grep -cE '^\s+selected: root.outdated' Panel.qml)" "0"
+
+# -- state files that appear after the panel loaded -----------------------------
+# After Uninstall removed ~/.local/state/hyprchroma, a reinstalled panel loads
+# before setup makes the folder again; Quickshell never watches a file in a
+# folder that does not exist, so Icons and the other opt-in frameworks showed
+# as off until the shell restarted. Each file now records whether it loaded,
+# and a timer asks again until it has.
+chk "each state file records whether it loaded" \
+  "$(grep -cE 'root\.(settingsLoaded|statusLoaded|iconStatusLoaded) = (true|false)' Panel.qml)" "6"
+chk "a timer retries while the service is here and a file has not loaded" \
+  "$(awk '/id: stateFileRetry/,/^  }/' Panel.qml | grep -cE 'running: root.dependencyPresent|!root.settingsLoaded \|\| !root.statusLoaded|onTriggered: root.reloadStateFiles\(\)')" "3"
+chk "...and they are read at once when the service is found" \
+  "$(awk '/id: versionProcess/,/^  }/' Panel.qml | grep -c 'root.reloadStateFiles()')" "1"
