@@ -509,7 +509,7 @@ explain=()
 
 if ! pacman -Qq adw-gtk-theme &>/dev/null; then
   missing+=(adw-gtk-theme)
-  explain+=("adw-gtk-theme  GTK 3 apps follow the theme. Without it they keep the system default.")
+  explain+=("adw-gtk-theme  GTK 3 apps follow the theme. Not part of Omarchy; without it they keep the default look.")
 fi
 if [[ $want_icons == yes ]]; then
   if ! pacman -Qq python-pillow &>/dev/null; then

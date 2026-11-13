@@ -61,11 +61,20 @@ cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
 hooks=("$HOME/.config/omarchy/hooks/theme-set.d/hyprchroma"
        "$HOME/.config/omarchy/hooks/font-set.d/hyprchroma")
 reversal_package=reversal-icon-theme-git
-# What setup may have installed for the optional frameworks. Only offered when
-# it was installed on its own (not pulled in by something else), nothing needs
-# it, and Omarchy does not ship it -- adw-gtk-theme and yaru-icon-theme are
-# part of Omarchy and are never offered here.
-helper_packages=(python-pillow python-numpy python-plyvel)
+# What setup may have installed for Omarchroma, and what each was for. Only
+# offered when it was installed on its own (not pulled in by something else),
+# nothing needs it, and Omarchy does not ship it. adw-gtk-theme is not
+# Omarchy's -- Omarchy sets plain Adwaita -- so it is offered like the rest;
+# yaru-icon-theme and jq are Omarchy's and never are.
+helper_packages=(adw-gtk-theme python-pillow python-numpy python-plyvel)
+helper_purpose() {
+  case $1 in
+    adw-gtk-theme) printf '%s' "GTK 3 apps' themed look (Omarchy itself uses plain Adwaita)" ;;
+    python-pillow) printf '%s' "Icons: app covers and Yaru's folders" ;;
+    python-numpy)  printf '%s' "Icons: tracing Yaru's folders" ;;
+    python-plyvel) printf '%s' "Dark Reader in Chromium-based browsers" ;;
+  esac
+}
 
 # The installed command, or this checkout's own copy when the package is
 # already gone: the checkout carries the same helpers, so a restore still works.
@@ -248,9 +257,22 @@ STEP
   # --- helper packages ---------------------------------------------------
   if (( ${#helpers[@]} )); then
     step "Remove helper packages"
-    say "Setup may have installed these for the optional frameworks. Nothing else"
-    say "installed needs them, and Omarchy does not ship them, but something you"
-    say "run by hand might. Removing them needs your password (sudo):"
+    say "Setup may have installed these for Omarchroma. Nothing else installed"
+    say "needs them, and Omarchy does not ship them, but something you run by hand"
+    say "might:"
+    for package in "${helpers[@]}"; do
+      printf '  %-15s %s\n' "$package" "$(helper_purpose "$package")"
+    done
+    # Asked now, after the restore step: if GTK still names adw-gtk3, the
+    # theming was not put back, and removing the theme leaves GTK 3 apps on
+    # the plain default.
+    local gtk_now=""
+    gtk_now=$(gsettings get org.gnome.desktop.interface gtk-theme 2>/dev/null | tr -d "'")
+    if [[ " ${helpers[*]} " == *" adw-gtk-theme "* && $gtk_now == adw-gtk3* ]]; then
+      note "GTK is still set to $gtk_now, so the theming was not put back above;"
+      note "without adw-gtk-theme, GTK 3 apps fall back to the plain default look."
+    fi
+    say "Removing them needs your password (sudo):"
     say "  sudo pacman -R ${helpers[*]}"
     if ask "Remove them"; then
       run_sudo pacman -R "${helpers[@]}" || note "pacman did not finish; you can run the command above later."

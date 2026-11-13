@@ -33,7 +33,11 @@ chk "sudo only ever runs pacman -R" \
   "$(code "$U" | grep -oE 'run_sudo [a-z-]+ [-A-Za-z]+' | sort -u | paste -sd,)" "run_sudo pacman -R"
 chk "nothing is downloaded" "$(code "$U" | grep -cE 'curl|wget|git clone|pkg aur|pacman -S')" "0"
 chk "Omarchy's own packages are never offered" \
-  "$(grep '^helper_packages=' "$U" | grep -cE 'adw-gtk-theme|yaru-icon-theme|jq')" "0"
+  "$(grep '^helper_packages=' "$U" | grep -cE 'yaru-icon-theme|jq')" "0"
+chk "adw-gtk-theme is, since Omarchy does not ship it, and with what it was for" \
+  "$(grep '^helper_packages=' "$U" | grep -c 'adw-gtk-theme'),$(grep -cxF -- adw-gtk-theme /usr/share/omarchy/install/*.packages 2>/dev/null | awk -F: '{s+=$NF} END{print s+0}'),$(grep -c '    adw-gtk-theme) printf' "$U")" "1,0,1"
+chk "...with a warning when GTK still uses it" \
+  "$(grep -c 'gtk_now == adw-gtk3\*' "$U")" "1"
 chk "a helper is offered only if explicit, unneeded and not Omarchy's" \
   "$(sed -n '/^removable_helper()/,/^}$/p' "$U" | grep -cE "Explicitly installed|Required By \*: None|omarchy/install/\*\.packages")" "3"
 chk "the plugin is removed through Omarchy, after our own confirmation" \
