@@ -159,3 +159,8 @@ chk "and the panel does too" "$(
     grep -qx "$called" <<<"$accepted" || missing=$((missing + 1))
   done
   echo $missing)" "0"
+
+# The marketplace refuses a community manifest whose description is over 500
+# characters (its manifestFieldLimits); 4.0.0's first one was 513.
+chk "the manifest description fits the marketplace's 500-character limit" \
+  "$(jq -r '(.description | length) <= 500 and (.name | length) <= 120 and (.author | length) <= 120' manifest.json)" "true"
