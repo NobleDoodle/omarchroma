@@ -26,7 +26,7 @@ chk "the probe's substitution actually targets the real check" \
   "$(grep -c 'for pkg in jq python' $S)" "1"
 base_out=$(timeout 5 "$base_probe" </dev/null 2>&1)
 chk "a missing base requirement is caught before the intro banner ever prints" \
-  "$(grep -c 'Hyprchroma setup' <<<"$base_out")" "0"
+  "$(grep -c 'Omarchroma setup' <<<"$base_out")" "0"
 chk "it names what is missing and how to get it" \
   "$(grep -c 'sudo pacman -S --needed definitely-not-jq definitely-not-python' <<<"$base_out")" "1"
 # No stdin at all (</dev/null above): "Install them now" reads EOF, which
@@ -42,7 +42,7 @@ chk "declining exits non-zero rather than continuing" \
 # unmodified script never reaches this section at all on the machine running
 # it -- confirmed against $S itself rather than a probe.
 chk "the real script finds nothing missing on this machine" \
-  "$(printf 'n\nn\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
+  "$(printf '\nn\nn\nn\nno\n' | timeout 30 ./$S 2>&1 | grep -c 'Before anything else')" "0"
 
 # --- sudo's own credential cache is kept warm, not left to expire cold ----
 # A live session on this exact hardware showed a cold prompt -- one that
@@ -71,7 +71,7 @@ chk "the keep-alive is torn down on exit alongside the build directory" \
   "$(grep -c 'kill .\$keepalive_pid. 2>/dev/null' $S)" "1"
 
 # --- nothing is built without the consent we had before --------------------
-out=$(printf 'n\nn\nn\nno\n' | timeout 30 ./$S 2>&1)
+out=$(printf '\nn\nn\nn\nno\n' | timeout 30 ./$S 2>&1)
 chk "it asks for the exact acknowledgement" "$(grep -c 'Type "I understand" to continue' <<<"$out")" "1"
 chk "a wrong answer cancels" "$(grep -c 'Setup cancelled; nothing was changed' <<<"$out")" "1"
 # The consent text used to open straight into "built from source and
@@ -131,7 +131,7 @@ chmod +x "$probe"
 # n Thunderbird, n Pear, y Dark Reader. The next n declines whatever follows
 # (Flatpak, when it is installed here) so the Dark Reader dependency is the
 # one this run is about.
-want=$(printf 'n\nn\nn\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
+want=$(printf '\nn\nn\nn\ny\nn\nno\n' | timeout 30 "$probe" 2>&1)
 chk "a missing dependency is named" "$(grep -c 'These are missing' <<<"$want")" "1"
 chk "with what it is for" "$(grep -c 'GTK 3 apps follow the theme' <<<"$want")" "1"
 chk "and the command to get it" "$(grep -c 'sudo pacman -S --needed' <<<"$want")" "1"
@@ -139,7 +139,7 @@ chk "declining leaves it uninstalled and says so" \
   "$(grep -c 'installs and runs without them' <<<"$want")" "1"
 
 # Dark Reader's dependency is only relevant if Dark Reader was wanted.
-skip=$(printf 'n\nn\nn\nno\n' | timeout 30 "$probe" 2>&1)
+skip=$(printf '\nn\nn\nn\nno\n' | timeout 30 "$probe" 2>&1)
 # The overview before the first question names it either way; what matters is
 # the list of what is missing and the command to get it.
 chk "the Dark Reader dependency is not raised when it was declined" \
@@ -162,7 +162,7 @@ chk "the check happens right where the question is answered, not after the build
 # browser happens to be this machine's actual default.
 dr_home=$(mktemp -d); trap 'rm -rf "$dr_home"' EXIT
 dr_out=$(export HOME="$dr_home"
-         printf 'n\nn\nn\ny\nno\n' | timeout 30 "./$S" 2>&1)
+         printf '\nn\nn\nn\ny\nno\n' | timeout 30 "./$S" 2>&1)
 chk "the store links appear live, at the point Dark Reader is chosen" \
   "$(grep -c 'Chrome Web Store' <<<"$dr_out")" "1"
 chk "before the build even starts" \
@@ -173,7 +173,7 @@ chk "where it is installed is read from the helper, by its own path" \
 # --- every framework at once ------------------------------------------------
 all_home=$(mktemp -d)
 all_out=$(export HOME="$all_home"
-          printf 'y\nno\nno\nno\nno\nno\nno\n' | timeout 30 "./$S" 2>&1)
+          printf '\ny\nno\nno\nno\nno\nno\nno\n' | timeout 30 "./$S" 2>&1)
 rm -rf "$all_home"
 chk "yes to every framework asks none of them one by one" \
   "$(grep -cE 'Include (Thunderbird|Pear Desktop|Dark Reader|Flatpak apps|additional browsers|icons)' <<<"$all_out")" "0"
@@ -195,7 +195,7 @@ pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
 # before the build. Answering yes to the Pear install offer would really try
 # to run "omarchy pkg aur add" against this machine.
 pear_out=$(export HOME="$pear_home"
-           printf 'n\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
+           printf '\nn\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
 chk "a missing, wanted Pear Desktop is named, with why, before the question" \
   "$(grep -c 'you included Pear Desktop, but the app itself is not' <<<"$pear_out")" "1"
 chk "with what it downloads and that sudo comes first" \
@@ -230,8 +230,8 @@ chk "the restart command is never executed automatically" \
 
 # --- the panel hands off to it -------------------------------------------
 chk "the panel runs the setup script" "$(grep -c 'bin/hyprchroma-setup' Panel.qml)" "1"
-chk "in a terminal the user can see (Install and Uninstall)" \
-  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "2"
+chk "in a terminal the user can see (Install, Uninstall, Reversal)" \
+  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "3"
 # The panel's comment mentions makepkg to explain why a terminal is needed;
 # what it must not contain is a build command.
 chk "the panel embeds no build command of its own" \
@@ -288,3 +288,32 @@ chk "the choice is applied after the build" \
   "$(awk '/makepkg -si --needed/{seen=1} /hyprchroma --restart-mode="\$want_restart"/{print (seen?"after":"before")}' $S)" "after"
 chk "the closing hint points at Settings" \
   "$(grep -c 'press s for Settings, then its number' $S)" "1"
+
+# --- the first screen fits Omarchy's floating terminal ------------------------
+# 875x600 shows about 31 rows; the presentation wrapper's logo takes 13 of
+# them (a blank line, the logo, two blank lines). Everything up to and
+# including the proceed question must fit in what is left, with a row to
+# spare, and nothing may wrap: 80 columns at most.
+logo_rows=$(( $(wc -l < "${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt" 2>/dev/null || echo 10) + 3 ))
+fit_home=$(mktemp -d); trap 'rm -rf "$fit_home"' EXIT
+first=$( ( unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+           export HOME=$fit_home
+           printf 'n\n' | timeout 30 ./$S 2>&1 ) | sed 's/\x1b\[[0-9;]*m//g')
+first_rows=$(sed '/^Nothing was changed\.$/,$d' <<<"$first" | wc -l)
+chk "the first screen shows the intro, what is new, and the question, without scrolling" \
+  "$(( logo_rows + first_rows + 1 <= 30 )),$(grep -c '^Omarchroma setup$' <<<"$first"),$(grep -c "^What's new in" <<<"$first")" "1,1,1"
+chk "...and no line on it wraps" "$(awk 'length > 80' <<<"$first" | wc -l)" "0"
+chk "the question is the proceed question, and no stops there" \
+  "$(grep -c 'ask "Would you like to proceed with the install/update?" yes' $S),$(grep -c '^Nothing was changed\.$' <<<"$first"),$(grep -c '^Frameworks$' <<<"$first")" "1,1,0"
+chk "WHATSNEW.md stays short: one line per item" \
+  "$(sed '/^# /d; /^$/d' WHATSNEW.md | wc -l | awk '{print ($1 <= 10)}'),$(awk 'length > 80' WHATSNEW.md | wc -l)" "1,0"
+# The next block starts on a cleared screen, and fits it too.
+second=$( ( unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+            export HOME=$fit_home
+            printf '\nn\nn\nn\nn\nn\nn\nn\nn\nno\n' | timeout 30 ./$S 2>&1 ) |
+          awk 'BEGIN{RS="\033\\[H\033\\[2J"} NR==2' | sed 's/\x1b\[[0-9;]*m//g')
+second_rows=$(awk '/^Additional Apps$/{exit} {print}' <<<"$second" | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' | wc -l)
+chk "the frameworks block starts at the top and fits, with its question" \
+  "$(grep -c '^Frameworks$' <<<"$second"),$(( second_rows + 1 <= 30 && second_rows > 10 ))" "1,1"
+chk "...one line per framework, none wrapping" \
+  "$(awk '/^Additional Apps$/{exit} length > 80' <<<"$second" | wc -l)" "0"

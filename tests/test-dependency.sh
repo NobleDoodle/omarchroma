@@ -115,14 +115,14 @@ chk "authenticating is sudo -v, through the keepalive" \
   "$(grep -A3 '^authenticate_for()' bin/hyprchroma-setup | grep -c 'run_sudo -v')" "1"
 chk "an AUR install is checked with pacman afterwards" \
   "$(grep -A4 '^aur_install()' bin/hyprchroma-setup | grep -c 'pacman -Qq "\$package"')" "1"
-# Install and Uninstall: both in a terminal the user can see.
+# Install, Uninstall and the Reversal install: all in a terminal the user can see.
 chk "it runs in a terminal the user can see" \
-  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "2"
-# Five: this one, the uninstaller's, the Escape handler that has always been
-# there, the restart, which closes the panel out of the way of the windows it
-# reopens, and Help, which hands over to the browser.
+  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "3"
+# Six: this one, the uninstaller's, the Reversal install's, the Escape
+# handler that has always been there, the restart, which closes the panel out
+# of the way of the windows it reopens, and Help, which hands over to the browser.
 chk "the panel closes before the terminal opens" \
-  "$(countcode 'root.close\(\)' Panel.qml)" "5"
+  "$(countcode 'root.close\(\)' Panel.qml)" "6"
 chk "the service is enabled after building" \
   "$(grep -c '^systemctl --user enable hyprchromad.service' bin/hyprchroma-setup)" "1"
 # Restarted, so an update runs at once: "enable --now" left a running service

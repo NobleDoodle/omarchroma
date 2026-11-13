@@ -32,7 +32,7 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 ```
 
 Open the panel and press **i**. A setup terminal shows what is new in this
-version, describes each framework, and asks whether to enable every optional
+version and asks whether to proceed, then describes each framework, and asks whether to enable every optional
 framework at once or choose them one by one, then whether to restart apps at
 theme change, and verifies the dependencies your choices need. Every download
 or install says what it fetches and why before it asks, and sudo asks for your
@@ -90,7 +90,7 @@ With the bar widget:
 | `8`, `9` (while it is open) | Thunderbird, then Pear Desktop (YouTube Music) |
 | `i` (in Icons) | Switch Icons on or off |
 | `1` – `4` (in Icons) | Folder color: sidebar highlight, accent, window border, the theme's Yaru color |
-| `r`, `y` (in Icons) | Icon set: Reversal, Yaru |
+| `r`, `y` (in Icons) | Icon set: Reversal, Yaru. With Reversal not installed, `r` offers to install it |
 | `c` (in Icons) | Covers for app icons Reversal lacks |
 | `a` (in Icons) | Apply again |
 | `r` | Refresh every enabled framework |
@@ -237,7 +237,7 @@ stops and changes nothing.
 | Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
 | `yaru-icon-theme` | Icons with Yaru | Ships with Omarchy |
-| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) | Icons with Reversal | Setup installs it from the AUR, once its recipe matches the reviewed one |
+| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) | Icons with Reversal, the default pack | Setup offers it from the AUR (or later: Icons, then `r`), once its recipe matches the reviewed one; without it, Icons uses Yaru |
 | `python-pillow` | Icons: app covers and Yaru folders | Setup offers to install it |
 | `python-numpy` | Icons: Yaru folders | Setup offers to install it with Yaru |
 | Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |

@@ -223,7 +223,41 @@ rm -rf "$SHARE"
 # --- setup offers Reversal whenever Icons is included -------------------------
 U=$REPO/bin/hyprchroma-setup
 chk "setup offers Reversal whichever set is picked, unless its AUR package is there" \
-  "$(grep -c '^if \[\[ $want_icons == yes \]\] && ! pacman -Qq "$REVERSAL_AUR" &>/dev/null; then$' "$U")" "1"
+  "$(grep -A1 '^if \[\[ $want_icons == yes \]\]; then$' "$U" | grep -c '^  offer_reversal$'),$(sed -n '/^offer_reversal()/,/^}$/p' "$U" | grep -c 'if pacman -Qq "$REVERSAL_AUR"')" "1,1"
+chk "...ahead of the dependency check, which then sees the set really used" \
+  "$(awk '/^  offer_reversal$/{a=NR} /^head2 "Dependencies"/{b=NR} END{print (a && b && a < b) ? "first" : "after"}' "$U")" "first"
+chk "without Reversal, Icons uses Yaru" \
+  "$(grep -A3 '^  offer_reversal$' "$U" | grep -c 'icon_set=yaru')" "1"
+chk "the why comes before the question" \
+  "$(sed -n '/^offer_reversal()/,/^}$/p' "$U" | awk '/Why this is asked/{w=NR} /ask "Download and install Reversal/{q=NR} END{print (w && q && w < q) ? "first" : "after"}')" "first"
+chk "the panel can run the offer on its own" \
+  "$(grep -c '^if \[\[ ${1:-} == --reversal \]\]; then$' "$U"),$(grep -c '"presentation", root.setupScript, "--reversal" ]' "$REPO/Panel.qml")" "1,1"
+chk "r, with Reversal not installed, offers the install" \
+  "$(sed -n '/function setIconSet(name)/,/^  }/p' "$REPO/Panel.qml" | grep -c 'root.installReversal()')" "1"
+
+# A run, all at once, declining Reversal: the why, then Yaru. Reversal and its
+# package are made absent, so this machine's own icons do not decide it.
+probe=$(mktemp -d)
+mkdir -p "$probe/bin" && cp -r "$REPO/lib" "$REPO/WHATSNEW.md" "$probe/"
+sed -e 's|pacman -Qq "$REVERSAL_AUR"|false|g' -e 's|-f /usr/share/icons/Reversal/index.theme|-f /nonexistent|' \
+  "$U" > "$probe/bin/hyprchroma-setup"; chmod +x "$probe/bin/hyprchroma-setup"
+out=$( ( unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
+         export HOME=$probe/home; mkdir -p "$HOME"
+         printf '\ny\nn\nn\nn\nn\nn\nn\nn\nn\n' | timeout 30 "$probe/bin/hyprchroma-setup" 2>&1 ) | sed 's/\x1b\[[0-9;]*m//g')
+chk "it says why Reversal is offered, as the default pack" \
+  "$(grep -c 'Reversal is the icon pack Omarchroma offers by default' <<<"$out")" "1"
+chk "and what skipping it means" \
+  "$(grep -c 'If you do not install it, Icons uses Yaru' <<<"$out")" "1"
+chk "declining it switches Icons to Yaru" \
+  "$(grep -c "Icons uses Yaru, with folders in your theme's colors" <<<"$out")" "1"
+chk "declining downloads nothing" \
+  "$(sed -n '/^Reversal icons$/,/Icons uses Yaru, with folders/p' <<<"$out" | grep -c 'Skipped; nothing was downloaded.')" "1"
+out=$( ( unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
+         export HOME=$probe/home
+         printf 'n\n\n' | timeout 30 "$probe/bin/hyprchroma-setup" --reversal 2>&1 ) | sed 's/\x1b\[[0-9;]*m//g')
+chk "--reversal asks about Reversal and nothing else" \
+  "$(grep -c '^Reversal icons$' <<<"$out"),$(grep -cE '^Frameworks$|Omarchroma setup|I understand' <<<"$out"),$(grep -c 'Skipped; nothing was downloaded.' <<<"$out")" "1,0,1"
+rm -rf "$probe"
 chk "setup asks first whether to enable every framework" \
   "$(awk '/ask "Enable every framework"/{a=NR} /ask "Include Thunderbird"/{b=NR} END{print (a && b && a < b) ? "first" : "not first"}' "$U")" "first"
 chk "...and every framework question answers yes on its own when it does" \

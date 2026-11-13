@@ -644,8 +644,28 @@ Panel {
 
   function setFolderMode(mode) { if (mode !== root.folderMode) root.runIcons(["folders", mode]) }
   function nextFolderMode() { root.runIcons(["folders", "next"]) }
+  // Reversal not installed yet: choosing it offers the install instead, in the
+  // same terminal setup uses, which switches to it once it is there.
   function setIconSet(name) {
+    if (name === "reversal" && root.iconStatusKnown && !root.setInstalled("reversal")) {
+      root.installReversal()
+      return
+    }
     if (name !== root.iconSet && root.setInstalled(name)) root.runIcons(["set", name])
+  }
+  readonly property bool iconStatusKnown: root.iconStatus.sets !== undefined
+
+  Process {
+    id: reversalProcess
+    command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.setupScript, "--reversal" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: iconsStatusProcess.running = true
+  }
+
+  function installReversal() {
+    if (reversalProcess.running || !root.dependencyPresent) return
+    root.close()
+    reversalProcess.running = true
   }
   // Plates are Reversal's shape; with Yaru every app keeps its own icon.
   function toggleCovers() {
@@ -1831,8 +1851,8 @@ Panel {
             fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
             focusable: false
             options: [
-              { value: "reversal", label: "Reversal" + (root.setInstalled("reversal") ? "" : " (missing)"),
-                tooltip: root.setInstalled("reversal") ? "" : "Not installed: setup can install it, from the AUR (reversal-icon-theme-git)" },
+              { value: "reversal", label: "Reversal" + (root.setInstalled("reversal") ? "" : " (not installed)"),
+                tooltip: root.setInstalled("reversal") ? "" : "Not installed: press r to install it from the AUR (reversal-icon-theme-git)" },
               { value: "yaru", label: "Yaru" + (root.setInstalled("yaru") ? "" : " (missing)"),
                 tooltip: root.setInstalled("yaru") ? "" : "Not installed (Omarchy normally ships it): sudo pacman -S yaru-icon-theme" }
             ]
@@ -1952,6 +1972,18 @@ Panel {
           }
 
           PanelSeparator { foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text }
+
+          // Reversal is the default pack; until it is installed, Icons uses
+          // Yaru and this offers it.
+          Button {
+            width: iconsView.width
+            visible: root.iconStatusKnown && !root.setInstalled("reversal")
+            enabled: !reversalProcess.running
+            text: "Install Reversal...  (r)"
+            iconText: "\udb80\uddda"
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+            onClicked: root.installReversal()
+          }
 
           Button {
             width: iconsView.width
