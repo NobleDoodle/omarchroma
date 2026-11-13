@@ -135,6 +135,14 @@ st.subprocess.run = fake_run
 chk("a dark scheme is re-sent through default", (st.resend_color_scheme(), ran),
     (True, ["default", "prefer-dark"]))
 ran.clear()
+# After new GTK colors: through the other scheme, since libadwaita reads
+# "default" as light and a light theme going through it restyles nothing.
+chk("after new colors, a dark scheme passes through light", (st.resend_color_scheme(through="opposite"), ran),
+    (True, ["prefer-light", "prefer-dark"]))
+ran.clear(); current[0] = "'prefer-light'"
+chk("...and a light one through dark", (st.resend_color_scheme(through="opposite"), ran),
+    (True, ["prefer-dark", "prefer-light"]))
+ran.clear()
 current[0] = "'default'"
 chk("no preference needs nothing sent", (st.resend_color_scheme(), ran), (False, []))
 current[0] = None
@@ -231,5 +239,15 @@ finally:
 
 chk("a pid that does not exist has no binary", st.running_binary(2**22 + 7), None)
 E
+
+# The shell-side checks below need a chk of their own; the ones above live in Python.
+chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$3]"; }
 chk "Nautilus is also kept out of what Restart All closes" \
   "$(grep -c 'record\["class"\].lower() in LIVE_REPAINT_CLASSES' "$REPO/lib/hyprchroma-state"),$(grep -c '^LIVE_REPAINT_CLASSES = {"org.gnome.nautilus"}$' "$REPO/lib/hyprchroma-state")" "1,1"
+
+# -- open libadwaita apps restyle after a GTK sync that changed the colors ----
+chk "the GTK sync re-sends the color scheme when its colors changed, through the other scheme" \
+  "$(grep -c 'resend-color-scheme' "$REPO/bin/hyprchroma"),$(grep -A1 'args.command == "resend-color-scheme"' "$REPO/lib/hyprchroma-state" | grep -c 'through="opposite"')" "1,1"
+# A missing stylesheet (a fresh install) must not end the sync under pipefail.
+chk "comparing the stylesheets survives their absence" \
+  "$(grep -c '{ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum' "$REPO/bin/hyprchroma")" "2"

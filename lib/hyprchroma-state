@@ -4157,7 +4157,7 @@ def set_color_scheme(value):
         return False
 
 
-def resend_color_scheme():
+def resend_color_scheme(through="default"):
     """Have the portal announce the current color scheme once more.
 
     Recycling the backend that turns gsettings into SettingChanged left apps
@@ -4167,7 +4167,11 @@ def resend_color_scheme():
     A backend only signals a change, so the scheme passes through "default"
     and back: apps end on the right value, at the cost of a moment of "no
     preference". "default" itself needs nothing sent. The original value is
-    put back whatever happens in between. True if it was re-sent."""
+    put back whatever happens in between. True if it was re-sent.
+
+    through="opposite" passes through the other scheme instead: libadwaita
+    treats "default" as light, so a light theme going through it changes
+    nothing an app can see, and it does not restyle."""
     try:
         value = subprocess.run(["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -4177,7 +4181,9 @@ def resend_color_scheme():
     if value not in ("'prefer-dark'", "'prefer-light'"):
         return False
     scheme = value.strip("'")
-    if not set_color_scheme("default"):
+    if through == "opposite":
+        through = "prefer-light" if scheme == "prefer-dark" else "prefer-dark"
+    if not set_color_scheme(through):
         return False  # nothing changed, so nothing to put back
     try:
         time.sleep(COLOR_SCHEME_STEP_SECONDS)
@@ -4994,6 +5000,10 @@ def main():
     idle.add_argument("--since-theme-change", action="store_true",
                       help="judge staleness against when the theme last changed")
     sub.add_parser("mark-theme-changed")
+    # After new GTK colors are written: libadwaita apps restyle when the color
+    # scheme changes, and only then, so it passes through the other scheme and
+    # back. Omarchroma's stylesheet sets both, so nothing flashes.
+    sub.add_parser("resend-color-scheme")
     # Shell callers route their writes through here rather than using mktemp
     # and a redirection of their own: a redirection names its destination by
     # path every time it runs, while this goes through the same verified
@@ -5103,6 +5113,8 @@ def main():
         watch_kde_exit(args.state_dir, args.data_dir, args.action)
     elif args.command == "watch-events":
         watch_events(args.state_dir, args.data_dir)
+    elif args.command == "resend-color-scheme":
+        resend_color_scheme(through="opposite")
     elif args.command == "event-pass":
         if args.clear_app_color_schemes:
             clear_app_color_schemes(args.state_dir)

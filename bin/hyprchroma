@@ -1016,7 +1016,17 @@ if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
   log "synchronizing GTK"
   "$HYPRCHROMA_LIB/hyprchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target gtk
+  gtk_colors_before=$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)
   "$HYPRCHROMA_LIB/sync-gtk-theme"
+  # Open libadwaita apps -- Files among them -- read the new colors only when
+  # the color scheme changes, and a switch between two dark themes does not
+  # change it. Passing it through the other scheme and back makes them restyle now,
+  # without a restart; Omarchroma's stylesheet sets both light and dark, so
+  # nothing flashes. Only when the colors actually changed.
+  if [[ $gtk_colors_before != "$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)" ]]; then
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" resend-color-scheme || true
+  fi
 fi
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
   # kdeglobals and the generated color scheme are read by every running KDE
