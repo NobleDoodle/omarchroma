@@ -117,6 +117,8 @@ Image.new("RGBA", (64, 64), (200, 40, 40, 255)).save(art)
 apps = H / ".local/share/applications"
 apps.mkdir(parents=True)
 (apps / "my-tool.desktop").write_text(f"[Desktop Entry]\nName=Tool\nIcon={art}\nExec=true\n")
+# An app Reversal draws itself, by its own icon name.
+(apps / "firefox.desktop").write_text("[Desktop Entry]\nName=Firefox\nIcon=firefox\nExec=true\n")
 
 run = cli("apply")
 chk("apply succeeds", (run.returncode, run.stderr.strip()), (0, ""))
@@ -144,6 +146,11 @@ generations = sorted(p.name for p in theme_apps.iterdir())
 chk("app covers sit in one directory named after them", len(generations), 1)
 chk("the cover is an SVG in the theme",
     (theme_apps / generations[0] / "my-tool.svg").resolve().read_text().startswith("<?xml"), True)
+# Launchers that scan for files take the first of a name they find; Reversal's
+# own icon is linked into the theme so it is found before hicolor's.
+firefox = theme_apps / generations[0] / "firefox.svg"
+chk("an app Reversal draws is linked to Reversal's icon",
+    (firefox.is_symlink(), firefox.resolve() == (SHARE / "icons/Reversal/apps/scalable/firefox.svg").resolve()), (True, True))
 chk("index.theme names that directory",
     f"Directories=apps/{generations[0]},places/scalable" in index.read_text(), True)
 status = json.loads((H / ".local/state/hyprchroma/icons/status.json").read_text())

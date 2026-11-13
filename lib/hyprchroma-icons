@@ -1214,9 +1214,11 @@ def _link_into(store: Path, stem: str, source: Path) -> None:
 
 
 def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
-    """App-icon covers. With covers off, only desktop files that pointed at an
-    absolute path get an entry (their Icon= was rewritten to a name), drawn
-    as-is; everything else falls through to the base set and hicolor."""
+    """App icons. Every app the base set draws is linked in, so launchers that
+    scan for files rather than follow the theme find the set's icon first.
+    The rest get covers; with covers off, only desktop files that pointed at
+    an absolute path get an entry (their Icon= was rewritten to a name), drawn
+    as-is, and everything else falls through to hicolor."""
     names = base_icon_names(chosen_set)
     lower = {stem.lower(): stem for stem in names}
     sources = artwork_index()
@@ -1271,7 +1273,17 @@ def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
             wanted.add(f"{stem}.svg")
             counts["alias"] += 1
             continue
+        # Reversal has the app's own icon: link it in too. GTK and Qt would
+        # find it through Inherits=, but the Omarchy app launcher and docks
+        # take the first file of that name they come across, and a generic
+        # hicolor copy (Files' blue cabinet) is often found before Reversal's.
+        # Here, in ~/.icons, it is found first. Reversal and Reversal-dark
+        # share their app icons, so the light theme's file serves both.
         if chosen_set != "yaru" and stem in names and not icon.startswith("/"):
+            if names[stem].suffix == ".svg":
+                _link_into(store, stem, names[stem])
+                wanted.add(f"{stem}.svg")
+                counts["alias"] += 1
             continue
         if chosen_set != "yaru" and not covers and not icon.startswith("/") and not remembered:
             continue
