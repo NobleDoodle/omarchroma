@@ -439,7 +439,9 @@ class Lock:
 
 # --------------------------------------------------------------- settings --
 
-_DEFAULT_SETTINGS = {"icon_set": "reversal", "covers": True, "folder_mode": "background"}
+# Folders start in the theme's accent: the most recognizably "this theme"
+# color, where the sidebar highlight is often close to the background.
+_DEFAULT_SETTINGS = {"icon_set": "reversal", "covers": True, "folder_mode": "accent"}
 
 
 def settings() -> dict[str, object]:
@@ -449,7 +451,7 @@ def settings() -> dict[str, object]:
     if data["icon_set"] not in ICON_SETS:
         data["icon_set"] = "reversal"
     if data["folder_mode"] not in FOLDER_MODES:
-        data["folder_mode"] = "background"
+        data["folder_mode"] = _DEFAULT_SETTINGS["folder_mode"]
     data["covers"] = data["covers"] is not False
     return data
 

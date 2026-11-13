@@ -606,7 +606,7 @@ Panel {
   readonly property bool iconsBusy: iconsProcess.running || iconStatus.applying === true
     || (refreshProcess.running && (root.activeTarget === "icons" || root.activeTarget === "all"))
   readonly property string folderMode: ["background", "accent", "border", "yaru"].indexOf(String(iconStatus.mode)) !== -1
-    ? String(iconStatus.mode) : "background"
+    ? String(iconStatus.mode) : "accent"
   readonly property string iconSet: iconStatus.icon_set === "yaru" ? "yaru" : "reversal"
   readonly property bool iconCovers: iconStatus.covers !== false
   readonly property bool coversApply: root.iconSet === "reversal"

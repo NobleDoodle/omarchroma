@@ -127,7 +127,8 @@ chk("KDE finds it by name in ~/.local/share/icons",
     os.readlink(H / ".local/share/icons/Omarchroma-Icons"), "../../../.icons/Omarchroma-Icons")
 places = H / ".local/share/hyprchroma/icons/places"
 folder = (places / "folder.svg").read_text()
-chk("folders take the sidebar highlight by default", ic.sidebar_highlight("tokyo-night") in folder, True)
+chk("folders take the accent by default", "#7aa2f7" in folder, True)
+chk("...which is what a new install records", ic._DEFAULT_SETTINGS["folder_mode"], "accent")
 chk("no gold is left in a recolored folder", any(h in folder for h in ("#f5aa1e", "#f08705", "#ffc841")), False)
 chk("artwork that is not a folder is not taken", (places / "network-server.svg").exists(), False)
 chk("the folder is linked into the theme",
@@ -142,11 +143,13 @@ chk("the cover is an SVG in the theme",
     (H / ".icons/Omarchroma-Icons/apps/scalable/my-tool.svg").resolve().read_text().startswith("<?xml"), True)
 status = json.loads((H / ".local/state/hyprchroma/icons/status.json").read_text())
 chk("status says what is applied", (status["base"], status["mode"], status["active"], status["applying"]),
-    ("Reversal-dark", "background", True, False))
+    ("Reversal-dark", "accent", True, False))
 
 again = cli("apply")
 chk("a second apply changes nothing", again.stdout.strip().endswith("unchanged"), True)
 
+run = cli("folders", "background")
+chk("the sidebar highlight is one key away", ic.sidebar_highlight("tokyo-night") in (places / "folder.svg").read_text(), True)
 run = cli("folders", "next")
 status = json.loads((H / ".local/state/hyprchroma/icons/status.json").read_text())
 chk("next folder color is the accent", (status["mode"], status["face"]), ("accent", "#7aa2f7"))
