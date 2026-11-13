@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# Interactive uninstall for Omarchroma, opened from the panel (Settings, then
+# Uninstall) in Omarchy's presented terminal, the same way setup is: it asks
+# before every step, says what that step changes, and asks for a password only
+# for the steps that remove packages. Nothing is downloaded.
+#
+# Everything runs from main(), called on the last line, so bash has read the
+# whole script before the last step removes the plugin folder this file is in.
+set -uo pipefail
+
+# Commands resolve from a fixed, verified set rather than the inherited PATH,
+# exactly as in setup.
+omarchroma_trusted_path() {
+  local directory owner mode trusted="" unmapped="" overflow inside count
+  # The overflow uid stands in for an owner this namespace does not map --
+  # root's /usr, under systemd's sandboxing. Where it is mapped, as in the host
+  # namespace, it is the nobody account, and trusted with nothing.
+  if [[ -r /proc/self/uid_map ]] && overflow=$(</proc/sys/kernel/overflowuid); then
+    unmapped=$overflow
+    while read -r inside _ count; do
+      (( overflow >= inside && overflow < inside + count )) && unmapped=""
+    done < /proc/self/uid_map
+  fi
+  for directory in /usr/bin /usr/share/omarchy/bin; do
+    [[ -d $directory ]] || continue
+    read -r owner mode < <(/usr/bin/stat -Lc '%u %a' "$directory" 2>/dev/null) || continue
+    [[ $owner == 0 || ( -n $unmapped && $owner == "$unmapped" ) ]] || continue
+    (( (8#$mode & 8#022) == 0 )) || continue
+    trusted="${trusted:+$trusted:}$directory"
+  done
+  printf '%s' "${trusted:-/usr/bin:/usr/share/omarchy/bin}"
+}
+PATH=$(omarchroma_trusted_path)
+export PATH
+
+here=$(cd -- "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/.." && pwd)
+plugin_id=io.github.nobledoodle.omarchroma
+
+bold=$'\033[1m'; dim=$'\033[2m'; reset=$'\033[0m'; warn=$'\033[1;33m'
+say()  { printf '%s\n' "$*"; }
+head2() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
+step_number=0
+step() { step_number=$((step_number + 1)); head2 "$step_number. $*"; }
+note() { printf '%s%s%s\n' "$dim" "$*" "$reset"; }
+
+# Default no, as in setup: holding return through this removes nothing.
+ask() {
+  local prompt=$1 default=${2:-no} answer
+  if [[ $default == yes ]]; then
+    read -r -p "$prompt [Y/n]: " answer
+    [[ ${answer,,} != n && ${answer,,} != no ]]
+  else
+    read -r -p "$prompt [y/N]: " answer
+    [[ ${answer,,} == y || ${answer,,} == yes ]]
+  fi
+}
+
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/hyprchroma"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/hyprchroma"
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
+hooks=("$HOME/.config/omarchy/hooks/theme-set.d/hyprchroma"
+       "$HOME/.config/omarchy/hooks/font-set.d/hyprchroma")
+reversal_package=reversal-icon-theme-git
+# What setup may have installed for the optional frameworks. Only offered when
+# it was installed on its own (not pulled in by something else), nothing needs
+# it, and Omarchy does not ship it -- adw-gtk-theme and yaru-icon-theme are
+# part of Omarchy and are never offered here.
+helper_packages=(python-pillow python-numpy python-plyvel)
+
+# The installed command, or this checkout's own copy when the package is
+# already gone: the checkout carries the same helpers, so a restore still works.
+hyprchroma_command() {
+  if [[ -x /usr/bin/hyprchroma ]]; then
+    printf '%s' /usr/bin/hyprchroma
+  elif [[ -x $here/bin/hyprchroma && -d $here/lib ]]; then
+    printf '%s' "$here/bin/hyprchroma"
+  else
+    return 1
+  fi
+}
+
+# Ours only if it is the hook hyprchroma writes: the same file as the
+# package's copy, or, with the package gone, one that runs hyprchroma.
+our_hook() {
+  local hook=$1
+  [[ -f $hook && ! -L $hook ]] || return 1
+  if [[ -r /usr/share/hyprchroma/hooks/hyprchroma ]]; then
+    cmp -s -- /usr/share/hyprchroma/hooks/hyprchroma "$hook"
+  else
+    cmp -s -- "$here/share/hooks/hyprchroma" "$hook" || grep -q 'hyprchroma --force' -- "$hook"
+  fi
+}
+
+removable_helper() {
+  local package=$1 info
+  info=$(LC_ALL=C pacman -Qi -- "$package" 2>/dev/null) || return 1
+  grep -q '^Install Reason *: Explicitly installed' <<<"$info" || return 1
+  grep -q '^Required By *: None' <<<"$info" || return 1
+  ! grep -qxF -- "$package" /usr/share/omarchy/install/*.packages 2>/dev/null
+}
+
+# Themes whose own icon setting names Reversal, after the restore: removing
+# the package would leave those without their icons.
+themes_using_reversal() {
+  grep -l -s '^Reversal' "$HOME"/.config/omarchy/themes/*/icons.theme \
+    /usr/share/omarchy/themes/*/icons.theme 2>/dev/null |
+    sed 's|.*/themes/\([^/]*\)/icons.theme|\1|' | sort -u | paste -sd, - | sed 's/,/, /g'
+}
+
+keepalive_pid=""
+run_sudo() {
+  sudo "$@" || return $?
+  if [[ -z $keepalive_pid ]]; then
+    local script_pid=$$
+    ( while kill -0 "$script_pid" 2>/dev/null; do sleep 60; sudo -n true 2>/dev/null; done ) >/dev/null 2>&1 &
+    keepalive_pid=$!
+  fi
+}
+
+main() {
+  trap '[[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null' EXIT
+
+  if (( EUID == 0 )); then
+    say "Run this as yourself, not as root: it changes files in your home folder."
+    exit 1
+  fi
+
+  local hc="" package_version="" service_state="" hook found_hooks=() helpers=() package
+  hc=$(hyprchroma_command) || hc=""
+  package_version=$(pacman -Q hyprchroma 2>/dev/null | cut -d' ' -f2)
+  service_state=$(systemctl --user is-enabled hyprchromad.service 2>/dev/null || true)
+  for hook in "${hooks[@]}"; do our_hook "$hook" && found_hooks+=("$hook"); done
+  for package in "${helper_packages[@]}"; do removable_helper "$package" && helpers+=("$package"); done
+
+  cat <<'INTRO'
+Omarchroma uninstall
+
+This takes Omarchroma off this computer, one step at a time. Each step says
+what it changes and asks first; answering no (or pressing return) skips it
+and nothing in it is changed. Nothing is downloaded. Your password is asked
+for only by the steps that remove packages. Ctrl+C stops at any point.
+INTRO
+
+  head2 "Found here"
+  say "  Omarchroma panel        $here"
+  say "  hyprchroma package      ${package_version:-not installed}"
+  say "  Background service      ${service_state:-not set up}"
+  say "  Theme hooks             ${#found_hooks[@]} of 2"
+  say "  Settings and snapshots  $([[ -d $state_dir ]] && echo "$state_dir" || echo none)"
+  pacman -Qq "$reversal_package" &>/dev/null && say "  Reversal icons          $reversal_package (from the AUR)"
+  (( ${#helpers[@]} )) && say "  Helper packages         ${helpers[*]}"
+
+  # --- the service -------------------------------------------------------
+  if [[ -n $service_state && $service_state != not-found ]]; then
+    step "Stop the background service"
+    cat <<'STEP'
+hyprchromad.service watches for theme changes and re-syncs your apps. Stopping
+it first means nothing re-applies a theme while the next step puts things back.
+It runs as you, so this needs no password:
+  systemctl --user disable --now hyprchromad.service
+STEP
+    if ask "Stop and disable the service"; then
+      systemctl --user disable --now hyprchromad.service &&
+        note "Stopped and disabled." ||
+        note "systemctl did not finish; 'systemctl --user status hyprchromad' says why."
+    else
+      note "Skipped; the service keeps running."
+    fi
+  fi
+
+  # --- put the apps' theming back ----------------------------------------
+  step "Put your apps' theming back"
+  cat <<'STEP'
+Omarchroma changed files in your home folder so apps follow your theme. This
+puts them back: GTK and Qt/KDE settings, each theme's icon setting, the
+stylesheets in your browser and Thunderbird profiles, Pear Desktop's and Dark
+Reader's colors, and the Flatpak permissions it added. Only files in your home
+folder are touched.
+
+  1) As they were before Omarchroma, from the snapshot it took (recommended)
+  2) Omarchy's own defaults, ignoring the snapshot
+  3) Leave them as they are
+STEP
+  if [[ -z $hc ]]; then
+    note "The hyprchroma command is not here, so this cannot be done; skipping."
+  else
+    # Return leaves them, like every other step: putting them back is a
+    # choice to type, not the default.
+    local choice
+    read -r -p "Choice (1, 2 or 3) [3]: " choice
+    case ${choice:-3} in
+      1) "$hc" restore --captured && note "Put back as they were." ||
+           note "The restore did not finish; the output above says where. Later steps still run." ;;
+      2) "$hc" restore --stock && note "Put back to Omarchy's defaults." ||
+           note "The restore did not finish; the output above says where. Later steps still run." ;;
+      *) note "Skipped; apps keep their current theming." ;;
+    esac
+  fi
+
+  # --- theme hooks -------------------------------------------------------
+  if (( ${#found_hooks[@]} )); then
+    step "Remove the theme hooks"
+    say "Omarchy runs these on every theme and font change to start a sync:"
+    printf '  %s\n' "${found_hooks[@]}"
+    say "Only these two files are removed; the other hooks in those folders stay."
+    if ask "Remove them"; then
+      rm -f -- "${found_hooks[@]}" && note "Removed." || note "Could not remove them."
+    else
+      note "Skipped. Once the package is gone they do nothing, but they stay."
+    fi
+  fi
+
+  # --- the package -------------------------------------------------------
+  if [[ -n $package_version ]]; then
+    step "Remove the hyprchroma package"
+    cat <<'STEP'
+This is the service and its helpers in /usr/bin, /usr/lib/hyprchroma and
+/usr/share/hyprchroma. Removing a package needs your password (sudo); pacman
+then lists what it removes and asks once more:
+  sudo pacman -R hyprchroma
+STEP
+    if ask "Remove the hyprchroma package"; then
+      run_sudo pacman -R hyprchroma || note "pacman did not finish; you can run the command above later."
+    else
+      note "Skipped; the package stays installed."
+    fi
+  fi
+
+  # --- Reversal ----------------------------------------------------------
+  if pacman -Qq "$reversal_package" &>/dev/null; then
+    step "Remove the Reversal icons"
+    cat <<STEP
+Setup installed Reversal from the AUR for Icons. Nothing else in Omarchroma
+uses it, but other apps or your own icon settings might. Removing it needs
+your password (sudo):
+  sudo pacman -R $reversal_package
+STEP
+    local using
+    using=$(themes_using_reversal)
+    [[ -n $using ]] && note "These themes name Reversal as their own icons and would fall back to another set: $using"
+    if ask "Remove the Reversal icons"; then
+      run_sudo pacman -R "$reversal_package" || note "pacman did not finish; you can run the command above later."
+    else
+      note "Skipped; Reversal stays installed."
+    fi
+  fi
+
+  # --- helper packages ---------------------------------------------------
+  if (( ${#helpers[@]} )); then
+    step "Remove helper packages"
+    say "Setup may have installed these for the optional frameworks. Nothing else"
+    say "installed needs them, and Omarchy does not ship them, but something you"
+    say "run by hand might. Removing them needs your password (sudo):"
+    say "  sudo pacman -R ${helpers[*]}"
+    if ask "Remove them"; then
+      run_sudo pacman -R "${helpers[@]}" || note "pacman did not finish; you can run the command above later."
+    else
+      note "Skipped; they stay installed."
+    fi
+  fi
+
+  # --- settings and snapshots --------------------------------------------
+  local leftovers=() path
+  for path in "$state_dir" "$data_dir" "$cache_dir"; do [[ -e $path ]] && leftovers+=("$path"); done
+  if (( ${#leftovers[@]} )); then
+    step "Delete Omarchroma's settings and snapshots"
+    say "These hold your Omarchroma choices, generated colors and icons, and the"
+    say "snapshot of your settings from before Omarchroma:"
+    printf '  %s\n' "${leftovers[@]}"
+    say "Keep them to reinstall later with the same choices, or to put your apps'"
+    say "theming back later. Deleted, they cannot be brought back."
+    if ask "Delete them"; then
+      rm -rf -- "${leftovers[@]}" && note "Deleted." || note "Some could not be deleted."
+    else
+      note "Skipped; they stay."
+    fi
+  fi
+
+  # --- the panel ---------------------------------------------------------
+  step "Remove the Omarchroma panel"
+  cat <<STEP
+Last, the panel itself: Omarchy unloads it from the bar and deletes its folder,
+which holds this script:
+  omarchy plugin remove $plugin_id
+STEP
+  local removed_panel=no
+  if [[ ! -d $HOME/.config/omarchy/plugins/$plugin_id ]]; then
+    note "Not installed in your Omarchy plugins; nothing to remove."
+  elif ask "Remove the panel"; then
+    omarchy plugin remove "$plugin_id" --yes && removed_panel=yes ||
+      note "Could not remove it; you can run the command above later."
+  else
+    note "Skipped; the panel stays on the bar."
+  fi
+
+  head2 "Done"
+  if [[ $removed_panel == yes ]]; then
+    say "Restart your Omarchy shell to clear it from memory: omarchy restart shell"
+  else
+    say "Anything skipped can be done later, from the panel or with the commands above."
+  fi
+  say ""
+  read -r -p "Press return to close this window. "
+}
+
+main "$@"
+exit

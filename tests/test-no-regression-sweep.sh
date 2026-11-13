@@ -85,8 +85,10 @@ chk "and where it does name a command, that command is pacman" \
   "$(code bin/hyprchroma-setup | grep -ohE '^[[:space:]]*run_sudo [a-z]+' | awk '{print $2}' | sort -u | paste -sd,)" "pacman"
 chk "and its package list is literal, not built from input" \
   "$(grep -cE 'missing\+=\((adw-gtk-theme|python-plyvel)\)' bin/hyprchroma-setup)" "2"
-chk "the one indirect privileged call names a literal package too" \
-  "$(grep -c 'pkg aur add pear-desktop-bin' bin/hyprchroma-setup)" "2"
+chk "the indirect privileged calls name literal packages too" \
+  "$(code bin/hyprchroma-setup | grep -oE '^[[:space:]]*aur_install [^ |]+' | awk '{print $2}' | sort | paste -sd,)" '"$REVERSAL_AUR",pear-desktop-bin'
+chk "...and the Reversal one is a fixed name" \
+  "$(grep -c '^REVERSAL_AUR=reversal-icon-theme-git$' bin/hyprchroma-setup)" "1"
 
 # Nothing is fetched and then executed: the build runs on the checkout.
 chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -E 'curl|wget|git clone' | grep -cv 'curl -fsSL --max-time 20 --proto')" "0"

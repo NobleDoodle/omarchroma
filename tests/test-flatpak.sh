@@ -128,9 +128,11 @@ chk "...and treats a missing value as off" \
 chk "it can be toggled over IPC like the others" \
   "$(grep -c 'function toggleFlatpak(): void { root.toggleFramework("flatpak") }' "$REPO/BarWidget.qml")" "1"
 U=$REPO/bin/hyprchroma-setup
-chk "setup asks only where Flatpak is installed" "$(grep -c '^if command -v flatpak >/dev/null; then' "$U")" "1"
+chk "setup asks only where Flatpak is installed" \
+  "$(grep -c '^command -v flatpak >/dev/null && has_flatpak=yes$' "$U"),$(grep -c '^if \[\[ \$has_flatpak == yes \]\]; then' "$U")" "1,2"
 chk "declining is the default" "$(grep -c '^want_flatpak=no$' "$U")" "1"
-chk "the question says what it grants" "$(grep -c 'four read-only permissions' "$U")" "1"
+# In the overview before the first question, and in its own section.
+chk "the question says what it grants" "$(grep -c 'four read-only permissions' "$U")" "2"
 chk "a yes switches it on; anything else keeps it out of the panel" \
   "$(grep -cE 'hyprchroma framework (restore|remove) flatpak' "$U")" "2"
 

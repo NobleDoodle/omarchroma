@@ -250,6 +250,27 @@ Panel {
     onExited: { root.installing = false; presenceProcess.running = true }
   }
 
+  // Uninstalling is the same kind of job: it asks before each step and needs
+  // a password for the package steps, so it runs in the presented terminal
+  // too, from the script shipped beside setup.
+  readonly property string uninstallScript:
+    Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName
+      + "/bin/hyprchroma-uninstall"
+
+  Process {
+    id: uninstallProcess
+    command: [ "omarchy", "launch", "floating", "terminal", "with", "presentation", root.uninstallScript ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: presenceProcess.running = true
+  }
+
+  function openUninstall() {
+    if (uninstallProcess.running || root.installing) return
+    root.settingsOpen = false
+    root.close()
+    uninstallProcess.running = true
+  }
+
   Process {
     id: restoreProcess
     environment: ({ PATH: root.trustedPath })
@@ -785,11 +806,12 @@ Panel {
     // While the guide is up, its only key is Ctrl+Enter (the Shortcut), which
     // opens the confirmation; letters and digits do nothing there.
     if (root.guideOpen) return
-    // Settings: c flips the restart mode, b the bar alert, and a digit removes
-    // or adds back the framework shown beside it.
+    // Settings: c flips the restart mode, b the bar alert, u opens the
+    // uninstaller, and a digit removes or adds back the framework beside it.
     if (root.settingsOpen) {
       if (key === "c") { root.toggleRestartMode(); return }
       if (key === "b") { root.toggleBarAlert(); return }
+      if (key === "u") { root.openUninstall(); return }
       var back = parseInt(key, 10) - 1
       if (back >= 0 && back < root.settingsFrameworks.length) {
         root.toggleRemoved(root.settingsFrameworks[back].target)
@@ -1522,6 +1544,16 @@ Panel {
 
           PanelSeparator {
             foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+          }
+
+          // Opens a terminal that asks before each step; nothing is removed
+          // from here.
+          Button {
+            width: settings.width
+            text: "Uninstall Omarchroma...  (u)"
+            iconText: "\udb80\uddb4"
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+            onClicked: root.openUninstall()
           }
 
           Button {

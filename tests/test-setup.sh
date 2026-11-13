@@ -140,10 +140,13 @@ chk "declining leaves it uninstalled and says so" \
 
 # Dark Reader's dependency is only relevant if Dark Reader was wanted.
 skip=$(printf 'n\nn\nn\nno\n' | timeout 30 "$probe" 2>&1)
+# The overview before the first question names it either way; what matters is
+# the list of what is missing and the command to get it.
 chk "the Dark Reader dependency is not raised when it was declined" \
-  "$(grep -c 'also-not-a-package' <<<"$skip")" "0"
+  "$(grep -cE 'also-not-a-package  |--needed .*also-not-a-package' <<<"$skip")" "0"
 # Twice: once in the list of what is missing, once in the command to get it.
-chk "it is raised when it was wanted" "$(grep -c 'also-not-a-package' <<<"$want")" "2"
+chk "it is raised when it was wanted" \
+  "$(grep -cE 'also-not-a-package  |--needed .*also-not-a-package' <<<"$want")" "2"
 
 # --- Dark Reader's own check reads its installed location, not a guess ----
 # hyprchroma-dark-reader is installed to /usr/lib/hyprchroma, deliberately
@@ -193,14 +196,16 @@ pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
 # to run "omarchy pkg aur add" against this machine.
 pear_out=$(export HOME="$pear_home"
            printf 'n\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
-chk "a missing, wanted Pear Desktop is named" \
-  "$(grep -c 'Pear Desktop is not installed' <<<"$pear_out")" "1"
+chk "a missing, wanted Pear Desktop is named, with why, before the question" \
+  "$(grep -c 'you included Pear Desktop, but the app itself is not' <<<"$pear_out")" "1"
+chk "with what it downloads and that sudo comes first" \
+  "$(grep -cE 'about 110 MB|asked for before anything is downloaded' <<<"$pear_out")" "2"
 # -bin specifically, not the plain package: that one builds a full Electron
 # app from source, which is what took the terminal down earlier this session.
 chk "with the AUR command to get it, the prebuilt package" \
   "$(grep -c 'omarchy pkg aur add pear-desktop-bin' <<<"$pear_out")" "1"
 chk "declining leaves it uninstalled and says so" \
-  "$(grep -c 'still offer Pear Desktop once you install it yourself' <<<"$pear_out")" "1"
+  "$(grep -c 'Skipped; nothing was downloaded. The panel themes Pear Desktop' <<<"$pear_out")" "1"
 # Reuses $out from the top of this file, where Pear was declined outright:
 # nothing about its install state should be checked or printed at all.
 chk "Pear's own check is skipped entirely when it was not wanted" \
@@ -225,8 +230,8 @@ chk "the restart command is never executed automatically" \
 
 # --- the panel hands off to it -------------------------------------------
 chk "the panel runs the setup script" "$(grep -c 'bin/hyprchroma-setup' Panel.qml)" "1"
-chk "in a terminal the user can see" \
-  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
+chk "in a terminal the user can see (Install and Uninstall)" \
+  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "2"
 # The panel's comment mentions makepkg to explain why a terminal is needed;
 # what it must not contain is a build command.
 chk "the panel embeds no build command of its own" \

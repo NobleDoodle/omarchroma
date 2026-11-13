@@ -25,5 +25,5 @@ install:
 	install -Dm644 LICENSE                     $(LICENSES)/LICENSE
 
 check:
-	bash -n bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme share/hooks/hyprchroma
+	bash -n bin/hyprchroma bin/hyprchroma-setup bin/hyprchroma-uninstall lib/sync-gtk-theme lib/sync-qt-kde-theme share/hooks/hyprchroma
 	python3 -c "import ast;[ast.parse(open(f).read()) for f in ['lib/hyprchroma-state','lib/hyprchroma-dark-reader','lib/hyprchroma-palette','lib/hyprchroma-icons']]"

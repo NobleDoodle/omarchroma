@@ -97,7 +97,9 @@ for pkg in jq python; do
 done
 if (( ${#base_missing[@]} )); then
   head2 "Before anything else"
-  say "hyprchroma needs these, and this script itself uses them before it can ask you anything else:"
+  say "hyprchroma needs these, and this script itself uses them before it can ask you anything else."
+  say "Installing them downloads them from the official Arch repositories; sudo asks for"
+  say "your password first, and pacman shows what it will download before it does:"
   say "  sudo pacman -S --needed ${base_missing[*]}"
   say ""
   if ask "Install them now"; then
@@ -131,14 +133,52 @@ fi
 
 # --- the optional frameworks ----------------------------------------------
 # One question first: every framework at once, or one at a time. Either way,
-# what they need is checked and offered afterwards, the same way.
-head2 "Frameworks"
-cat <<'ALL'
-GTK and Qt/KDE are always on. The others -- Thunderbird, Pear Desktop, Dark
-Reader, Flatpak apps, Additional browsers and Icons -- are optional.
+# what they need is checked and offered afterwards, the same way. What is
+# here to theme is looked up first, so the overview can say so.
+has_flatpak=no
+command -v flatpak >/dev/null && has_flatpak=yes
+# The same helper the service uses decides what is installed, so this asks
+# about exactly the browsers it would theme -- and not at all if there are none.
+found_browsers=$("$here/lib/hyprchroma-state" detect-browsers 2>/dev/null | paste -sd, - | sed 's/,/, /g')
 
-Yes switches on every one that has something to theme here, then checks what
-they need. No goes through them one at a time, each with what it changes.
+head2 "Frameworks"
+say "Each framework carries your theme into one kind of application:"
+say ""
+framework_line() { printf '  %s%-20s%s %s\n' "$bold" "$1" "$reset" "$2"; shift 2; local more; for more; do printf '  %-20s %s\n' "" "$more"; done; }
+framework_line "GTK and GNOME" "Always on. GTK 3, GTK 4 and GNOME apps follow" \
+  "the theme. Needs adw-gtk-theme if it is missing."
+framework_line "Qt and KDE" "Always on. Qt and KDE apps follow the theme," \
+  "KDE colors and icons included."
+framework_line "Thunderbird" "Colors Thunderbird's own window, as Firefox's is." \
+  "Writes a stylesheet into your mail profiles."
+framework_line "Pear Desktop" "Themes the YouTube Music desktop app, which" \
+  "otherwise stays black. If the app is missing," \
+  "offers pear-desktop-bin from the AUR."
+framework_line "Dark Reader" "Tints web pages through the Dark Reader" \
+  "extension, in every browser that has it. Needs" \
+  "python-plyvel for Chromium-based browsers."
+if [[ $has_flatpak == yes ]]; then
+  framework_line "Flatpak apps" "Lets every Flatpak app read your GTK and KDE" \
+    "colors: four read-only permissions."
+else
+  framework_line "Flatpak apps" "Flatpak is not installed here; stays off."
+fi
+if [[ -n $found_browsers ]]; then
+  framework_line "Additional browsers" "Colors tabs, toolbar and menus, through a" \
+    "stylesheet in each profile, for: $found_browsers."
+else
+  framework_line "Additional browsers" "No Firefox-family browser or Vivaldi here;" \
+    "stays off."
+fi
+framework_line "Icons" "Gives every theme a matching icon set, with" \
+  "folders in the theme's colors. Needs" \
+  "python-pillow; offers Reversal from the AUR."
+cat <<'ALL'
+
+Yes switches on every one that has something to theme here. No goes through
+them one at a time, each with what it changes. Either way, nothing is
+downloaded or installed yet: what they need is listed afterwards, and every
+download or install asks first.
 ALL
 all_frameworks=no
 if ask "Enable every framework"; then all_frameworks=yes; fi
@@ -198,7 +238,7 @@ fi
 # Only asked where there is something to theme. A machine without Flatpak
 # answers no without being asked, which also keeps the row out of the panel.
 want_flatpak=no
-if command -v flatpak >/dev/null; then
+if [[ $has_flatpak == yes ]]; then
   section "Flatpak apps"
   explain <<'FLATPAK'
 Flatpak apps read their settings from a folder of their own, so they miss the
@@ -212,10 +252,7 @@ FLATPAK
   if [[ $all_frameworks == yes ]] || ask "Include Flatpak apps"; then want_flatpak=yes; fi
 fi
 
-# The same helper the service uses decides what is installed, so this asks
-# about exactly the browsers it would theme -- and not at all if there are none.
 want_browsers=no
-found_browsers=$("$here/lib/hyprchroma-state" detect-browsers 2>/dev/null | paste -sd, - | sed 's/,/, /g')
 if [[ -n $found_browsers ]]; then
   section "Additional browsers"
   explain <<BROWSERS
@@ -275,7 +312,7 @@ if [[ $all_frameworks == yes ]]; then
   [[ $want_flatpak == yes ]] && say "  Flatpak apps"
   [[ $want_browsers == yes ]] && say "  Additional browsers: $found_browsers"
   say "  Icons, with $([[ $icon_set == yaru ]] && echo Yaru || echo Reversal) (the panel switches sets: r / y)"
-  command -v flatpak >/dev/null || note "No Flatpak here, so Flatpak apps stays off."
+  [[ $has_flatpak == yes ]] || note "No Flatpak here, so Flatpak apps stays off."
   [[ -n $found_browsers ]] || note "No additional browser found, so Additional browsers stays off."
 fi
 
@@ -337,6 +374,9 @@ if (( ${#missing[@]} )); then
   say "These are missing:"
   printf '  %s\n' "${explain[@]}"
   say ""
+  say "Installing them downloads them from the official Arch repositories. sudo"
+  say "asks for your password first; pacman then lists each package with its size"
+  say "and asks once more before it downloads anything:"
   say "  sudo pacman -S --needed ${missing[*]}"
   say ""
   if ask "Install them now"; then
@@ -347,6 +387,31 @@ if (( ${#missing[@]} )); then
 else
   note "Everything needed is already installed."
 fi
+
+# Every AUR install goes through these two. The password is asked for before
+# anything is fetched from the AUR, not left to yay: yay only calls sudo at
+# the very end, after the download and the build, and a prompt that fails
+# there -- as it did once, live, with nothing on screen to say so -- leaves a
+# finished package in ~/.cache/yay that was never installed. The cached
+# credential (kept fresh by the keepalive above) is what yay's own sudo then
+# uses. Afterwards pacman is asked whether the package is really there, so a
+# failure is reported as one rather than as silence.
+authenticate_for() {
+  say ""
+  say "sudo asks for your password now, before anything is downloaded: $1"
+  run_sudo -v
+}
+aur_install() {
+  local package=$1
+  omarchy pkg aur add "$package" || true
+  if pacman -Qq "$package" &>/dev/null; then
+    note "Installed $package."
+    return 0
+  fi
+  note "$package was not installed. Nothing else was changed; you can try again"
+  note "later with: omarchy pkg aur add $package"
+  return 1
+}
 
 # Pear Desktop itself is not a dependency in the sense above -- it is the
 # application being themed, not something this needs to run -- and it has no
@@ -360,19 +425,33 @@ fi
 # swap and taken the terminal down with it. -bin skips that build entirely.
 if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
    [[ ! -d "$HOME/.config/YouTube Music" ]]; then
+  head2 "Pear Desktop app"
+  cat <<'PEARAUR'
+Why this is asked: you included Pear Desktop, but the app itself is not
+installed, so there is nothing for Hyprchroma to theme yet.
+
+It is not part of Omarchy or the official Arch repositories, so it comes from
+the AUR as pear-desktop-bin, the project's own prebuilt release. Installing it:
+  - downloads its AUR recipe from aur.archlinux.org, and the app itself
+    (about 110 MB) from the project's releases on GitHub
+  - packages it as you, with yay, in ~/.cache/yay
+  - installs it with pacman, which needs your password (sudo); that is
+    asked for before anything is downloaded
+
+The command:  omarchy pkg aur add pear-desktop-bin
+Removing it later:  sudo pacman -R pear-desktop-bin
+PEARAUR
   say ""
-  note "Pear Desktop is not installed."
-  say "  omarchy pkg aur add pear-desktop-bin"
-  say ""
-  if ask "Install it now"; then
-    if command -v omarchy >/dev/null; then
-      omarchy pkg aur add pear-desktop-bin ||
-        note "Could not install pear-desktop-bin; you can run the command above later."
-    else
+  if ask "Download and install Pear Desktop from the AUR"; then
+    if ! command -v omarchy >/dev/null; then
       note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
+    elif ! authenticate_for "pacman installs Pear Desktop at the end."; then
+      note "No password given, so nothing was downloaded."
+    else
+      aur_install pear-desktop-bin || true
     fi
   else
-    note "Skipped. The panel will still offer Pear Desktop once you install it yourself."
+    note "Skipped; nothing was downloaded. The panel themes Pear Desktop once you install it."
   fi
 fi
 
@@ -398,38 +477,65 @@ reversal_recipe_verified() {
 # Offered whenever Icons is included, whichever set was picked: Reversal is
 # one key away in the panel (r), and covers are drawn in its shape. Only the
 # AUR package itself counts as installed here -- a copy put in the icon folders
-# by hand works, but nothing keeps it current.
+# by hand works, but nothing keeps it current. Why it is wanted is said before
+# the question, never after.
 if [[ $want_icons == yes ]] && ! pacman -Qq "$REVERSAL_AUR" &>/dev/null; then
-  say ""
+  head2 "Reversal icons"
   if reversal_installed; then
-    note "Reversal is in your icon folders, but not from its AUR package, so nothing"
-    note "updates it. The package installs a kept-current copy; yours in ~/.local/share/icons"
-    note "is still used first while it is there."
+    say "Why this is asked: Reversal is in your icon folders, but it was not"
+    say "installed from its package, so nothing keeps it up to date. The package"
+    say "puts a copy in /usr/share/icons that updates with the rest of your system."
+    say "Your copy in ~/.local/share/icons is still used first while it is there."
   elif [[ $icon_set == reversal ]]; then
-    note "Reversal is not installed. It comes from the AUR:"
+    say "Why this is asked: you chose Reversal as the icon set, and it is not"
+    say "installed. Icons cannot apply it until it is; until then the panel shows"
+    say "\"Reversal is not installed\" (or press y there to use Yaru instead)."
   else
-    note "Reversal is not installed. Yaru works without it; with it, the panel can"
-    note "switch between the two (r / y). It comes from the AUR:"
+    say "Why this is asked: you chose Yaru, which Omarchy already has, so Icons"
+    say "works without this. Reversal is the other set the panel switches to (r),"
+    say "and the plates behind app covers are drawn in its style. Without it, the"
+    say "panel offers Yaru only."
   fi
-  say "  omarchy pkg aur add $REVERSAL_AUR"
+  cat <<REVERSALAUR
+
+Reversal is not part of Omarchy or the official Arch repositories, so it comes
+from the AUR as $REVERSAL_AUR. Installing it:
+  - checks the AUR recipe first: downloads its PKGBUILD (a small text file)
+    from aur.archlinux.org and compares it with the one reviewed for this
+    release; a recipe that has changed is not built
+  - downloads the icons' source (about 20 MB) from
+    github.com/yeyushengfan258/Reversal-icon-theme
+  - builds the package as you, with yay, in ~/.cache/yay
+  - installs Reversal and Reversal-dark into /usr/share/icons with pacman,
+    which needs your password (sudo); that is asked for before anything is
+    downloaded
+
+The command:  omarchy pkg aur add $REVERSAL_AUR
+Removing it later:  sudo pacman -R $REVERSAL_AUR
+REVERSALAUR
   say ""
-  if ask "Install Reversal from the AUR now"; then
+  if ask "Download and install Reversal from the AUR"; then
     if ! command -v omarchy >/dev/null; then
       note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
-    elif ! reversal_recipe_verified; then
-      note "The AUR recipe for $REVERSAL_AUR is not the one this release was checked against"
-      note "(or the AUR could not be reached), so it was not built. Read it first:"
-      note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
-      note "then install it with the command above if it looks right."
+    elif ! authenticate_for "pacman installs Reversal at the end."; then
+      note "No password given, so nothing was downloaded."
     else
-      note "Recipe verified: it builds Reversal from github.com/yeyushengfan258/Reversal-icon-theme."
-      omarchy pkg aur add "$REVERSAL_AUR" ||
-        note "Could not install $REVERSAL_AUR; you can run the command above later."
+      say "Checking the AUR recipe (downloading its PKGBUILD from aur.archlinux.org)..."
+      if ! reversal_recipe_verified; then
+        note "The AUR recipe for $REVERSAL_AUR is not the one this release was checked against"
+        note "(or the AUR could not be reached), so nothing else was downloaded. Read it first:"
+        note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
+        note "then install it with the command above if it looks right."
+      else
+        note "Recipe verified: it builds Reversal from github.com/yeyushengfan258/Reversal-icon-theme."
+        aur_install "$REVERSAL_AUR" || true
+      fi
     fi
   elif [[ $icon_set == reversal ]] && ! reversal_installed; then
-    note "Skipped. Icons waits until Reversal is installed, or choose Yaru in the panel (y)."
+    note "Skipped; nothing was downloaded. Icons waits until Reversal is installed,"
+    note "or choose Yaru in the panel (y)."
   else
-    note "Skipped."
+    note "Skipped; nothing was downloaded."
   fi
 fi
 
@@ -452,7 +558,7 @@ Once running it writes only inside your own home directory: GTK and Qt/KDE
 theme files, the Omarchy theme hooks, and the frameworks you chose above. It
 runs no privileged command of its own, and it never installs Dark Reader.
 
-Removing it later: sudo pacman -R hyprchroma
+Removing it later: open the panel, press s for Settings, then u for Uninstall.
 CONSENT
 
 printf '\nType "I understand" to continue: '

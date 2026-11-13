@@ -98,18 +98,31 @@ chk "it builds with makepkg" "$(countcode 'makepkg -si' bin/hyprchroma-setup)" "
 # the command shown before asking, and the same command actually run.
 chk "hyprchroma itself has no AUR dependency" \
   "$(countcode 'pkg aur add|yay -S' Panel.qml)" "0"
-chk "the only AUR calls that exist are for Pear Desktop, not hyprchroma" \
-  "$(countcode 'pkg aur add pear-desktop' bin/hyprchroma-setup)" "2"
-# ...and for Reversal, the icon set the user picked, once its recipe checks out.
+# Every AUR install goes through one helper, and it is called for exactly two
+# packages: Pear Desktop and Reversal -- never hyprchroma itself.
+chk "one AUR call, inside the helper every AUR install goes through" \
+  "$(countcode '^ *omarchy pkg aur add' bin/hyprchroma-setup),$(countcode '^ *omarchy pkg aur add "\$package"' bin/hyprchroma-setup)" "1,1"
+chk "the helper is used for Pear Desktop and Reversal only" \
+  "$(countcode 'aur_install pear-desktop-bin' bin/hyprchroma-setup),$(countcode 'aur_install "\$REVERSAL_AUR"' bin/hyprchroma-setup),$(countcode '^ *aur_install ' bin/hyprchroma-setup)" "1,1,2"
+# ...Reversal only once its recipe checks out.
 chk "...and Reversal, only after its recipe is verified" \
-  "$(countcode 'pkg aur add "\$REVERSAL_AUR"' bin/hyprchroma-setup),$(grep -B9 'omarchy pkg aur add "$REVERSAL_AUR"' bin/hyprchroma-setup | grep -c 'reversal_recipe_verified')" "1,1"
+  "$(grep -B8 'aur_install "$REVERSAL_AUR"' bin/hyprchroma-setup | grep -c 'if ! reversal_recipe_verified; then')" "1"
+# The password comes before anything is fetched from the AUR -- the recipe
+# check included -- not from yay at the end of a build.
+chk "sudo is asked for before each AUR install, and before the recipe download" \
+  "$(grep -B4 'aur_install pear-desktop-bin' bin/hyprchroma-setup | grep -c 'authenticate_for'),$(grep -B12 'aur_install "$REVERSAL_AUR"' bin/hyprchroma-setup | grep -B8 'reversal_recipe_verified' | grep -c 'authenticate_for')" "1,1"
+chk "authenticating is sudo -v, through the keepalive" \
+  "$(grep -A3 '^authenticate_for()' bin/hyprchroma-setup | grep -c 'run_sudo -v')" "1"
+chk "an AUR install is checked with pacman afterwards" \
+  "$(grep -A4 '^aur_install()' bin/hyprchroma-setup | grep -c 'pacman -Qq "\$package"')" "1"
+# Install and Uninstall: both in a terminal the user can see.
 chk "it runs in a terminal the user can see" \
-  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "1"
-# Four: this one, the Escape handler that has always been there, the
-# restart, which closes the panel out of the way of the windows it reopens,
-# and Help, which hands over to the browser.
+  "$(grep -c 'launch", "floating", "terminal", "with", "presentation"' Panel.qml)" "2"
+# Five: this one, the uninstaller's, the Escape handler that has always been
+# there, the restart, which closes the panel out of the way of the windows it
+# reopens, and Help, which hands over to the browser.
 chk "the panel closes before the terminal opens" \
-  "$(countcode 'root.close\(\)' Panel.qml)" "4"
+  "$(countcode 'root.close\(\)' Panel.qml)" "5"
 chk "the service is enabled after building" \
   "$(grep -c '^systemctl --user enable hyprchromad.service' bin/hyprchroma-setup)" "1"
 # Restarted, so an update runs at once: "enable --now" left a running service

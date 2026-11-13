@@ -32,10 +32,11 @@ omarchy plugin add https://github.com/NobleDoodle/omarchroma --enable
 ```
 
 Open the panel and press **i**. A setup terminal shows what is new in this
-version and asks whether to enable every optional framework at once or choose
-them one by one, then whether to restart apps at theme change, and verifies the
-dependencies your choices need. Type
-`I understand` to build.
+version, describes each framework, and asks whether to enable every optional
+framework at once or choose them one by one, then whether to restart apps at
+theme change, and verifies the dependencies your choices need. Every download
+or install says what it fetches and why before it asks, and sudo asks for your
+password before anything comes from the AUR. Type `I understand` to build.
 
 **Standalone (service only):**
 
@@ -103,6 +104,7 @@ With the bar widget:
 | `b` (in About) | Buy me a coffee |
 | `c` (in Settings) | Restart apps at theme change: on (always asks first, Ctrl+Enter to go ahead) / off |
 | `b` (in Settings) | Show the bar icon's alert color and count. On unless you turn it off |
+| `u` (in Settings) | Uninstall: opens a terminal that asks before each step |
 | `1` – `5` (in Settings) | Show an optional framework in the panel, or remove it |
 | `i` | Install, update, or start hyprchroma when prompted |
 | `Esc` | Go back or close the panel |
@@ -327,6 +329,22 @@ These drive the bar widget. If running standalone, map to `hyprchroma --force`
 instead.
 
 ## Remove
+
+Open the panel, press `s` for Settings, then `u` (or click **Uninstall
+Omarchroma...**). A terminal walks through each step, says what it changes,
+and asks first; holding return skips everything:
+
+1. Stop and disable `hyprchromad.service`.
+2. Put your apps' theming back, from the snapshot taken before Omarchroma or
+   to Omarchy's defaults.
+3. Remove the two theme hooks it added.
+4. Remove the `hyprchroma` package (sudo).
+5. Remove Reversal, if setup installed it (sudo).
+6. Remove helper packages setup installed that nothing else needs (sudo).
+7. Delete Omarchroma's settings and snapshots.
+8. Remove the panel itself.
+
+Only steps that apply are shown. By hand, the same thing:
 
 ```bash
 hyprchroma restore --stock        # Do this first (or use --captured)
