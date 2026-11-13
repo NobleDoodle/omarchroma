@@ -6,5 +6,4 @@
 - Setup describes each framework: enable all at once, or one by one
 - Downloads say what and why first; sudo asks before anything from the AUR
 - Uninstall from the panel: Settings, then u
-- Keys moved: Additional Apps 7, Thunderbird 8, Pear 9; right-click the bar
-  icon for the next folder color
+- Keys: Additional Apps 7, Thunderbird 8, Pear 9; right-click: folder color

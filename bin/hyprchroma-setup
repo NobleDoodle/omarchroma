@@ -254,13 +254,14 @@ fi
 # The first screen: what this is, what is new, and one question. It has to
 # fit Omarchy's floating terminal (875x600) below the logo the presentation
 # wrapper prints -- about 31 rows, 13 of them the logo -- with no scrolling,
-# so the intro is kept to four lines and WHATSNEW.md to one line per item.
+# so the intro is kept to five lines and WHATSNEW.md to one line per item.
 # tests/test-setup.sh measures it.
 printf '%sOmarchroma setup%s\n' "$bold" "$reset"
 cat <<'INTRO'
-Hyprchroma carries your Omarchy theme into apps that do not follow it on
-their own. GTK and Qt/KDE are always on; you choose the rest next. Nothing
-is downloaded or installed without saying what and why, and asking first.
+Omarchroma installs a user service called Hyprchroma that carries your Omarchy
+theme into apps that do not follow it on their own. GTK and Qt/KDE are always
+on; you choose the rest next. Nothing is downloaded or installed without
+saying what and why, and asking first.
 INTRO
 
 # What changed in this version, read from the checkout's own WHATSNEW.md -- the
