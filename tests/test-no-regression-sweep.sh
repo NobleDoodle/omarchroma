@@ -17,23 +17,22 @@ ALL=(bin/hyprchroma bin/hyprchroma-setup lib/hyprchroma-state lib/hyprchroma-dar
 sweep(){ code "${ALL[@]}" | grep -ohE "$1" | wc -l; }
 
 # Predictable temporaries, and writers that rolled their own. One documented
-# exception: BUILDDIR in hyprchroma-setup is handed straight to makepkg and
-# never read or written by this project's own code, so it carries none of the
-# risk a homegrown temp writer would -- mktemp's own naming is already
-# unpredictable and its creation already atomic, which is what every other
-# write here achieves a different way. It exists only to keep makepkg's own
-# build scratch space out of the plugin tree Omarchy's shell watches for
-# changes, and it is created under the user's own cache directory, not /tmp
-# -- a first version of this used bare mktemp -d, which defaults to /tmp and
-# was caught as inconsistent with every other directory this project touches
-# living under $HOME, even though the random name is not the predictable
-# target the original rule was written about. Filtered out by exact text
-# before the sweep, then asserted to be the only such line, so a second,
-# undocumented one is still caught.
+# exception: new_work_dir in hyprchroma-setup makes the directory a package
+# build runs in -- handed to makepkg and git inside the build sandbox, never
+# read or written by this project's own code except to remove it -- so it
+# carries none of the risk a homegrown temp writer would: mktemp's own naming
+# is already unpredictable and its creation already atomic, which is what
+# every other write here achieves a different way. It exists to keep build
+# scratch space out of the plugin tree Omarchy's shell watches for changes,
+# and it is created under the user's own cache directory, not /tmp -- a first
+# version of this used bare mktemp -d, which defaults to /tmp and was caught
+# as inconsistent with every other directory this project touches living
+# under $HOME. Filtered out by exact text before the sweep, then asserted to
+# be the only such line, so a second, undocumented one is still caught.
 chk "nothing creates its own temporary, aside from that one exception" \
-  "$(code "${ALL[@]}" | grep -v 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' | grep -ohE 'tempfile\.mkstemp|mktemp ' | wc -l)" "0"
+  "$(code "${ALL[@]}" | grep -v 'work_dir=\$(mktemp -d -p "\$build_cache")' | grep -ohE 'tempfile\.mkstemp|mktemp ' | wc -l)" "0"
 chk "and that exception is exactly the one expected line" \
-  "$(grep -c 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' bin/hyprchroma-setup)" "1"
+  "$(grep -c 'work_dir=\$(mktemp -d -p "\$build_cache")' bin/hyprchroma-setup)" "1"
 chk "and it is not /tmp" \
   "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' bin/hyprchroma-setup)" "1"
 chk "no rename resolves its target by pathname" "$(sweep 'os\.replace\([^,]+, [^,]+\)')" "0"
@@ -63,21 +62,21 @@ chk "every python helper pins PATH" \
   "$(grep -l 'os.environ\["PATH"\] = trusted_path()' \
       lib/hyprchroma-state lib/hyprchroma-dark-reader lib/hyprchroma-palette | wc -l)" "3"
 
-# Privilege. The setup script is the only thing that may ask for any: a
-# direct sudo pacman for two named packages the user was shown and agreed to,
-# and one indirect path -- omarchy pkg aur add, which asks pacman the same
-# way any other AUR install does -- for Pear Desktop, a third-party
-# application, never for hyprchroma itself (see test-dependency.sh). Every
-# call site in setup goes through run_sudo, not bare sudo -- the only two
-# bare sudo lines left are run_sudo's own "sudo "$@"" and the keep-alive
-# loop's credential-refresh check, neither of which names a command of its
-# own to run, so they are filtered out by exact text rather than trusted to
-# stay harmless just because they exist today.
+# Privilege. The setup script is the only thing that may ask for any, and
+# only through pacman: -S for packages the user was shown and agreed to, and
+# -U for a package setup built in its sandbox and then checked -- Reversal,
+# Pear Desktop, and hyprchroma itself. No AUR helper
+# runs with the ticket any more. Every call site in setup goes through
+# run_sudo, not bare sudo -- the only bare sudo lines left are run_sudo's own
+# "sudo "$@"", the keep-alive loop's credential refresh, and finish()'s
+# "sudo -k" ending the ticket, none of which names a command of its own to
+# run, so they are filtered out by exact text rather than trusted to stay
+# harmless just because they exist today.
 chk "the service itself runs nothing privileged" \
   "$(code bin/hyprchroma lib/* | grep -cE '^[[:space:]]*(sudo|pkexec) ')" "0"
 chk "setup's own sudo calls all go through run_sudo, not bare sudo/pkexec" \
   "$(code bin/hyprchroma-setup | grep -E '^[[:space:]]*(sudo|pkexec) ' \
-      | grep -vE 'sudo "\$@"|sudo -n true' | wc -l)" "0"
+      | grep -vE 'sudo "\$@"|sudo -n true|^  sudo -k 2>/dev/null$' | wc -l)" "0"
 chk "and every run_sudo call site either warms the credential or names pacman" \
   "$(code bin/hyprchroma-setup | grep -E '^[[:space:]]*run_sudo ' \
       | grep -vE '^[[:space:]]*run_sudo pacman |^[[:space:]]*run_sudo -v' | wc -l)" "0"
@@ -85,17 +84,21 @@ chk "and where it does name a command, that command is pacman" \
   "$(code bin/hyprchroma-setup | grep -ohE '^[[:space:]]*run_sudo [a-z]+' | awk '{print $2}' | sort -u | paste -sd,)" "pacman"
 chk "and its package list is literal, not built from input" \
   "$(grep -cE 'missing\+=\((adw-gtk-theme|python-plyvel)\)' bin/hyprchroma-setup)" "2"
-chk "the indirect privileged calls name literal packages too" \
-  "$(code bin/hyprchroma-setup | grep -oE '^[[:space:]]*aur_install [^ |]+' | awk '{print $2}' | sort | paste -sd,)" '"$REVERSAL_AUR",pear-desktop-bin'
-chk "...and the Reversal one is a fixed name" \
-  "$(grep -c '^REVERSAL_AUR=reversal-icon-theme-git$' bin/hyprchroma-setup)" "1"
+chk "pacman is only asked to sync named packages, or install the checked build" \
+  "$(code bin/hyprchroma-setup | grep -ohE 'run_sudo pacman -[SU][^"]*' | LC_ALL=C sort -u | paste -sd'|')" \
+  'run_sudo pacman -S --needed |run_sudo pacman -S --needed --asdeps -- |run_sudo pacman -U -- |run_sudo pacman -U --needed -- '
+chk "...and every -U installs the package that was just checked" \
+  "$(code bin/hyprchroma-setup | grep -E 'run_sudo pacman -U' | grep -vc '"\$built_package"')" "0"
+chk "...Reversal's name is fixed" \
+  "$(grep -c '^REVERSAL_AUR=reversal-icon-theme-git$' bin/hyprchroma-setup),$(grep -c '^PEAR_AUR=pear-desktop-bin$' bin/hyprchroma-setup)" "1,1"
 
-# Nothing is fetched and then executed: the build runs on the checkout.
-chk "setup downloads nothing to run" "$(code bin/hyprchroma-setup | grep -E 'curl|wget|git clone' | grep -cv 'curl -fsSL --max-time 20 --proto')" "0"
-# One fetch exists: Reversal's AUR recipe, read only to compare its checksum
-# with the reviewed one before handing the install to the AUR helper.
-chk "...the one fetch is hashed, never run" \
-  "$(grep -A1 'curl -fsSL --max-time 20 --proto' bin/hyprchroma-setup | grep -c 'aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=$REVERSAL_AUR" | sha256sum)')" "1"
+# Nothing is fetched outside the build sandbox, and nothing fetched runs
+# outside it: the AUR recipes and Reversal's source are fetched by git in the
+# sandbox, Pear Desktop's release by makepkg --verifysource in the sandbox,
+# and every build runs there offline. hyprchroma builds from the checkout.
+chk "setup has no downloader of its own" "$(code bin/hyprchroma-setup | grep -cE 'curl|wget')" "0"
+chk "every networked step is one of the four downloads, in the sandbox" \
+  "$(code bin/hyprchroma-setup | grep -cE 'in_sandbox --net ')" "4"
 chk "it builds from its own location" \
   "$(grep -c 'realpath -- "\${BASH_SOURCE\[0\]}"' bin/hyprchroma-setup)" "1"
 

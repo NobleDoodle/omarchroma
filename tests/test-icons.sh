@@ -111,8 +111,10 @@ bystander.write_text("UNTOUCHED")
 
 # -- an app of the user's own with an absolute icon ---------------------------
 from PIL import Image
-art = H / "art/tool.png"
-art.parent.mkdir()
+# Under ~/.local/opt, where an app of the user's own installs: Icons draws
+# covers only from where app artwork lives.
+art = H / ".local/opt/tool/tool.png"
+art.parent.mkdir(parents=True)
 Image.new("RGBA", (64, 64), (200, 40, 40, 255)).save(art)
 apps = H / ".local/share/applications"
 apps.mkdir(parents=True)
@@ -170,6 +172,53 @@ chk("switching covers off moves the covers to a new directory", (len(after_off),
 chk("...which index.theme follows", f"Directories=apps/{after_off[0]},places/scalable" in index.read_text(), True)
 cli("covers", "on"); cli("apply")
 chk("switching them back on returns to the same name", sorted(p.name for p in theme_apps.iterdir()), generations)
+
+# -- a theme change skips the app pass when nothing about apps moved -------
+#. The stamp is untrusted state: anything wrong with it
+# may cost a full pass, never more.
+import re
+store = ic.cover_store()
+stamp_file = H / ".local/state/hyprchroma/icons/apps-stamp.json"
+def times():
+    return {p.name: os.lstat(p).st_mtime_ns for p in store.iterdir()}
+def counts(out):
+    found = re.search(r"(\d+) app icons drawn, (\d+) aliased", out)
+    return found.groups() if found else None
+full = cli("apply")
+chk("an explicit apply always runs the app pass", "apps unchanged" in full.stdout, False)
+before = times()
+quick = cli("apply", "--reuse-apps")
+chk("a theme-change apply with nothing about apps changed skips it",
+    (quick.returncode, "apps unchanged" in quick.stdout), (0, True))
+chk("...leaving every cover as it was, and the same counts", (times(), counts(quick.stdout)), (before, counts(full.stdout)))
+art2 = H / ".local/opt/tool/other.png"
+Image.new("RGBA", (64, 64), (40, 200, 40, 255)).save(art2)
+(apps / "other-tool.desktop").write_text(f"[Desktop Entry]\nName=Other\nIcon={art2}\nExec=true\n")
+added = cli("apply", "--reuse-apps")
+chk("a new desktop entry brings the app pass back, and its cover",
+    ("apps unchanged" in added.stdout, (store / "other-tool.svg").is_file()), (False, True))
+chk("...after which a theme change skips it again", "apps unchanged" in cli("apply", "--reuse-apps").stdout, True)
+kde_theme = H / ".local/share/icons/Omarchroma"
+kde_theme.mkdir(parents=True, exist_ok=True); (kde_theme / "index.theme").write_text("[Icon Theme]\nInherits=Reversal\n")
+chk("the Qt/KDE generator rewriting its own icon theme is not an app change",
+    "apps unchanged" in cli("apply", "--reuse-apps").stdout, True)
+cli("covers", "off")
+chk("a changed covers setting runs the full pass", "apps unchanged" in cli("apply", "--reuse-apps").stdout, False)
+cli("covers", "on"); cli("apply")
+good = stamp_file.read_text()
+for label, content in (("garbage", "not json"), ("another stamp", '{"stamp": "0", "counts": {}}'),
+                       ("counts that are not counts", json.dumps({**json.loads(good), "counts": {**json.loads(good)["counts"], "skipped": -5}})),
+                       ("an extra key", good.replace('"counts": {', '"counts": {"x": 1, '))):
+    stamp_file.write_text(content)
+    chk(f"a stamp file with {label} costs a full pass", "apps unchanged" in cli("apply", "--reuse-apps").stdout, False)
+stamp_file.unlink(); os.mkfifo(stamp_file)
+try:
+    fifo = subprocess.run([sys.executable, helper, "apply", "--reuse-apps"], capture_output=True, text=True, timeout=60)
+    chk("a FIFO in the stamp's place is not waited on", (fifo.returncode, "apps unchanged" in fifo.stdout), (0, False))
+except subprocess.TimeoutExpired:
+    chk("a FIFO in the stamp's place is not waited on", "hung", "returned")
+chk("...and is replaced by the stamp", stamp_file.is_fifo(), False)
+(apps / "other-tool.desktop").unlink(); cli("apply")
 
 run = cli("folders", "background")
 chk("the sidebar highlight is one key away", ic.sidebar_highlight("tokyo-night") in (places / "folder.svg").read_text(), True)
@@ -291,3 +340,13 @@ chk "...and every framework question answers yes on its own when it does" \
 chk "...while dependencies are checked the same way either way" \
   "$(grep -c 'all_frameworks' <(sed -n '/^head2 "Dependencies"/,/^head2 "What this installs"/p' "$U"))" "0"
 
+
+# --- the sync asks for the quick pass only on a theme change ------------------
+chk "a theme-change sync lets Icons reuse the app pass" \
+  "$(grep -c 'icons_output=$(timeout -k 5 "$ICONS_SECONDS" "$HYPRCHROMA_LIB/hyprchroma-icons" apply --reuse-apps 2>&1)' "$REPO/bin/hyprchroma")" "1"
+chk "...while the apply for a changed set of apps, and the panel's, always scan" \
+  "$(grep -E 'hyprchroma-icons" (apply|"\$1")' "$REPO/bin/hyprchroma" | grep -vc -- '--reuse-apps')" "2"
+# GTK first, where a change is seen; Icons before
+# Qt/KDE, which reads the icons.theme Icons points at its own theme.
+chk "a sync writes GTK, then Icons, then Qt/KDE" \
+  "$(awk '/^if \[\[ \( \$target == "all" \|\| \$target == "gtk" \)/{g=NR} /^if \[\[ \( \$target == "all" \|\| \$target == "icons" \)/{i=NR} /^if \[\[ \( \$target == "all" \|\| \$target == "qt-kde" \) \]\] && target_enabled qt-kde; then$/{q=NR} END{print (g < i && i < q) ? "in order" : "out of order"}' "$REPO/bin/hyprchroma")" "in order"

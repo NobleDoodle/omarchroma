@@ -128,27 +128,49 @@ PY
 # --- 6. the instances the first pass missed --------------------------------
 chk "no lock is opened for writing anywhere" \
   "$(countcode 'open\([^)]*\.lock", "w"\)' lib/hyprchroma-state)" "0"
-# Nine: the definition, the subcommand that exposes it, the four watcher
+# Ten: the definition, the subcommand that exposes it, the four watcher
 # locks that now go through it, the sync lock a browsers waiter takes, the
-# same lock for the Thunderbird waiter, and try_lock, through which the
-# daemon takes the sync lock and asks whether a waiter is alive.
+# same lock for the Thunderbird waiter, try_lock, through which the daemon
+# takes the sync lock and asks whether a waiter is alive, and the
+# color-scheme lock a detached re-send holds.
 chk "every watcher lock is prepared first" \
-  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "9"
+  "$(countcode 'prepare_lock\(' lib/hyprchroma-state)" "10"
 # Scoped to bin/ only before, which is why a fifth copy sat in the Qt/KDE
 # generator writing kdeglobals by pathname and went unnoticed for a release.
 chk "no generator embeds a writer of its own" \
   "$(countcode 'tempfile\.mkstemp\(|os\.replace\(temporary' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "0"
-# Nineteen: fourteen in bin/hyprchroma (nine embedded Python writers, the
+# Seventeen: fifteen in bin/hyprchroma (nine embedded Python writers, the
 # theme hook, a captured palette, the Pear stylesheet, the browsers' palette,
-# the Thunderbird palette, and the last-stale-notify record), one in the GTK
-# generator that writes both its stylesheets when they change, and in the
-# Qt/KDE generator the color scheme, kdeglobals, and the Omarchroma icon
-# theme's index and directory keeper. The three writers added for Additional
-# Apps are the saved switch state, the removed-row list, and the restore.
+# the Thunderbird palette, and the last-stale-notify record, and the three
+# writers added for Additional Apps: the saved switch state, the removed-row
+# list, and the restore), one in the GTK generator, a write-files request for
+# both its stylesheets when they change, and one in the Qt/KDE generator, the
+# write-files request carrying the color scheme, the Omarchroma icon theme's
+# index and directory keeper, and kdeglobals.
 chk "every generator write goes through the helper" \
-  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "20"
+  "$(countcode 'write-file", "--path"|hyprchroma-state" write-file|HELPER, "write-files"' bin/hyprchroma lib/sync-gtk-theme lib/sync-qt-kde-theme)" "17"
 # Nine: settings on a toggle, status, the Dark Reader theme, the Pear config,
 # the removed-framework list, the restart mode, and the three Additional Apps
 # writes (saved switches, the removed row, and the restore).
 chk "sync's embedded writers call the helper" \
   "$(countcode 'write-file", "--path"' bin/hyprchroma)" "9"
+
+# --- write-files: several files in one start ----------
+# The same atomic_write per file as write-file, and a request that is wrong in
+# any part writes nothing at all.
+wf=$(mktemp -d); trap 'rm -rf "$wf"' EXIT
+H=$PWD/lib/hyprchroma-state
+mkdir -p "$wf/a" "$wf/b"; echo outside > "$wf/victim"; ln -s "$wf/victim" "$wf/b/linked"
+printf '%s\0' "$wf/a/one" 644 "first" "$wf/b/two" 4755 "second" "$wf/b/linked" 600 "third" "$wf/a/empty" "" "" | "$H" write-files
+chk "write-files writes each file it is given" \
+  "$(cat "$wf/a/one"),$(cat "$wf/b/two"),$(cat "$wf/b/linked"),$(stat -c %s "$wf/a/empty")" "first,second,third,0"
+chk "...modes masked to the permission bits, as write-file does" "$(stat -c %a "$wf/b/two")" "755"
+chk "...and a link in the way is replaced, not written through" \
+  "$([[ -L $wf/b/linked ]] && echo link || echo file),$(cat "$wf/victim")" "file,outside"
+for bad in "relative-path|$wf/a/x 644 x rel 644 y" "bad-mode|$wf/a/x 644 x $wf/a/y 9z9 y" "short|$wf/a/x 644 x $wf/a/y 644"; do
+  label=${bad%%|*}; read -r -a fields <<<"${bad#*|}"
+  "$H" write-files < <(printf '%s\0' "${fields[@]}") 2>/dev/null; rc=$?
+  chk "a request with a $label writes nothing" "$rc,$([[ -e $wf/a/x ]] && echo written || echo nothing)" "1,nothing"
+done
+chk "the generators use it, once each" \
+  "$(grep -c 'hyprchroma-state" write-files$' lib/sync-gtk-theme),$(grep -c '\[HELPER, "write-files"\]' lib/sync-qt-kde-theme)" "1,1"

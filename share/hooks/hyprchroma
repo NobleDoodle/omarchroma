@@ -39,5 +39,44 @@ hyprchroma_trusted_path() {
 }
 PATH=$(hyprchroma_trusted_path)
 export PATH
+# A theme change is synchronized by the running service, inside its unit's
+# sandbox (no new privileges, unix sockets only, its system-call filter),
+# rather than here in omarchy-theme-set's process tree, which has none of
+# that. The hook asks with SIGUSR1 --
+# no data, to the unit's main process only -- and returns at once: the
+# theme picker does not wait for the sync, and its result is the service's
+# to report. Hooks after this one may run before it has finished. Anything
+# unexpected before the signal, and it runs the sync itself, as before.
+SERVICE=hyprchromad.service
+HANDOFF="${XDG_RUNTIME_DIR:-}/hyprchroma-handoff"
+
+# The watcher's pid and start time, the requests it has received, how many of
+# them its last finished sync covered, and that sync's exit status. Read only
+# as this user's own regular file (a FIFO would block), and only as numbers.
+read_handoff() {
+  local line
+  [[ -n ${XDG_RUNTIME_DIR:-} && -f $HANDOFF && ! -L $HANDOFF && -O $HANDOFF ]] || return 1
+  IFS= read -r -n 128 line <"$HANDOFF" || return 1
+  [[ $line =~ ^([1-9][0-9]{0,9})\ ([0-9]{1,20})\ ([0-9]{1,15})\ ([0-9]{1,15})\ ([0-9]{1,3})$ ]] || return 1
+  handoff_pid=${BASH_REMATCH[1]} handoff_started=${BASH_REMATCH[2]} handoff_requested=${BASH_REMATCH[3]}
+  handoff_done=${BASH_REMATCH[4]} handoff_status=${BASH_REMATCH[5]}
+}
+
+hand_off() {
+  local main_pid
+  main_pid=$(timeout 5 systemctl --user show --property=MainPID --value "$SERVICE" 2>/dev/null) || return 1
+  [[ $main_pid =~ ^[1-9][0-9]*$ ]] || return 1
+  # Only a watcher that has said it is listening, and is the unit's main
+  # process now, is asked. An older daemon, one still starting or a stale
+  # file all fall through to running the sync here.
+  read_handoff && [[ $handoff_pid == "$main_pid" ]] || return 1
+  # Delivered, it is the watcher's: a request that arrives during a sync
+  # folds into one more, and a watcher stopped before covering it is
+  # followed by the daemon's own sync when the unit starts again.
+  timeout 5 systemctl --user kill --kill-whom=main --signal=SIGUSR1 "$SERVICE" 2>/dev/null || return 1
+  exit 0
+}
+
+hand_off
 # Theme changes stay quiet; synchronization errors share a session budget.
 exec /usr/bin/hyprchroma --force --quiet

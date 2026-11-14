@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Hyprchroma's Icons framework: Reversal or Yaru for every Omarchy theme.
 
 Every Omarchy theme points at one icon theme, Omarchroma-Icons, in ~/.icons. Its
@@ -33,6 +33,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import warnings
 import time
 from pathlib import Path
 
@@ -254,7 +255,8 @@ ICON_SETS = ("reversal", "yaru")
 SET_LABELS = {"reversal": "Reversal", "yaru": "Yaru"}
 FOLDER_MODES = ("background", "accent", "border", "yaru")
 # Part of every stamp below. Bump when the geometry or the recolor rules change.
-VERSION = 3
+# 4: covers are written 0600, so every one is written again.
+VERSION = 4
 # A theme slug names a directory under ~/.config/omarchy/themes; anything that
 # could climb out of it is not one.
 _SLUG = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -345,14 +347,64 @@ def write_text(path: Path, text: str, mode: int | None = None) -> None:
 
 
 def write_if_changed(path: Path, text: str, mode: int | None = None) -> bool:
-    if not path.is_symlink() and path.is_file():
-        try:
-            if path.read_text(errors="replace") == text:
-                return False
-        except OSError:
-            pass
+    data = text.encode()
+    if not path.is_symlink() and read_regular(path, len(data)) == data:
+        return False
     write_text(path, text, mode)
     return True
+
+
+# -------------------------------------------------------------- safe read --
+# Everything this helper reads that it did not just write -- theme files,
+# Omarchy's theme.name, desktop entries, icon artwork, its own stamps and
+# backups -- sits where other programs running as this user can put something
+# else. A FIFO there blocked a plain open() for good, while the sync that
+# started this held its lock and every framework waited.
+# So every read goes through a verified parent directory, opens without
+# blocking, takes nothing but a regular file, and stops at a size cap.
+
+def read_regular(path, limit: int) -> bytes | None:
+    """At most limit bytes of a regular file, or None: missing, not a regular
+    file (a FIFO, socket or device), unreadable, or larger than limit. A final
+    symlink is followed, as icon themes are made of them; what it reaches must
+    still be a regular file. At most limit + 1 bytes are read, so the size is
+    judged from what was read, not from a stat a swap could invalidate."""
+    try:
+        path = Path(path)
+        descriptor = open_dir(path.parent)
+    except (OSError, ValueError):
+        return None
+    try:
+        opened = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=descriptor)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        if not stat.S_ISREG(os.fstat(opened).st_mode):
+            return None
+        chunks, remaining = [], limit + 1
+        while remaining > 0:
+            chunk = os.read(opened, min(remaining, 1 << 20))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(opened)
+    data = b"".join(chunks)
+    return None if len(data) > limit else data
+
+
+def _read(path: Path | None, limit: int = 1 << 16) -> str:
+    """The text of a regular file of at most limit bytes, through read_regular;
+    "" for anything else, a file over the cap included."""
+    if path is None:
+        return ""
+    data = read_regular(path, limit)
+    return "" if data is None else data.decode("utf-8", errors="replace")
 
 
 def replace_symlink(link: Path, target: str) -> None:
@@ -426,10 +478,15 @@ class Lock:
     def __enter__(self):
         descriptor = open_dir(state_dir(), create=True)
         try:
-            self.handle = os.open(self.name, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
-                                  0o600, dir_fd=descriptor)
+            # O_NONBLOCK: opening a FIFO planted in its place would otherwise
+            # wait for a writer that never comes.
+            self.handle = os.open(self.name, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+                                  | os.O_NONBLOCK, 0o600, dir_fd=descriptor)
         finally:
             os.close(descriptor)
+        if not stat.S_ISREG(os.fstat(self.handle).st_mode):
+            os.close(self.handle)
+            raise OSError(f"{self.name} in the state folder is not a regular file")
         fcntl.flock(self.handle, fcntl.LOCK_EX | (0 if self.blocking else fcntl.LOCK_NB))
         return self
 
@@ -631,14 +688,6 @@ def theme_file(slug: str, name: str) -> Path | None:
     return None
 
 
-def _read(path: Path | None, limit: int = 1 << 16) -> str:
-    if path is None:
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(limit)
-    except OSError:
-        return ""
 
 
 def theme_color(slug: str, key: str) -> str | None:
@@ -849,14 +898,39 @@ def base_icon_names(chosen_set: str) -> dict[str, Path]:
     return yaru_icon_names() if chosen_set == "yaru" else reversal_icon_names()
 
 
+# Every program this starts has a time limit, as hyprctl calls elsewhere do:
+# a copy of an icon theme takes a second or two, a cache refresh
+# less, and neither may hold an apply -- and the sync's lock above it -- for
+# good.
+COPY_SECONDS = 120
+CACHE_SECONDS = 60
+
+
 def _copy_theme(source: Path, destination: Path) -> None:
     """Hard links where allowed (a user's own Reversal), a copy otherwise
     (a system Reversal, which protected_hardlinks will not let us link)."""
-    linked = subprocess.run(["cp", "-al", "--", str(source), str(destination)], capture_output=True)
-    if linked.returncode != 0:
+    try:
+        linked = subprocess.run(["cp", "-al", "--", str(source), str(destination)],
+                                capture_output=True, timeout=COPY_SECONDS).returncode == 0
+    except subprocess.TimeoutExpired:
+        linked = False
+    if not linked:
         remove_tree(destination)
         subprocess.run(["cp", "-a", "--reflink=auto", "--", str(source), str(destination)],
-                       check=True, capture_output=True)
+                       check=True, capture_output=True, timeout=COPY_SECONDS)
+
+
+def _update_icon_cache(directory: Path, *flags: str) -> None:
+    """gtk-update-icon-cache, when there is one; the cache only speeds lookups,
+    so one that fails or stalls is left out rather than failing an apply."""
+    tool = shutil.which("gtk-update-icon-cache")
+    if not tool:
+        return
+    try:
+        subprocess.run([tool, "-f", *flags, "-q", str(directory)], check=False,
+                       capture_output=True, timeout=CACHE_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def ensure_reversal_sage() -> None:
@@ -893,9 +967,7 @@ def ensure_reversal_sage() -> None:
             updated = re.sub(_GREEN_SHADE, _SAGE_SHADE, updated, flags=re.I)
             if updated != body:
                 write_text(svg, updated, 0o644)
-        tool = shutil.which("gtk-update-icon-cache")
-        if tool:
-            subprocess.run([tool, "-f", "-q", str(destination)], check=False, capture_output=True)
+        _update_icon_cache(destination)
 
 
 # ----------------------------------------------------------- app covers --
@@ -985,22 +1057,197 @@ def _safe_stem(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._+-]", "-", name).strip(".-") or "icon"
 
 
+# An icon name as it may name a file in the store: the characters themes and
+# desktop entries use, and short enough that the store's temporary names stay
+# inside the 255-byte limit. One that failed that limit used to abort the whole
+# apply; anything else is now skipped.
+_ICON_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$")
+
+
+# ------------------------------------------------- absolute Icon= paths --
+# A desktop entry may name its artwork by path, and Icons draws a cover from
+# it. Anything that can write a desktop entry could name any picture this user
+# can read, and Icons would keep a copy of it in the store. So
+# a path is honored only where app artwork lives: outside the home folder, the
+# system's own places; inside it, the folders applications install into --
+# Omarchy's plugin folder among them, where a plugin's launcher keeps its icon
+# -- never the user's documents, pictures or downloads, the trash, or a dot
+# folder of some other program's. It must also be a regular file of at most 4
+# MiB that starts like an image. Anything else is skipped and the entry keeps
+# its own icon.
+ABSOLUTE_ICON_LIMIT = 4 << 20
+_HOME_ICON_PLACES = (".local/share", ".local/opt", ".icons", "Applications", ".config/omarchy/plugins")
+_SYSTEM_ICON_PLACES = ("/usr", "/opt", "/var/lib/flatpak", "/var/lib/snapd", "/snap")
+_USER_DIR_KEYS = ("DESKTOP", "DOWNLOAD", "TEMPLATES", "PUBLICSHARE", "DOCUMENTS", "MUSIC", "PICTURES", "VIDEOS")
+_USER_DIR_DEFAULTS = ("Desktop", "Downloads", "Templates", "Public", "Documents", "Music", "Pictures", "Videos")
+
+
+def _user_dirs(home_real: Path) -> list[Path]:
+    """The user's documents folders, as user-dirs.dirs names them, and their
+    usual names besides. A folder set to the home folder itself (how XDG turns
+    one off) is not one."""
+    found = [home_real / name for name in _USER_DIR_DEFAULTS]
+    text = _read(_xdg("XDG_CONFIG_HOME", ".config") / "user-dirs.dirs", 1 << 14)
+    for key, value in re.findall(r'^XDG_([A-Z]+)_DIR="([^"\n]*)"', text, re.M):
+        if key not in _USER_DIR_KEYS:
+            continue
+        if value.startswith("$HOME/"):
+            value = str(home_real) + value[5:]
+        if value.startswith("/"):
+            real = Path(os.path.realpath(value))
+            if real != home_real:
+                found.append(real)
+    return found
+
+
+def _icon_signature(path: Path, data: bytes) -> bool:
+    """Whether data starts like PNG, JPEG, ICO, XPM, WebP or SVG artwork."""
+    head = data[:512]
+    if head.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"\x00\x00\x01\x00", b"/* XPM */")):
+        return True
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True
+    if head.lstrip().lower().startswith((b"<?xml", b"<svg")):
+        return True
+    return path.suffix.lower() == ".svgz" and head[:2] == b"\x1f\x8b"
+
+
+def icon_source(icon: object) -> tuple[Path, bytes] | None:
+    """The real path and contents of an absolute Icon= that Icons may draw a
+    cover from, or None. The checks are on the path after every link is
+    resolved, and the contents returned are what was checked, so nothing can be
+    swapped in between."""
+    if not isinstance(icon, str) or not icon.startswith("/") or len(icon) > 4096 or "\0" in icon:
+        return None
+    try:
+        real = Path(os.path.realpath(icon))
+        home_real = Path(os.path.realpath(home()))
+    except (OSError, ValueError):
+        return None
+    if real.is_relative_to(home_real):
+        if not any(real.is_relative_to(home_real / place) for place in _HOME_ICON_PLACES):
+            return None
+        if real.is_relative_to(home_real / ".local/share/Trash"):
+            return None
+        if any(real.is_relative_to(folder) for folder in _user_dirs(home_real)):
+            return None
+    else:
+        roots = [Path(place) for place in _SYSTEM_ICON_PLACES]
+        for entry in os.environ.get("XDG_DATA_DIRS", "").split(":"):
+            if entry.startswith("/"):
+                root = Path(os.path.realpath(entry))
+                if len(root.parts) >= 3:  # a data folder, never "/" or "/tmp" itself
+                    roots.append(root)
+        if not any(real.is_relative_to(root) for root in roots):
+            return None
+    data = read_regular(real, ABSOLUTE_ICON_LIMIT)
+    if data is None or not _icon_signature(real, data):
+        return None
+    return real, data
+
+
+# Where a desktop entry Icons rewrote keeps the Icon= it had, beside the name
+# Icons gave it. Revert puts back only what a file records about itself:
+# absolute-icons.json, which anything running as this user can write, only
+# says which files to look at.
+_ORIGINAL_KEY = "X-Omarchroma-Original-Icon"
+
+
+def _own_desktop_file(path) -> Path | None:
+    """The real path of a desktop entry in the user's own applications folder,
+    or None: the only kind Icons rewrites or puts back. Judged after every link
+    and ".." is resolved, so a name that climbs out is not one; never a
+    symlink, which belongs to whatever put the link there."""
+    try:
+        path = Path(path)
+        if path.is_symlink():
+            return None
+        real = Path(os.path.realpath(path))
+        folder = Path(os.path.realpath(_xdg("XDG_DATA_HOME", ".local/share") / "applications"))
+    except (OSError, ValueError):
+        return None
+    if real.suffix != ".desktop" or real == folder or not real.is_relative_to(folder):
+        return None
+    return real
+
+
+def _plain_original(value: object) -> bool:
+    """An Icon= value Icons would have recorded: an absolute path, short, with
+    no control characters to start a line of its own."""
+    return (isinstance(value, str) and value.startswith("/") and len(value) <= 4096
+            and not any(ord(char) < 32 or ord(char) == 127 for char in value))
+
+
+def _recorded_original(desktop: Path, recorded: object) -> str | None:
+    """What a rewritten desktop file had as its Icon=: its own record line, or,
+    for a file rewritten before that line existed, absolute-icons.json's."""
+    own = _own_desktop_file(desktop)
+    if own is None:
+        return None
+    marker = re.search(rf"^{_ORIGINAL_KEY}=(.*)$", _read(own, 1 << 18), re.M)
+    value = marker.group(1).strip() if marker else recorded
+    return value if _plain_original(value) else None
+
+
 def _rewrite_absolute(path: Path, icon_name: str, originals: dict[str, str]) -> None:
     """An absolute Icon= cannot be themed, so a desktop file of the user's own
-    names the cover instead. Its original line is kept for revert. Never a
-    symlink -- that file belongs to whatever put the link there."""
-    try:
-        path.relative_to(home())
-    except ValueError:
+    names the cover instead. Its original line is kept beside it, as
+    X-Omarchroma-Original-Icon, and listed in absolute-icons.json, for revert."""
+    own = _own_desktop_file(path)
+    if own is None:
         return
-    if path.is_symlink() or not path.is_file():
-        return
-    text = _read(path, 1 << 18)
+    text = _read(own, 1 << 18)
     match = re.search(r"^Icon=(.*)$", text, re.M)
     if not match or match.group(1).strip() == icon_name:
         return
-    originals.setdefault(str(path), match.group(1).strip())
-    write_text(path, text[:match.start(1)] + icon_name + text[match.end(1):])
+    original = match.group(1).strip()
+    if not _plain_original(original):
+        return
+    text = re.sub(rf"^{_ORIGINAL_KEY}=.*\n?", "", text, flags=re.M)
+    match = re.search(r"^Icon=(.*)$", text, re.M)
+    text = (text[:match.start()] + f"Icon={icon_name}\n{_ORIGINAL_KEY}={original}"
+            + text[match.end():])
+    originals[str(path)] = original
+    write_text(own, text)
+
+
+def _restore_absolute(path_text: object, recorded: object) -> bool:
+    """Put back the Icon= that _rewrite_absolute replaced. Only in a desktop
+    file of the user's own whose Icon= is still the name Icons gave it, and
+    only to what that file records itself. A file rewritten before it kept
+    that record is put back from absolute-icons.json only when the value names
+    artwork Icons would draw from -- so a tampered list can neither reach a
+    file outside the applications folder nor give a launcher an icon of its
+    choosing."""
+    if not isinstance(path_text, str):
+        return False
+    own = _own_desktop_file(path_text)
+    if own is None:
+        return False
+    text = _read(own, 1 << 18)
+    marker = re.search(rf"^{_ORIGINAL_KEY}=(.*)\n?", text, re.M)
+    if marker:
+        original = marker.group(1).strip()
+        text = text[:marker.start()] + text[marker.end():]
+    else:
+        original = recorded
+        if not _plain_original(original) or icon_source(original) is None:
+            return False
+    if not _plain_original(original):
+        return False
+    match = re.search(r"^Icon=(.*)$", text, re.M)
+    if not match or match.group(1).strip() != _safe_stem(own.stem):
+        return False
+    write_text(own, text[:match.start(1)] + original + text[match.end(1):])
+    return True
+
+
+# Icon artwork, not posters. Pillow's own ceiling is about 179 million pixels,
+# which a hostile file can reach in a few kilobytes and which costs gigabytes
+# to decode. Anything over 4096 x 4096 is refused, and
+# Pillow's warning below its hard limit is an error here, not a note.
+MAX_PIXELS = 4096 * 4096
+ARTWORK_LIMIT = 16 << 20
 
 
 def _pil():
@@ -1008,7 +1255,16 @@ def _pil():
         from PIL import Image, ImageChops, ImageDraw, ImageFilter
     except ImportError as error:
         raise SystemExit("python-pillow is not installed; app-icon covers need it") from error
+    if Image.MAX_IMAGE_PIXELS != MAX_PIXELS:
+        Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
     return Image, ImageChops, ImageDraw, ImageFilter
+
+
+def _decode_errors(Image) -> tuple[type[BaseException], ...]:
+    """What decoding a file someone else could have written may raise."""
+    return (OSError, ValueError, SyntaxError, EOFError,
+            Image.DecompressionBombError, Image.DecompressionBombWarning)
 
 
 def plate_mask():
@@ -1132,43 +1388,49 @@ def render_plain(image):
     return canvas
 
 
-def _looks_like_svg(path: Path) -> bool:
-    if path.suffix.lower() == ".svg":
+def _looks_like_svg(path: Path, data: bytes) -> bool:
+    if path.suffix.lower() in (".svg", ".svgz"):
         return True
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(256).lstrip().lower()
-    except OSError:
-        return False
-    return head.startswith((b"<?xml", b"<svg"))
+    return data[:256].lstrip().lower().startswith((b"<?xml", b"<svg"))
 
 
-def _render_svg(path: Path):
+def _render_svg(data: bytes):
+    """rsvg-convert, given the bytes already read on stdin rather than a path
+    to open again: nothing can be swapped in between, and with no file name it
+    has no folder to resolve the drawing's own references against."""
     Image = _pil()[0]
     import io
     try:
-        result = subprocess.run(["rsvg-convert", "-w", str(CANVAS), "-h", str(CANVAS), "--", str(path)],
-                                check=True, capture_output=True, timeout=20)
+        result = subprocess.run(["rsvg-convert", "-w", str(CANVAS), "-h", str(CANVAS)],
+                                input=data, check=True, capture_output=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return None
     try:
         return Image.open(io.BytesIO(result.stdout)).convert("RGBA")
-    except OSError:
+    except _decode_errors(Image):
         return None
 
 
-def load_artwork(path: Path):
+def load_artwork(path: Path, data: bytes | None = None):
+    """The artwork at path, at most ARTWORK_LIMIT bytes of a regular file, or
+    None. data, when given, is what the caller already read and checked."""
     Image = _pil()[0]
-    if _looks_like_svg(path):
-        return _render_svg(path)
+    import io
+    if data is None:
+        data = read_regular(path, ARTWORK_LIMIT)
+        if data is None:
+            return None
+    if _looks_like_svg(path, data):
+        return _render_svg(data)
     try:
-        image = Image.open(path)
-        # Icons, not posters: anything this large is not app artwork.
-        if image.width * image.height > 4096 * 4096:
+        image = Image.open(io.BytesIO(data))
+        # Icons, not posters: anything this large is not app artwork. Checked
+        # on the header, before anything is decoded.
+        if image.width * image.height > MAX_PIXELS:
             return None
         image = image.convert("RGBA")
-    except (OSError, Image.DecompressionBombError):
-        return _render_svg(path)
+    except _decode_errors(Image):
+        return _render_svg(data)
     if image.size != (CANVAS, CANVAS):
         fitted = Image.new("RGBA", (CANVAS, CANVAS), (0, 0, 0, 0))
         scale = min(CANVAS / image.width, CANVAS / image.height)
@@ -1195,7 +1457,9 @@ def write_icon(image, destination: Path) -> None:
     import io
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", optimize=True)
-    write_text(destination, svg_document(buffer.getvalue()), 0o644)
+    # Readable by this user only: a cover is a copy of an app's artwork, and
+    # nothing else on the machine needs to read it.
+    write_text(destination, svg_document(buffer.getvalue()), 0o600)
 
 
 def build_icon(artwork, name: str, mask):
@@ -1213,6 +1477,86 @@ def _link_into(store: Path, stem: str, source: Path) -> None:
         replace_symlink(link, target)
 
 
+# A theme change does not change which apps there are, yet scanning every
+# icon theme on the system for their artwork was most of an apply. The scan
+# is skipped when nothing it reads has moved: the times of the folders desktop
+# entries and app artwork live in, the base set, the remembered absolute
+# sources and the store itself, with this helper's version and the settings
+# that shape a cover. A folder's time moves when an entry is added, removed
+# or replaced, which is how packages install. The stamp sits in the state
+# folder, which other programs as this user could write, so it is trusted
+# with nothing: a wrong one costs one more full scan, or skips one refresh
+# until the next change or "Apply again", and never names a path to read or
+# write. Only stat() is called on what it lists.
+APPS_STAMP = "apps-stamp.json"
+_COUNT_KEYS = ("clip", "plate", "plain", "alias", "skipped")
+_STAMP_LIMIT = 4096
+
+
+def _mtime(path) -> str:
+    try:
+        return str(os.stat(path).st_mtime_ns)
+    except (OSError, ValueError):
+        return "-"
+
+
+def apps_stamp(chosen_set: str, covers: bool, store: Path) -> str:
+    parts = [f"v{VERSION}", chosen_set, str(bool(covers)), f"store {_mtime(store)}"]
+    for root in application_dirs():
+        listed = 0
+        for directory, dirs, _files in os.walk(root):
+            dirs.sort()
+            parts.append(f"{directory} {_mtime(directory)}")
+            listed += 1
+            if listed > _STAMP_LIMIT:
+                return ""  # too much to stamp cheaply: always scan
+    base = find_theme("Yaru" if chosen_set == "yaru" else "Reversal")
+    parts.append(f"base {_mtime(base / 'index.theme') if base else '-'}")
+    for root in _icon_bases():
+        try:
+            names = sorted(os.listdir(root))
+        except OSError:
+            continue
+        if len(names) > _STAMP_LIMIT:
+            return ""
+        for name in names:
+            # Reversal, Yaru and what Omarchroma writes itself -- this
+            # theme, and the Qt/KDE generator's "Omarchroma", rewritten at
+            # every light/dark switch -- hold no artwork for covers, and
+            # writing them must not count as a change.
+            if name.startswith(("Reversal", "Yaru", "Omarchroma")):
+                continue
+            parts.append(f"{root}/{name} {_mtime(root / name)}")
+        hicolor = root / "hicolor"
+        try:
+            sizes = sorted(os.listdir(hicolor))[:_STAMP_LIMIT]
+        except OSError:
+            sizes = []
+        for size in sizes:
+            parts.append(f"hicolor {size} {_mtime(hicolor / size / 'apps')}")
+    parts.append(f"pixmaps {_mtime('/usr/share/pixmaps')}")
+    remembered = read_json_file(state_dir() / "absolute-sources.json", {})
+    for stem in sorted(remembered)[:_STAMP_LIMIT]:
+        source = remembered[stem]
+        if isinstance(source, str) and source.startswith("/"):
+            parts.append(f"absolute {stem} {_mtime(source)}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def reusable_counts(stamp: str, store: Path) -> dict[str, int] | None:
+    """The last scan's counts if it saw exactly what is there now, else None."""
+    if not stamp or not store.is_dir() or store.is_symlink():
+        return None
+    saved = read_json_file(state_dir() / APPS_STAMP, {})
+    counts = saved.get("counts")
+    if saved.get("stamp") != stamp or not isinstance(counts, dict):
+        return None
+    if set(counts) != set(_COUNT_KEYS) or not all(
+            type(counts[key]) is int and 0 <= counts[key] < 1 << 20 for key in _COUNT_KEYS):
+        return None
+    return {key: counts[key] for key in _COUNT_KEYS}
+
+
 def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
     """App icons. Every app the base set draws is linked in, so launchers that
     scan for files rather than follow the theme find the set's icon first.
@@ -1226,31 +1570,54 @@ def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
     counts = {"clip": 0, "plate": 0, "plain": 0, "alias": 0, "skipped": 0}
     wanted: set[str] = set()
     originals = read_json_file(state_dir() / "absolute-icons.json", {})
-    absolute_sources = read_json_file(state_dir() / "absolute-sources.json", {})
+    # Rebuilt by every scan and never read back for what to draw: a planted
+    # entry here used to pick the artwork for any icon name.
+    # apps_stamp still stats what it lists, to notice artwork changing.
+    absolute_sources: dict[str, str] = {}
     cache = read_json_file(state_dir() / "cache.json", {})
     if cache.get("version") != VERSION or not isinstance(cache.get("icons"), dict):
         cache = {"version": VERSION, "icons": {}}
     make_dir(store)
 
-    for icon, desktop in desktop_entries():
+    def one(icon: str, desktop: Path) -> None:
+        nonlocal mask
         remembered = None
+        checked_path = checked_data = None
         if icon.startswith("/"):
-            source = Path(icon)
-            if not source.is_file():
-                counts["skipped"] += 1
-                continue
             stem = _safe_stem(desktop.stem)
+            checked = icon_source(icon) if _ICON_NAME.fullmatch(stem) else None
+            if checked is None:
+                # Not artwork Icons may copy: the entry keeps its own icon.
+                counts["skipped"] += 1
+                return
+            source = checked_path = checked[0]
+            checked_data = checked[1]
             _rewrite_absolute(desktop, stem, originals)
             absolute_sources[stem] = str(source)
         else:
             stem = icon
-            if "/" in stem or stem.startswith("."):
+            if not _ICON_NAME.fullmatch(stem):
                 counts["skipped"] += 1
-                continue
+                return
             source = None
-            remembered = absolute_sources.get(stem)
-            if isinstance(remembered, str) and Path(remembered).is_file():
-                source = Path(remembered)
+            # A desktop file of the user's own whose absolute Icon= this
+            # replaced with its name: the artwork comes from what that file
+            # records, checked again as above.
+            recorded = originals.get(str(desktop))
+            if recorded is not None and stem == _safe_stem(desktop.stem):
+                original = _recorded_original(desktop, recorded)
+                checked = icon_source(original) if original else None
+                if checked is None:
+                    # No longer artwork Icons may draw: the entry gets its own
+                    # icon back rather than a name nothing provides.
+                    if _restore_absolute(str(desktop), recorded):
+                        originals.pop(str(desktop), None)
+                    counts["skipped"] += 1
+                    return
+                source = checked_path = checked[0]
+                checked_data = checked[1]
+                remembered = original
+                absolute_sources[stem] = str(source)
 
         # Yaru: the menu takes the first SVG it finds, and Reversal's SVGs would
         # win over Yaru's PNGs, so every visible app gets an entry: Yaru's own
@@ -1261,18 +1628,18 @@ def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
             if yaru_path is not None and yaru_path.suffix == ".svg":
                 _link_into(store, stem, yaru_path)
                 wanted.add(f"{stem}.svg")
-                continue
+                return
             source = yaru_path or source or sources.get(stem)
             if source is None or not source.is_file():
                 counts["skipped"] += 1
-                continue
+                return
         alias = ALIASES.get(stem) if chosen_set == "reversal" else None
         alias = alias or (lower.get(stem.lower()) if stem not in names else None)
         if alias and alias in names and names[alias].suffix == ".svg" and not icon.startswith("/"):
             _link_into(store, stem, names[alias])
             wanted.add(f"{stem}.svg")
             counts["alias"] += 1
-            continue
+            return
         # Reversal has the app's own icon: link it in too. GTK and Qt would
         # find it through Inherits=, but the Omarchy app launcher and docks
         # take the first file of that name they come across, and a generic
@@ -1284,23 +1651,23 @@ def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
                 _link_into(store, stem, names[stem])
                 wanted.add(f"{stem}.svg")
                 counts["alias"] += 1
-            continue
+            return
         if chosen_set != "yaru" and not covers and not icon.startswith("/") and not remembered:
-            continue
+            return
         source = source or sources.get(stem)
         if source is None or not source.is_file():
             counts["skipped"] += 1
-            continue
+            return
         destination = store / f"{stem}.svg"
         stamp = f"{VERSION}:{'plain' if draw_plain else 'cover'}:{source}:{source.stat().st_mtime_ns}"
         if (cache["icons"].get(stem) == stamp and destination.is_file()
                 and not destination.is_symlink()):
             wanted.add(destination.name)
-            continue
-        artwork = load_artwork(source)
+            return
+        artwork = load_artwork(source, checked_data if source == checked_path else None)
         if artwork is None:
             counts["skipped"] += 1
-            continue
+            return
         if draw_plain:
             image, kind = render_plain(artwork), "plain"
         else:
@@ -1309,9 +1676,19 @@ def generate(store: Path, covers: bool, chosen_set: str) -> dict[str, int]:
         if destination.is_symlink():
             remove_entry(destination)
         write_icon(image, destination)
-        write_text(store / f".{stem}.mode", kind + "\n", 0o644)
+        write_text(store / f".{stem}.mode", kind + "\n", 0o600)
         cache["icons"][stem] = stamp
         wanted.add(destination.name)
+
+    # One entry at a time: whatever goes wrong with one -- a name the file
+    # system refuses, artwork that will not decode -- skips that entry and
+    # never the rest.
+    for icon, desktop in desktop_entries():
+        try:
+            one(icon, desktop)
+        except Exception as error:  # noqa: BLE001 -- counted and reported, as a skipped entry
+            counts["skipped"] += 1
+            print(f"hyprchroma-icons: skipped {desktop.name!r}: {error}", file=sys.stderr)
 
     for existing in list(store.iterdir()):
         if existing.name.startswith("."):
@@ -1516,9 +1893,8 @@ def install_theme(base: str) -> bool:
 
 
 def refresh_icon_cache() -> None:
-    tool = shutil.which("gtk-update-icon-cache")
-    if tool and (theme_dir() / "index.theme").is_file():
-        subprocess.run([tool, "-f", "-t", "-q", str(theme_dir())], check=False, capture_output=True)
+    if (theme_dir() / "index.theme").is_file():
+        _update_icon_cache(theme_dir(), "-t")
 
 
 # Each theme's own icons.theme, saved before it is first pointed elsewhere --
@@ -1679,10 +2055,11 @@ def write_status(palette: dict | None = None, **extra) -> dict:
 
 # ------------------------------------------------------------------ apply --
 
-def apply(slug: str = "") -> dict:
+def apply(slug: str = "", reuse_apps: bool = False) -> dict:
     """The whole framework, for the active theme: folders first (what shows at
     once), then app covers, the generated theme, every theme's pointer, and a
-    nudge so running apps repaint."""
+    nudge so running apps repaint. With reuse_apps -- a theme change -- the
+    app pass is skipped when its stamp says nothing it reads has moved."""
     chosen_set = icon_set()
     if not set_installed(chosen_set):
         message = f"{SET_LABELS[chosen_set]} is not installed"
@@ -1695,7 +2072,15 @@ def apply(slug: str = "") -> dict:
                 ensure_reversal_sage()
             slug = valid_slug(slug) or current_theme_slug()
             palette = recolor_folders(slug)
-            counts = generate(cover_store(), bool(settings()["covers"]), chosen_set)
+            store, covers = cover_store(), bool(settings()["covers"])
+            counts = reusable_counts(apps_stamp(chosen_set, covers, store), store) if reuse_apps else None
+            apps_reused = counts is not None
+            if counts is None:
+                counts = generate(store, covers, chosen_set)
+                # Stamped after the pass, which itself writes the store and
+                # may rewrite a desktop file of the user's own.
+                write_json_file(state_dir() / APPS_STAMP,
+                                {"stamp": apps_stamp(chosen_set, covers, store), "counts": counts})
             base = base_theme_for(slug, chosen_set) if slug else (
                 "Yaru-dark" if chosen_set == "yaru" else "Reversal-dark")
             base_changed = install_theme(base)
@@ -1709,6 +2094,7 @@ def apply(slug: str = "") -> dict:
     summary = {"theme": THEME_NAME, "base": base, "slug": slug, "icon_set": chosen_set,
                "folders": palette["mode"], "face": palette["face"],
                "changed": bool(base_changed or "written" in palette),
+               "apps_reused": apps_reused,
                "applied_at": int(time.time()), **counts}
     write_json_file(state_dir() / "last-apply.json", summary)
     write_status(palette, applying=False, error="")
@@ -1768,17 +2154,7 @@ def revert() -> None:
                 remove_entry(staged)
         originals = read_json_file(state_dir() / "absolute-icons.json", {})
         for path_text, icon in originals.items():
-            path = Path(path_text)
-            if not isinstance(icon, str) or "\n" in icon or path.is_symlink() or not path.is_file():
-                continue
-            try:
-                path.relative_to(home())
-            except ValueError:
-                continue
-            text = _read(path, 1 << 18)
-            match = re.search(r"^Icon=.*$", text, re.M)
-            if match:
-                write_text(path, text[:match.start()] + "Icon=" + icon + text[match.end():])
+            _restore_absolute(path_text, icon)
         link = public_icons() / THEME_NAME
         if link.is_symlink():
             remove_entry(link)
@@ -1969,13 +2345,27 @@ def _path(loops) -> str:
 
 
 def vectorize(source: Path) -> str | None:
-    """SVG for a Yaru folder PNG, or None when the artwork is not a flat folder."""
+    """SVG for a Yaru folder PNG, or None when the artwork is not a flat folder.
+
+    Tracing allocates several float arrays the size of the image, and "Yaru"
+    is found in the user's own icon folder first, so a planted one decides
+    the size. Yaru's folders are square and at most 512 px:
+    anything not square, or outside 256 to 1024 px, is not one, and is refused
+    on its header, before a pixel is decoded."""
     np = _numpy()
     Image = _pil()[0]
-    image = Image.open(source)
-    if image.size[0] < 256 or image.size[0] > 2048:
+    import io
+    data = read_regular(source, ARTWORK_LIMIT)
+    if data is None:
         return None
-    alpha, roles, fit = classify(image)
+    try:
+        image = Image.open(io.BytesIO(data))
+        width, height = image.size
+        if width != height or not 256 <= width <= 1024:
+            return None
+        alpha, roles, fit = classify(image)
+    except _decode_errors(Image):
+        return None
     if fit < _MIN_FIT:
         return None
     names, size, solid = list(ROLES), image.size[0], alpha > 0.5
@@ -2006,6 +2396,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("apply")
     run.add_argument("--theme", default="")
+    run.add_argument("--reuse-apps", action="store_true",
+                     help="skip the app pass when nothing about apps changed (a theme change)")
     sub.add_parser("revert")
     sub.add_parser("status")
     folders = sub.add_parser("folders")
@@ -2040,13 +2432,14 @@ def main() -> int:
         print("reverted; Reversal and Yaru stay installed")
         return 0
     try:
-        summary = apply(args.theme)
+        summary = apply(args.theme, reuse_apps=args.reuse_apps)
     except MissingSet as error:
         print(str(error), file=sys.stderr)
         return 3
     drawn = summary["clip"] + summary["plate"] + summary["plain"]
     print(f"{summary['base']}; folders from {summary['folders']} {summary['face']}; "
           f"{drawn} app icons drawn, {summary['alias']} aliased"
+          + ("; apps unchanged" if summary["apps_reused"] else "")
           + ("" if summary["changed"] else "; unchanged"))
     return 0
 

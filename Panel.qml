@@ -792,6 +792,33 @@ Panel {
     onExited: root.refreshStaleApps()
   }
 
+  // Dismiss: leave the applications on the previous theme and stop counting
+  // them -- on the bar and here -- until the next theme change lists whatever
+  // it leaves behind. Nothing is closed or restarted. The list empties at
+  // once; the service's own record follows, and is read back when it has.
+  // Like a restart, it is the end of the matter, so the panel closes rather
+  // than going back to its main view.
+  function dismissStale() {
+    if (dismissProcess.running || root.staleWindowCount === 0) return
+    root.staleApps = []
+    root.staleWindows = ({})
+    root.confirmRestartOpen = false
+    root.guideOpen = false
+    root.settingsOpen = false
+    root.aboutOpen = false
+    root.appsOpen = false
+    root.iconsOpen = false
+    dismissProcess.running = true
+    root.close()
+  }
+
+  Process {
+    id: dismissProcess
+    command: [ "/usr/bin/hyprchroma", "dismiss-stale" ]
+    environment: ({ PATH: root.trustedPath })
+    onExited: root.refreshStaleApps()
+  }
+
   // "r" matches the convention PanelKeyCatcher documents for refresh; the
   // digits match each row's position, which the row displays.
   function handleKey(text) {
@@ -809,8 +836,12 @@ Panel {
     if (!root.ready) return
     // The confirmation takes no single key as a yes -- only Ctrl+Enter (the
     // Shortcut beside it), so a stray keypress can never close the user's
-    // applications. Every other key is ignored while it is up.
-    if (root.confirmRestartOpen) return
+    // applications. Its one key is "d", Dismiss, which closes nothing; every
+    // other key is ignored while it is up.
+    if (root.confirmRestartOpen) {
+      if (key === "d") root.dismissStale()
+      return
+    }
     // "/" rather than "?" so no shift is needed, and rather than "h" because
     // PanelKeyCatcher consumes h/j/k/l before a panel sees them -- the same
     // reason the framework rows are numbered.
@@ -831,9 +862,13 @@ Panel {
       root.settingsOpen = !root.settingsOpen
       return
     }
-    // While the guide is up, its only key is Ctrl+Enter (the Shortcut), which
-    // opens the confirmation; letters and digits do nothing there.
-    if (root.guideOpen) return
+    // While the guide is up, its keys are Ctrl+Enter (the Shortcut), which
+    // opens the confirmation, and "d", Dismiss; other letters and digits do
+    // nothing there.
+    if (root.guideOpen) {
+      if (key === "d") root.dismissStale()
+      return
+    }
     // Settings: c flips the restart mode, b the bar alert, u opens the
     // uninstaller, and a digit removes or adds back the framework beside it.
     if (root.settingsOpen) {
@@ -1321,6 +1356,15 @@ Panel {
           }
 
           Button {
+            visible: root.staleWindowCount > 0
+            width: confirmRestart.width
+            text: "Dismiss  (d)"
+            iconText: "\udb80\udd56"
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+            onClicked: root.dismissStale()
+          }
+
+          Button {
             width: confirmRestart.width
             text: "Cancel  (Esc)"
             iconText: "󰌍"
@@ -1410,6 +1454,17 @@ Panel {
             iconText: "\udb81\udf09"
             foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
             onClicked: root.openRestartConfirm()
+          }
+
+          // Leave them as they are: they stop being counted until the next
+          // theme change, and nothing closes.
+          Button {
+            visible: root.staleWindowCount > 0
+            width: guide.width
+            text: "Dismiss  (d)"
+            iconText: "\udb80\udd56"
+            foreground: root.bar ? root.bar.foreground : Commons.Color.popups.text
+            onClicked: root.dismissStale()
           }
 
           Button {

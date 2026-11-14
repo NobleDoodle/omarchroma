@@ -72,6 +72,8 @@ STATUS_FILE="$STATE_DIR/status.json"
 # The palette this run resolved, handed to the generators it starts. Never an
 # inherited value: only what this script set itself is passed down.
 unset HYPRCHROMA_PALETTE_TSV
+# Set below only while step timing is on; never an inherited value.
+unset HYPRCHROMA_TRACE_FD
 SETTINGS_FILE="$STATE_DIR/settings.json"
 # Lock in the per-user runtime dir when available, otherwise the user-owned
 # state dir. Never /tmp: a fixed name there is a symlink/squatting target on a
@@ -180,7 +182,7 @@ target_key() {
 framework_apps() {
   local action=$1 saved_pear saved_thunderbird
   if [[ $action == remove ]]; then
-    python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+    /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
 import sys; HELPER = sys.argv.pop(1)
 import json, subprocess
 from pathlib import Path
@@ -201,7 +203,7 @@ if "apps" not in removed:
 PY
     "$HYPRCHROMA_SELF" --target=thunderbird --set-enabled=false --quiet || true
     "$HYPRCHROMA_SELF" --target=pear --set-enabled=false --quiet || true
-    python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+    /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
 import sys; HELPER = sys.argv.pop(1)
 import json, subprocess
 from pathlib import Path
@@ -217,7 +219,7 @@ subprocess.run([HELPER, "write-file", "--path", str(path), "--mode", "644"],
                input=(json.dumps(data, indent=2) + "\n").encode(), check=True)
 PY
   else
-    read -r saved_pear saved_thunderbird < <(python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
+    read -r saved_pear saved_thunderbird < <(/usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" <<'PY'
 import sys; HELPER = sys.argv.pop(1)
 import json, subprocess
 from pathlib import Path
@@ -268,6 +270,10 @@ case "${1:-}" in
     fi
     migrate_from_omarchroma
     install_hooks
+    # SIGUSR1 is how the theme hook asks the watcher below for a sync, and the
+    # hook sends it only once the watcher says it is listening. Ignored until
+    # then, so an early one costs nothing instead of ending the service.
+    trap '' USR1
     # One sync before watching, so a theme set while the daemon was down -- the
     # machine off, the session restarted -- is applied at login rather than
     # waiting for a window to open. It syncs only what actually changed.
@@ -276,9 +282,10 @@ case "${1:-}" in
     # Hyprland is not up yet, which is the ordinary case at login. Nothing else
     # is watching, so the unit must restart us: Restart=always, not on-failure,
     # because this returns 0.
-    "$HYPRCHROMA_LIB/hyprchroma-state" \
+    # exec, so the watcher is the unit's main process: the hook's signal goes
+    # to it alone, never to a sync or a waiter in the same unit.
+    exec "$HYPRCHROMA_LIB/hyprchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-events
-    exit $?
     ;;
   install-hooks)
     install_hooks
@@ -320,7 +327,7 @@ case "${1:-}" in
     action=${1:-}; name=${2:-}
     case "$action" in
       list)
-        python3 - "$SETTINGS_FILE" <<'PY'
+        /usr/bin/python3 -I - "$SETTINGS_FILE" <<'PY'
 import json, sys
 from pathlib import Path
 try:
@@ -345,7 +352,7 @@ PY
         if [[ $action == remove ]]; then
           "$HYPRCHROMA_SELF" --target="$name" --set-enabled=false --quiet || true
         fi
-        python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$key" "$action" <<'PY'
+        /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$key" "$action" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json, os, subprocess, sys
 from pathlib import Path
@@ -401,6 +408,14 @@ PY
     "$HYPRCHROMA_LIB/hyprchroma-state" \
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
       report-stale-apps --since-last-sync "$@"
+    exit $?
+    ;;
+  dismiss-stale)
+    # The panel's Dismiss: the applications still showing the previous theme
+    # stop being listed and counted until the next theme change lists them
+    # again. Nothing is closed or restarted.
+    "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" dismiss-stale-apps
     exit $?
     ;;
   restart-stale)
@@ -473,7 +488,7 @@ PY
     esac
     ;;
   --version|version)
-    echo "hyprchroma 4.0.0"
+    echo "hyprchroma 4.1.0"
     exit 0
     ;;
 esac
@@ -514,6 +529,7 @@ Usage: hyprchroma [--target=gtk|qt-kde|dark-reader|pear|flatpak|browsers|thunder
        hyprchroma palette [--all|--capture|--template|--source]
        hyprchroma stale-apps       list apps still showing the old theme, and their windows
        hyprchroma restart-stale [--notify]   close and relaunch every one of them
+       hyprchroma dismiss-stale    stop listing them until the next theme change
        hyprchroma --restart-mode=confirm|off   ask after a theme change, or not
        hyprchroma restore [--stock|--captured]
        hyprchroma --version
@@ -570,6 +586,17 @@ icon_apps_signature() {
   # A folder that does not exist (no Flatpak, say) is simply absent from the
   # list: stat failing for it must not fail the pipeline, and with it the sync.
   { stat -c '%n %Y' -- "${dirs[@]}" 2>/dev/null || true; } | sha256sum | cut -d' ' -f1
+}
+
+# A re-send started by the last sync may still be passing the color scheme
+# through its opposite (it runs detached, see the GTK step). Writing the
+# scheme now could be undone by its restore, so the GTK step waits for it --
+# a few tenths of a second at most, and never more than three. The lock is
+# only read here, and only when it is this user's own regular file.
+wait_color_scheme() {
+  local lock="${XDG_RUNTIME_DIR:-$STATE_DIR}/hyprchroma-color-scheme.lock"
+  [[ -f $lock && ! -L $lock && -O $lock ]] || return 0
+  { flock -w 3 7 || true; } 7<"$lock"
 }
 
 # Windows already open cannot be restyled in place, and nothing here touches
@@ -650,6 +677,27 @@ command -v python3 >/dev/null || fail "python3 is not available"
 [[ -x "$HYPRCHROMA_LIB/hyprchroma-icons" ]] || fail "icons helper is missing"
 
 
+# The frameworks' switches, read once per run -- after the lock, so a toggle
+# made while this run waited is the one it uses -- instead of one jq per
+# check (about twenty a sync). Never kept between runs: a framework switched
+# off is not written at the next sync. Only a recorded true, or the text
+# "true" (what jq -r printed for it when each check read the file), turns a
+# framework on, and a key that is not a plain name is dropped, so no value
+# can pass itself off as another framework's switch.
+declare -A FRAMEWORK_SWITCH=()
+FRAMEWORKS_READ=0
+read_framework_switches() {
+  local key value
+  FRAMEWORK_SWITCH=()
+  while IFS=$'\t' read -r key value; do
+    [[ $key =~ ^[A-Za-z]+$ ]] && FRAMEWORK_SWITCH[$key]=$value
+  done < <(jq -r '.frameworks // {} | if type == "object" then . else {} end | to_entries[]
+                  | select(.key | test("^[A-Za-z]+$")) | select(.value != null)
+                  | "\(.key)\t\(if .value == true or .value == "true" then "true" else "false" end)"' \
+             "$SETTINGS_FILE" 2>/dev/null)
+  FRAMEWORKS_READ=1
+}
+
 target_enabled() {
   local key default=true
   key=$(target_key "$1") || return 1
@@ -659,6 +707,10 @@ target_enabled() {
   # into profiles. So is Icons: it points every Omarchy theme at another icon
   # theme. Only a recorded true turns any of these on.
   [[ $key == flatpak || $key == browsers || $key == thunderbird || $key == icons ]] && default=false
+  if (( ${FRAMEWORKS_READ:-0} )); then
+    [[ ${FRAMEWORK_SWITCH[$key]:-$default} == "true" ]]
+    return
+  fi
   # Not "// true": jq's alternative operator treats false as empty as well as
   # null, so a framework switched off read back as enabled and every sync
   # re-applied the theme the toggle had just reverted. Only a missing key means
@@ -685,7 +737,7 @@ restart_mode() {
 if [[ -n $set_enabled ]]; then
   [[ $target != "all" ]] || fail "--set-enabled requires a specific --target"
   settings_key=$(target_key "$target") || fail "unknown target: $target"
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
+  /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$settings_key" "$set_enabled" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -730,7 +782,7 @@ fi
 if [[ -n $restart_mode ]]; then
   # A setting of its own, not tied to any framework, so it is written and
   # left at that rather than falling into a sync the way --set-enabled does.
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$restart_mode" <<'PY'
+  /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$SETTINGS_FILE" "$restart_mode" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import subprocess
@@ -748,6 +800,30 @@ PY
   exit 0
 fi
 
+# Opt-in step timing, for performance work. While the file
+# trace-timing exists in the state folder, each sync writes a trace of every
+# command it and the generators run, each stamped with the time, into
+# $XDG_RUNTIME_DIR/hyprchroma-trace, readable only by this user. It goes to its
+# own descriptor, never to stdout or stderr, so nothing the sync prints or
+# parses changes. Without that file, nothing here runs.
+if [[ -n ${XDG_RUNTIME_DIR:-} && -f $STATE_DIR/trace-timing && ! -L $STATE_DIR/trace-timing ]]; then
+  trace_dir=$XDG_RUNTIME_DIR/hyprchroma-trace
+  if (umask 077 && mkdir -p -- "$trace_dir") 2>/dev/null && [[ -d $trace_dir && ! -L $trace_dir && -O $trace_dir ]]; then
+    trace_file=$trace_dir/$EPOCHSECONDS-$$.log
+    # A new file only (noclobber), so a name planted in advance is refused.
+    if (umask 077 && set -o noclobber && : >"$trace_file") 2>/dev/null; then
+      exec {trace_fd}>>"$trace_file"
+      BASH_XTRACEFD=$trace_fd
+      PS4='+${EPOCHREALTIME} ${BASHPID} ${BASH_SOURCE[0]##*/}:${LINENO} '
+      set -x
+      # For the two generators only, which check it (see their own block).
+      # Not SHELLOPTS: every bash script a helper starts would inherit the
+      # tracing but not the descriptor, and trace to its stderr instead.
+      export HYPRCHROMA_TRACE_FD=$trace_fd
+    fi
+  fi
+fi
+
 prepare_lock_file "$LOCK_FILE"
 exec 9<"$LOCK_FILE"
 # Waited for, not skipped. A run that found another holding the lock used to
@@ -758,6 +834,9 @@ exec 9<"$LOCK_FILE"
 # it: each compares everything afresh, so one waiting covers any number more.
 # Anything more specific -- a target, a toggle, a forced run -- always waits.
 LOCK_WAIT_SECONDS=120
+# The most an Icons apply may take inside a sync; under the
+# writers' own limit, so it fails as Icons rather than as its whole lane.
+ICONS_SECONDS=60
 if ! flock -n 9; then
   if [[ $target == all && $force == 0 && -z $set_enabled ]]; then
     queue_lock="${LOCK_FILE%.lock}-queue.lock"
@@ -772,6 +851,7 @@ if ! flock -n 9; then
     fail "another synchronization held the lock for ${LOCK_WAIT_SECONDS}s"
   exec 8<&-  # in the lock now; the next quiet run may queue behind this one
 fi
+read_framework_switches
 
 # Switching a framework off reverts it, rather than only stopping future syncs:
 # leaving Hyprchroma's colors in place while claiming the framework is off gave
@@ -844,6 +924,9 @@ fi
 
 # Identifies the palette for change detection: Omarchy's theme name when
 # Omarchy is the source, the file's own content when it is not.
+# Dark Reader's lookup reads the browsers' profiles and needs nothing from the
+# palette, so it runs while the palette resolves.
+exec {dark_reader_info_fd}< <("$HYPRCHROMA_LIB/hyprchroma-dark-reader" --info 2>/dev/null || printf '{}')
 load_palette
 # Only once there is a palette, so a machine with none is left exactly as it
 # was. Everything that writes before this point creates what it needs itself.
@@ -873,7 +956,9 @@ mode=$(palette_mode)
 # Every browser profile Dark Reader is installed in, not only the default
 # browser's. The signature changes when it is added to or removed from any of
 # them, and is part of the fingerprint, so that is themed at the next sync.
-dark_reader_info=$("$HYPRCHROMA_LIB/hyprchroma-dark-reader" --info 2>/dev/null || printf '{}')
+IFS= read -r -d '' dark_reader_info <&"$dark_reader_info_fd" || true
+exec {dark_reader_info_fd}<&-
+[[ -n $dark_reader_info ]] || dark_reader_info='{}'
 dark_reader_signature=$(jq -r '.signature // ""' <<<"$dark_reader_info")
 dark_reader_known=$(jq -r 'has("installed")' <<<"$dark_reader_info" 2>/dev/null || echo false)
 dark_reader_installed=$(jq -r '.installed // false' <<<"$dark_reader_info")
@@ -981,7 +1066,7 @@ if [[ $target == "all" || $target == "icons" ]] && target_enabled icons; then
   icons_apps_signature=$(icon_apps_signature)
   if (( ! force )) && [[ $target == "all" && -n $icons_apps_previous &&
         $icons_apps_signature != "$icons_apps_previous" && $fingerprint == "$previous_fingerprint" ]]; then
-    "$HYPRCHROMA_LIB/hyprchroma-icons" apply >/dev/null 2>&1 || true
+    timeout -k 5 "$ICONS_SECONDS" "$HYPRCHROMA_LIB/hyprchroma-icons" apply >/dev/null 2>&1 || true
     jq --arg signature "$icons_apps_signature" '.iconsApps = $signature' "$STATUS_FILE" 2>/dev/null |
       "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$STATUS_FILE" --mode 644 || true
   fi
@@ -995,50 +1080,81 @@ if (( ! force )) && [[ $fingerprint == "$previous_fingerprint" ]] && \
 fi
 
 outputs_before=$(theme_outputs)
-# Icons first: GTK and Qt/KDE read each theme's icons.theme, which this points
-# at Omarchroma-Icons, so they pick the same icon theme up in this same run. A failure
-# here is reported and the other frameworks still synchronize.
-icons_state="disabled"
-icons_summary=""
-if [[ ( $target == "all" || $target == "icons" ) ]] && target_enabled icons; then
-  log "synchronizing icons"
-  icons_exit=0
-  icons_output=$("$HYPRCHROMA_LIB/hyprchroma-icons" apply 2>&1) || icons_exit=$?
-  icons_summary=${icons_output##*$'\n'}
-  case $icons_exit in
-    0) icons_state="synchronized" ;;
-    3) icons_state="missing" ;;
-    *) icons_state="failed"; notify_error_once ;;
-  esac
-  log "icons: $icons_summary"
-fi
+
+# --- the writers, at the same time --------------------
+# Each framework's writer used to wait for the one before it. They now run in
+# lanes, each in a subshell of its own, all under this run's one lock:
+#   gtk          GTK's stylesheets and settings.
+#   icons        the generated icon theme, its covers and the themes' pointers.
+#   qt-kde       kdeglobals, its color scheme and the Omarchroma icon theme.
+#                GTK and Qt/KDE both read the theme's icons.theme, which Icons
+#                is what points at its own set, and GTK and Icons both set GTK's
+#                icon theme. So until that pointer is in place -- the first sync
+#                with Icons on, or a theme it has not seen -- the three run in
+#                one lane, gtk-icons, in that order. Once it is, they read the
+#                same pointer and set the same name in either order.
+#   pear         Pear Desktop's stylesheet and config.
+#   files        Flatpak, then browsers, then Thunderbird. Each rewrites
+#                original/manifest.json, so they stay one at a time.
+#   dark-reader  its theme file and the browsers' extension storage.
+# No two lanes write the same file. Every snapshot is taken first, in one call,
+# so none of them touches the manifest while the files lane does. Each lane's
+# stdout and stderr are kept and replayed in this order once all have finished,
+# so a log reads as it did when they ran one after another. A failing lane
+# fails the sync as before, once the others have finished; it no longer stops
+# the frameworks after it.
+gtk_write=0 pear_write=0 qt_kde_write=0 qt_kde_deferred=0 qt_kde_after_icons=0
+kde_clients=""
+snapshot_targets=()
 if [[ ( $target == "all" || $target == "gtk" ) ]] && target_enabled gtk; then
-  log "synchronizing GTK"
-  "$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target gtk
-  gtk_colors_before=$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)
-  "$HYPRCHROMA_LIB/sync-gtk-theme"
-  # Open libadwaita apps -- Files among them -- read the new colors only when
-  # the color scheme changes, and a switch between two dark themes does not
-  # change it. Passing it through the other scheme and back makes them restyle now,
-  # without a restart; Omarchroma's stylesheet sets both light and dark, so
-  # nothing flashes. Only when the colors actually changed.
-  if [[ $gtk_colors_before != "$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)" ]]; then
-    "$HYPRCHROMA_LIB/hyprchroma-state" \
-      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" resend-color-scheme || true
-  fi
+  gtk_write=1; snapshot_targets+=(--target gtk)
 fi
+icons_write=0 icons_in_order=0
+if [[ ( $target == "all" || $target == "icons" ) ]] && target_enabled icons; then
+  icons_write=1
+  # Icons rewrites the theme's icons.theme only when it does not already name
+  # its set. The theme is named by Omarchy's theme.name, as the generators find
+  # it; anything unexpected and the three simply run in order.
+  icons_pointer="" icons_slug=""
+  icons_name_file="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/current/theme.name"
+  if [[ -f $icons_name_file && ! -L $icons_name_file ]]; then
+    IFS= read -r -n 128 icons_slug <"$icons_name_file" || true
+  fi
+  icons_pointer_file="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/themes/$icons_slug/icons.theme"
+  if [[ $icons_slug =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -f $icons_pointer_file && ! -L $icons_pointer_file ]]; then
+    IFS= read -r -n 64 icons_pointer <"$icons_pointer_file" || true
+  fi
+  [[ $icons_pointer == Omarchroma-Icons ]] || icons_in_order=1
+fi
+qt_kde_check=0
 if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; then
   # kdeglobals and the generated color scheme are read by every running KDE
   # application, and rewriting them underneath one is what disturbs it. If any
   # process still has KColorScheme mapped, leave both files exactly as they are;
   # the restart report names those applications, and the next sync after they
   # exit writes the palette for everything started from then on.
-  kde_clients=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+  # The check scans every process, so it runs while the snapshots are taken.
+  # Qt/KDE's is taken either way: a capture is made once, of the user's own
+  # files, and changes nothing.
+  exec {kde_clients_fd}< <("$HYPRCHROMA_LIB/hyprchroma-state" \
     --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" kde-color-clients 2>/dev/null || true)
+  qt_kde_check=1; snapshot_targets+=(--target qt-kde)
+fi
+# What the lanes hand back, for a run in which one of them does not start.
+icons_state="disabled" icons_summary="" pear_state="not-installed"
+if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
+  pear_write=1; snapshot_targets+=(--target pear)
+fi
+if (( ${#snapshot_targets[@]} )); then
+  "$HYPRCHROMA_LIB/hyprchroma-state" \
+    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot "${snapshot_targets[@]}"
+fi
+if (( qt_kde_check )); then
+  IFS= read -r -d '' kde_clients <&"$kde_clients_fd" || true
+  exec {kde_clients_fd}<&-
+  while [[ $kde_clients == *$'\n' ]]; do kde_clients=${kde_clients%$'\n'}; done  # as $(...) would
   if [[ -n $kde_clients ]]; then
     qt_kde_deferred=1
-    log "Qt and KDE left untouched; still running: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
     # Wait on those processes rather than polling for them: the helper sleeps on
     # a pidfd and is woken by the kernel the moment the last one exits, then
     # applies the palette. It holds a lock, so one waiter exists at a time.
@@ -1049,19 +1165,83 @@ if [[ ( $target == "all" || $target == "qt-kde" ) ]] && target_enabled qt-kde; t
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-kde-exit \
       >/dev/null 2>&1 </dev/null 9>&- &
   else
-    log "synchronizing Qt and KDE"
-    "$HYPRCHROMA_LIB/hyprchroma-state" \
-      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target qt-kde
-    "$HYPRCHROMA_LIB/sync-qt-kde-theme"
+    qt_kde_write=1
+    (( ! icons_in_order )) || qt_kde_after_icons=1
   fi
 fi
 
-qt_kde_deferred=${qt_kde_deferred:-0}
-pear_state="not-installed"
-if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( pear_installed )); then
+dark_reader_exit=0
+# Hyprchroma installs nothing into a browser. If Dark Reader is in none of
+# them, say so -- there is nothing to theme until the user adds it somewhere.
+# Only when the helper answered: a failed lookup is not an empty one.
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
+   && [[ $dark_reader_known == "true" && $dark_reader_installed != "true" ]]; then
+  log "Dark Reader is not installed in any supported browser; add it and Hyprchroma will theme it"
+  notify_user "Add Dark Reader to a browser and Hyprchroma will theme it"
+fi
+
+lane_gtk() {
+  log "synchronizing GTK"
+  gtk_colors_before=$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)
+  wait_color_scheme
+  "$HYPRCHROMA_LIB/sync-gtk-theme"
+  # Open libadwaita apps -- Files among them -- read the new colors only when
+  # the color scheme changes, and a switch between two dark themes does not
+  # change it. Passing it through the other scheme and back makes them restyle now,
+  # without a restart; Omarchroma's stylesheet sets both light and dark, so
+  # nothing flashes. Only when the colors actually changed.
+  #
+  # Detached, so the rest of the sync does not wait out its 0.3 s pass: it
+  # touches only the color-scheme key, which nothing after this sets. It takes
+  # a lock of its own (the next sync waits on it above) and puts the scheme
+  # back in a finally. 9>&- so it does not hold this run's sync lock.
+  if [[ $gtk_colors_before != "$({ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum)" ]]; then
+    setsid "$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" resend-color-scheme \
+      >/dev/null 2>&1 </dev/null 9>&- &
+  fi
+}
+
+lane_icons() {
+  log "synchronizing icons"
+  icons_exit=0
+  # --reuse-apps: a theme change does not change the apps, so their pass is
+  # skipped unless something it reads moved (the helper keeps a stamp). The
+  # panel's "Apply again" and a changed setting run it in full.
+  # Bounded, so nothing in it can hold this run's lock for long: a theme
+  # change's apply takes about half a second, a cold one with
+  # every cover drawn a few. A timeout is a failed Icons step like any other,
+  # and the other frameworks still synchronize.
+  icons_output=$(timeout -k 5 "$ICONS_SECONDS" "$HYPRCHROMA_LIB/hyprchroma-icons" apply --reuse-apps 2>&1) || icons_exit=$?
+  icons_summary=${icons_output##*$'\n'}
+  case $icons_exit in
+    0) icons_state="synchronized" ;;
+    3) icons_state="missing" ;;
+    124|137) icons_state="failed"; icons_summary="did not finish within $ICONS_SECONDS seconds"; notify_error_once ;;
+    *) icons_state="failed"; notify_error_once ;;
+  esac
+  log "icons: $icons_summary"
+  lane_result icons_state "$icons_state"
+  lane_result icons_summary "$icons_summary"
+}
+
+lane_qt_kde() {
+  if (( qt_kde_deferred )); then
+    log "Qt and KDE left untouched; still running: $(sed ':a;N;$!ba;s/\n/, /g' <<<"$kde_clients")"
+  else
+    log "synchronizing Qt and KDE"
+    "$HYPRCHROMA_LIB/sync-qt-kde-theme"
+  fi
+}
+
+lane_gtk_icons() {
+  (( ! gtk_write )) || lane_gtk
+  lane_icons
+  (( ! qt_kde_after_icons )) || lane_qt_kde
+}
+
+lane_pear() {
   log "synchronizing Pear Desktop"
-  "$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" snapshot --target pear
   pear_dir="$HOME/.config/YouTube Music"
   pear_css="$pear_dir/hyprchroma.css"
   mkdir -p "$pear_dir"
@@ -1090,7 +1270,7 @@ if [[ ( $target == "all" || $target == "pear" ) ]] && target_enabled pear && (( 
       "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$pear_css" --mode 644
   fi
 
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$pear_dir/config.json" "$pear_css" <<'PY'
+  /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$pear_dir/config.json" "$pear_css" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os
@@ -1126,65 +1306,58 @@ themes.append(theme)
 atomic_write(path, json.dumps(config, indent=2) + "\n")
 PY
   pear_state="synchronized"
-fi
+  lane_result pear_state "$pear_state"
+}
 
-flatpak_state="disabled"
-if [[ ( $target == "all" || $target == "flatpak" ) ]] && target_enabled flatpak; then
-  log "synchronizing Flatpak apps"
-  # Read access to the theme files, granted once; the files themselves are
-  # what change with the theme, so nothing here repeats per palette.
-  flatpak_state=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-flatpak) ||
-    fail "Flatpak synchronization failed"
-fi
+lane_files() {
+  flatpak_state="disabled" browsers_state="disabled" browsers_summary=""
+  thunderbird_state="disabled" thunderbird_summary=""
+  if [[ ( $target == "all" || $target == "flatpak" ) ]] && target_enabled flatpak; then
+    log "synchronizing Flatpak apps"
+    # Read access to the theme files, granted once; the files themselves are
+    # what change with the theme, so nothing here repeats per palette.
+    flatpak_state=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-flatpak) ||
+      lane_fail "Flatpak synchronization failed"
+  fi
+  lane_result flatpak_state "$flatpak_state"
+  if [[ ( $target == "all" || $target == "browsers" ) ]] && target_enabled browsers; then
+    log "synchronizing additional browsers"
+    # Every value here already passed color()'s #rrggbb check; the helper checks
+    # again when it reads the file back, since the file sits in the data dir.
+    printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
+      "$mode" "$background" "$dark_background" "$foreground" "$accent" \
+      "$selection" "$selection_foreground" "$muted" |
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/browsers-theme.json" --mode 644
+    browsers_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-browsers) ||
+      lane_fail "Additional browsers synchronization failed"
+    browsers_state=${browsers_output%%$'\n'*}
+    browsers_summary=${browsers_output#*$'\n'}
+    if [[ -n $browsers_summary ]]; then log "additional browsers: $browsers_summary"; fi
+  fi
+  lane_result browsers_state "$browsers_state"
+  lane_result browsers_summary "$browsers_summary"
+  if [[ ( $target == "all" || $target == "thunderbird" ) ]] && target_enabled thunderbird; then
+    log "synchronizing Thunderbird"
+    printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
+      "$mode" "$background" "$dark_background" "$foreground" "$accent" \
+      "$selection" "$selection_foreground" "$muted" |
+      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/thunderbird-theme.json" --mode 644
+    thunderbird_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
+      --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-thunderbird) ||
+      lane_fail "Thunderbird synchronization failed"
+    thunderbird_state=${thunderbird_output%%$'\n'*}
+    thunderbird_summary=${thunderbird_output#*$'\n'}
+    if [[ -n $thunderbird_summary ]]; then log "thunderbird: $thunderbird_summary"; fi
+  fi
+  lane_result thunderbird_state "$thunderbird_state"
+  lane_result thunderbird_summary "$thunderbird_summary"
+}
 
-browsers_state="disabled"
-browsers_summary=""
-if [[ ( $target == "all" || $target == "browsers" ) ]] && target_enabled browsers; then
-  log "synchronizing additional browsers"
-  # Every value here already passed color()'s #rrggbb check; the helper checks
-  # again when it reads the file back, since the file sits in the data dir.
-  printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
-    "$mode" "$background" "$dark_background" "$foreground" "$accent" \
-    "$selection" "$selection_foreground" "$muted" |
-    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/browsers-theme.json" --mode 644
-  browsers_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-browsers) ||
-    fail "Additional browsers synchronization failed"
-  browsers_state=${browsers_output%%$'\n'*}
-  browsers_summary=${browsers_output#*$'\n'}
-  if [[ -n $browsers_summary ]]; then log "additional browsers: $browsers_summary"; fi
-fi
-
-thunderbird_state="disabled"
-thunderbird_summary=""
-if [[ ( $target == "all" || $target == "thunderbird" ) ]] && target_enabled thunderbird; then
-  log "synchronizing Thunderbird"
-  printf '{"mode":"%s","background":"%s","dark_background":"%s","foreground":"%s","accent":"%s","selection":"%s","selection_foreground":"%s","muted":"%s"}\n' \
-    "$mode" "$background" "$dark_background" "$foreground" "$accent" \
-    "$selection" "$selection_foreground" "$muted" |
-    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$DATA_DIR/thunderbird-theme.json" --mode 644
-  thunderbird_output=$("$HYPRCHROMA_LIB/hyprchroma-state" \
-    --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" sync-thunderbird) ||
-    fail "Thunderbird synchronization failed"
-  thunderbird_state=${thunderbird_output%%$'\n'*}
-  thunderbird_summary=${thunderbird_output#*$'\n'}
-  if [[ -n $thunderbird_summary ]]; then log "thunderbird: $thunderbird_summary"; fi
-fi
-
-dark_reader_exit=0
-# Hyprchroma installs nothing into a browser. If Dark Reader is in none of
-# them, say so -- there is nothing to theme until the user adds it somewhere.
-# Only when the helper answered: a failed lookup is not an empty one.
-if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader \
-   && [[ $dark_reader_known == "true" && $dark_reader_installed != "true" ]]; then
-  log "Dark Reader is not installed in any supported browser; add it and Hyprchroma will theme it"
-  notify_user "Add Dark Reader to a browser and Hyprchroma will theme it"
-fi
-
-if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
+lane_dark_reader() {
   dark_reader_theme="$DATA_DIR/dark-reader-theme.json"
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$dark_reader_theme" \
+  /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$dark_reader_theme" \
   "$theme_name" "$background" "$foreground" "$selection" \
   "$dark_background" "$accent" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
@@ -1274,7 +1447,7 @@ PY
     --state-dir "$STATE_DIR" \
     --status "$STATUS_FILE" || dark_reader_exit=$?
   (( dark_reader_exit == 0 || dark_reader_exit == 2 )) || \
-    fail "Dark Reader synchronization failed"
+    lane_fail "Dark Reader synchronization failed"
   if (( dark_reader_exit == 2 )); then
     # Dark Reader's settings live in the browser's own database, so this waits
     # for the processes to end, not for the window to close. By the time they do
@@ -1284,7 +1457,93 @@ PY
       --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" watch-browser-exit \
       >/dev/null 2>&1 </dev/null 9>&- &
   fi
+  lane_result dark_reader_exit "$dark_reader_exit"
+}
+
+# A lane's results go back as NUL-separated name and value pairs in a file of
+# its own, inside a folder only this run made and only this user can read.
+# Read back only into the names listed in run_lanes, so a lane cannot set
+# anything else in this shell.
+lane_result() { printf '%s\0%s\0' "$1" "$2" >>"$lane_dir/$lane_name.res"; }
+lane_fail() { lane_result failure "$*"; exit 1; }
+
+LANE_SECONDS=110
+lane_dir="${XDG_RUNTIME_DIR:-$STATE_DIR}/hyprchroma-lanes-$$-${EPOCHREALTIME//[!0-9]/}"
+if ! (umask 077 && mkdir -- "$lane_dir") 2>/dev/null || [[ -L $lane_dir || ! -d $lane_dir || ! -O $lane_dir ]]; then
+  fail "could not make a private folder for this sync's writers"
 fi
+trap 'rm -rf -- "$lane_dir"' EXIT
+lane_names=() lane_pids=()
+start_lane() {
+  # stdin closed: nothing a lane runs reads it, and none may wait on it.
+  ( lane_name=$1; "$2" ) >"$lane_dir/$1.out" 2>"$lane_dir/$1.err" </dev/null &
+  lane_pids+=("$!") lane_names+=("$1")
+}
+if (( icons_in_order )); then
+  start_lane gtk-icons lane_gtk_icons
+else
+  if (( gtk_write )); then start_lane gtk lane_gtk; fi
+  if (( icons_write )); then start_lane icons lane_icons; fi
+fi
+if (( (qt_kde_write || qt_kde_deferred) && ! qt_kde_after_icons )); then start_lane qt-kde lane_qt_kde; fi
+if (( pear_write )); then start_lane pear lane_pear; fi
+start_lane files lane_files
+if [[ ( $target == "all" || $target == "dark-reader" ) ]] && target_enabled dark-reader; then
+  start_lane dark-reader lane_dark_reader
+fi
+# A lane still running after LANE_SECONDS is stopped, with everything it
+# started, and fails the sync. Each writer has timeouts of its own; this bounds
+# the wait on them as a whole. 9>&-: the watchdog must not hold this run's lock.
+# The whole tree is listed first, then stopped from the lane down, so a lane
+# cannot report its writer's death as a failure of its own before it goes.
+# || true throughout: set -e holds here too, and a lane that has already
+# finished is no reason to leave the others running.
+lane_tree() {
+  local child
+  printf '%s\n' "$1"
+  for child in $(pgrep -P "$1" || true); do lane_tree "$child"; done
+}
+lane_stop_tree() {
+  local pid
+  for pid in $(lane_tree "$1"); do kill -TERM "$pid" 2>/dev/null || true; done
+}
+(
+  sleep "$LANE_SECONDS" & nap=$!
+  trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+  wait "$nap" || true
+  for pid in "${lane_pids[@]}"; do lane_stop_tree "$pid"; done
+) >/dev/null 2>&1 </dev/null 9>&- &
+lane_watchdog=$!
+lane_status=() lane_failure="" lane_exit=0
+for pid in "${lane_pids[@]}"; do
+  status=0; wait "$pid" || status=$?
+  lane_status+=("$status")
+done
+kill -TERM "$lane_watchdog" 2>/dev/null || true
+wait "$lane_watchdog" 2>/dev/null || true
+for index in "${!lane_names[@]}"; do
+  name=${lane_names[$index]}
+  cat -- "$lane_dir/$name.out"
+  cat -- "$lane_dir/$name.err" >&2
+  if [[ -f $lane_dir/$name.res ]]; then
+    while IFS= read -r -d '' key && IFS= read -r -d '' value; do
+      case $key in
+        icons_state|icons_summary|pear_state|flatpak_state|browsers_state|browsers_summary|thunderbird_state|thunderbird_summary|dark_reader_exit)
+          printf -v "$key" '%s' "$value" ;;
+        failure) [[ -n $lane_failure ]] || lane_failure=$value ;;
+      esac
+    done <"$lane_dir/$name.res"
+  fi
+  status=${lane_status[$index]}
+  if (( status != 0 && lane_exit == 0 )); then
+    lane_exit=$status
+    (( status == 143 )) && [[ -z $lane_failure ]] && lane_failure="the $name writers did not finish within $LANE_SECONDS seconds"
+  fi
+done
+[[ -z $lane_failure ]] || fail "$lane_failure"
+# A lane that stopped on an error of its own (set -e) ends the sync with its
+# status, as that error did when the writers ran in this shell.
+(( lane_exit == 0 )) || exit "$lane_exit"
 
 # A change of theme for what is running: the palette or the frameworks moved,
 # or a generator actually rewrote one of its files.
@@ -1293,7 +1552,7 @@ if [[ $fingerprint != "$previous_fingerprint" || $outputs_before != "$(theme_out
   theme_changed=1
 fi
 
-python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$thunderbird_state" "$theme_changed" "$icons_state" "$icons_apps_signature" <<'PY'
+/usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" "$STATUS_FILE" "$theme_name" "$fingerprint" "$pear_state" "$target" "$dark_reader_exit" "$qt_kde_deferred" "$flatpak_state" "$browsers_state" "$thunderbird_state" "$theme_changed" "$icons_state" "$icons_apps_signature" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import json
 import os

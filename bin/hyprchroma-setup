@@ -60,17 +60,18 @@ ask() {
 }
 
 # sudo's own credential cache (five minutes by default) is what every later
-# privileged step in this script -- including makepkg's own pacman -U at the
-# very end, and the AUR install's own sudo call -- relies on to avoid asking
-# for the password again within its lifetime. Left to expire naturally, a
+# privileged step in this script -- each pacman -U after a build -- relies on
+# to avoid asking for the password again within its lifetime. No build can
+# use it: they run in a sandbox with no new privileges (in_sandbox, below),
+# and finish() ends the ticket when setup exits. Left to expire naturally, a
 # later prompt happens cold, after whatever came before it went quiet: a live
 # session on this exact hardware family showed that specific idle-then-
 # sudden-redraw transition landing on a documented amdgpu GFXOFF bug, where
 # the GPU fails to wake in time and sudo's own PAM conversation -- which
 # tolerates no delay -- reports authentication as failed outright rather than
 # merely slow. Kept refreshed here from the first successful authentication
-# onward, so every later step, including ones this script does not call
-# sudo for directly, reuses the cache silently instead of prompting cold.
+# onward, so every later pacman step reuses the cache silently instead of
+# prompting cold.
 keepalive_pid=""
 start_sudo_keepalive() {
   [[ -n $keepalive_pid ]] && return 0
@@ -82,50 +83,263 @@ run_sudo() {
   sudo "$@" && start_sudo_keepalive
 }
 
-# Every AUR install goes through these two. The password is asked for before
-# anything is fetched from the AUR, not left to yay: yay only calls sudo at
-# the very end, after the download and the build, and a prompt that fails
-# there -- as it did once, live, with nothing on screen to say so -- leaves a
-# finished package in ~/.cache/yay that was never installed. The cached
-# credential (kept fresh by the keepalive above) is what yay's own sudo then
-# uses. Afterwards pacman is asked whether the package is really there, so a
-# failure is reported as one rather than as silence.
+# Every AUR install starts here. The password is asked for before anything
+# is fetched from the AUR, not at the end of a long download and build: a
+# prompt that failed there -- as it did once, live, with nothing on screen to
+# say so -- left a finished package that was never installed. The ticket is
+# then used only by run_sudo pacman, never by the build in between: see
+# in_sandbox below.
 authenticate_for() {
   say ""
   say "sudo asks for your password now, before anything is downloaded: $1"
   run_sudo -v
 }
-aur_install() {
+
+# --- building packages without sudo ----------------------------------------
+# While the ticket above is valid, anything run from this terminal can use
+# sudo without a prompt -- and a package build runs code that is not ours:
+# the AUR recipe's functions and, for Reversal, the upstream repository's own
+# install.sh. So no build, and no git command on a downloaded repository (a
+# repository's own configuration can name commands for git to run), runs
+# here directly. They run in a bubblewrap sandbox:
+#   - with no new privileges, so setuid sudo cannot become root, whatever the
+#     ticket's state and however sudo stores it;
+#   - in a session of their own, so they cannot type into this terminal, and
+#     with nothing to read on standard input;
+#   - offline, unless the step is the download itself;
+#   - with the system read-only and /home, /run and /tmp empty -- no SSH or
+#     GnuPG keys, no session bus, no Wayland, Docker or other socket -- apart
+#     from the one build directory, and this checkout, read-only;
+#   - with a clean environment, and every process ended when it returns.
+# What a build prints is shown with control characters taken out: a terminal
+# acts on escape sequences. Only pacman -U, after the package has been
+# checked, runs as root.
+#
+# Root is not mapped inside the sandbox's user namespace, so a real chown to
+# it fails with EINVAL, which fakeroot does not forgive the way it forgives
+# EPERM: a recipe that extracts an archive (Pear Desktop's does) then fails.
+# FAKEROOTDONTTRYCHOWN has fakeroot record the owner without trying.
+build_cache="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
+work_dirs=()
+finish() {
+  local dir
+  for dir in "${work_dirs[@]}"; do rm -rf -- "$dir"; done
+  [[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null
+  # The ticket ends with setup rather than lingering in this terminal.
+  sudo -k 2>/dev/null
+  return 0
+}
+trap finish EXIT
+# Closing the window or Ctrl+C mid-build ends setup through finish() too,
+# rather than leaving the build directory, and the ticket, behind.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# A fresh directory for one build -- makepkg's scratch space (BUILDDIR), the
+# finished package (PKGDEST) and the downloads (SRCDEST) -- under the user's
+# own cache rather than /tmp, where a directory every user shares is a
+# squatting target, and outside the plugin tree the Omarchy shell watches for
+# changes: makepkg writing there reloaded the panel's QML mid-build, and the
+# finished package landing there just as pacman asked for the password
+# reproduced a reload-timed PAM failure, both live on this project's own test
+# machine. mktemp gives the leaf a name nothing could have created first.
+# Sets work_dir.
+new_work_dir() {
+  mkdir -p -- "$build_cache" || return 1
+  work_dir=$(mktemp -d -p "$build_cache") || return 1
+  work_dirs+=("$work_dir")
+  mkdir -- "$work_dir/build" "$work_dir/out" "$work_dir/sources"
+}
+
+sandbox_works() {
+  [[ -x /usr/bin/bwrap ]] &&
+    bwrap --ro-bind / / --unshare-all --new-session --die-with-parent \
+      -- /usr/bin/true >/dev/null 2>&1
+}
+
+# in_sandbox [--net] WORK DIR COMMAND...: COMMAND runs in DIR, and only WORK
+# is writable. makepkg finds its directories in WORK, and its configuration
+# in packaging/sandbox, after the system's.
+in_sandbox() {
+  local share=() hide=(--tmpfs /home) resolv
+  if [[ $1 == --net ]]; then
+    share=(--share-net)
+    # resolv.conf is a link into /run on most systems; only that file comes
+    # back.
+    resolv=$(realpath -e /etc/resolv.conf 2>/dev/null) &&
+      [[ $resolv == /run/* ]] && share+=(--ro-bind "$resolv" "$resolv")
+    shift
+  fi
+  local work=$1 dir=$2
+  shift 2
+  [[ $HOME == /?* && $HOME != /home/* ]] && hide+=(--tmpfs "$HOME")
+  # --share-net after --unshare-all: bwrap reads its options in order.
+  bwrap --ro-bind / / --dev /dev --proc /proc \
+    --tmpfs /tmp --tmpfs /var/tmp --tmpfs /run "${hide[@]}" \
+    --ro-bind "$here" "$here" --bind "$work" "$work" --chdir "$dir" \
+    --unshare-all "${share[@]}" --new-session --die-with-parent --cap-drop ALL \
+    --clearenv --setenv PATH /usr/bin --setenv HOME "$work" --setenv LANG C.UTF-8 \
+    --setenv XDG_CONFIG_HOME "$here/packaging/sandbox" \
+    --setenv GIT_CONFIG_GLOBAL /dev/null --setenv GIT_CONFIG_NOSYSTEM 1 \
+    --setenv BUILDDIR "$work/build" --setenv PKGDEST "$work/out" \
+    --setenv SRCDEST "$work/sources" --setenv SRCPKGDEST "$work/out" \
+    --setenv LOGDEST "$work/build" --setenv FAKEROOTDONTTRYCHOWN 1 \
+    -- "$@" </dev/null
+}
+shown() {
+  "$@" 2>&1 | LC_ALL=C sed -u -e 's/\xc2[\x80-\x9f]//g' \
+                              -e 's/[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]//g'
+  return "${PIPESTATUS[0]}"
+}
+# https only, no hooks or submodules, every fetched object checked, and a
+# stalled download given up after a minute.
+SANDBOX_GIT=(git -c protocol.allow=never -c protocol.https.allow=always
+  -c core.hooksPath=/dev/null -c core.fsmonitor=false -c submodule.recurse=false
+  -c transfer.fsckObjects=true -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60
+  -c init.defaultBranch=master -c advice.detachedHead=false -c safe.bareRepository=all)
+
+# What a build needs from the official repositories, the way makepkg -s
+# installs it (as dependencies), but through run_sudo here, outside any
+# build. pacman lists them and asks before it downloads anything.
+missing_tools() { pacman -T -- "$@" 2>/dev/null | paste -sd' ' -; }
+install_build_tools() {
+  local missing
+  missing=$(missing_tools "$@")
+  [[ -z $missing ]] && return 0
+  say "The build needs these from the official repositories:"
+  say "  sudo pacman -S --needed --asdeps $missing"
+  read -r -a missing <<<"$missing"
+  run_sudo pacman -S --needed --asdeps -- "${missing[@]}"
+}
+# bubblewrap is part of any Omarchy install (GTK's image loaders, glycin, run
+# in it); it is installed like a build tool where it is missing. Installed but
+# unable to start -- unprivileged user namespaces switched off -- nothing
+# third-party is built at all.
+ensure_sandbox() {
+  sandbox_works || { install_build_tools bubblewrap && sandbox_works; }
+}
+
+# The one package makepkg made for NAME, not a -debug one beside it. Sets
+# built_package.
+find_built() {
+  local name=$1 file found=()
+  for file in "$work_dir/out/$name"-*.pkg.tar.*; do
+    [[ -f $file && ! -L $file && ${file##*/} != "$name"-debug-* ]] && found+=("$file")
+  done
+  (( ${#found[@]} == 1 )) || return 1
+  built_package=${found[0]}
+}
+# packaging/check-package reads the package as pacman will, in the sandbox
+# (offline: it is parsing what a build made), and says what it refuses.
+check_built() {
+  if sandbox_works; then
+    shown in_sandbox "$work_dir" "$work_dir" \
+      /usr/bin/python3 -I "$here/packaging/check-package" "$built_package" "$@"
+  else
+    shown /usr/bin/python3 -I "$here/packaging/check-package" "$built_package" "$@"
+  fi
+}
+# pacman shows the package and asks; then it is asked whether the package is
+# really there, so a failure is reported as one rather than as silence.
+install_built() {
   local package=$1
-  omarchy pkg aur add "$package" || true
+  run_sudo pacman -U -- "$built_package" || true
   if pacman -Qq "$package" &>/dev/null; then
     note "Installed $package."
     return 0
   fi
-  note "$package was not installed. Nothing else was changed; you can try again"
-  note "later with: omarchy pkg aur add $package"
+  note "$package was not installed; nothing else was changed."
   return 1
 }
 
-# Reversal is not in the official repos. It comes from its AUR package, the
-# way Pear Desktop does above -- but only once that package's recipe is the
-# one reviewed for this release: it builds Reversal from its GitHub
-# repository and installs Reversal and Reversal-dark under /usr/share/icons,
-# nothing else. A recipe that has changed since is not built here; the AUR
-# page is named so it can be read first. Checked right before the install,
-# against what the AUR serves now.
+# Reversal is not in the official repos. It comes from its AUR package --
+# the recipe the AUR serves for reversal-icon-theme-git -- but built here,
+# never by an AUR helper, and only as it was reviewed for this release:
+#   - the AUR repository at a pinned commit, whose PKGBUILD must also match
+#     a pinned SHA-256;
+#   - the icons' source, which that recipe takes from the head of its GitHub
+#     repository, fetched instead at a pinned commit, so makepkg finds it in
+#     place and downloads nothing;
+#   - built offline in the sandbox, then checked to hold only Reversal and
+#     Reversal-dark under /usr/share/icons and no install script.
+# A new upstream version means reviewing the change and moving these pins.
 REVERSAL_AUR=reversal-icon-theme-git
+REVERSAL_AUR_URL=https://aur.archlinux.org/reversal-icon-theme-git.git
+REVERSAL_AUR_COMMIT=6ca25152c4e4e95b2790226935bd24ec54667df3
 REVERSAL_PKGBUILD_SHA256=dd4cecbf36c25f0be53d19c0373935a7d90739d876a07a621b956d180fee01a4
+REVERSAL_SOURCE_URL=https://github.com/yeyushengfan258/Reversal-icon-theme.git
+REVERSAL_SOURCE_COMMIT=2c8122287e3bad5a6bf860ddd8c7e3b78cf4d451
+# The pinned recipe's makedepends.
+REVERSAL_MAKEDEPENDS=(git gtk-update-icon-cache)
 reversal_installed() {
   [[ -f ${XDG_DATA_HOME:-$HOME/.local/share}/icons/Reversal/index.theme ||
      -f /usr/share/icons/Reversal/index.theme ]]
 }
-reversal_recipe_verified() {
-  local sum
-  sum=$(curl -fsSL --max-time 20 --proto '=https' \
-          "https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h=$REVERSAL_AUR" | sha256sum) || return 1
-  [[ ${sum%% *} == "$REVERSAL_PKGBUILD_SHA256" ]]
+# Downloads, builds and checks; leaves built_package for install_built.
+build_reversal() {
+  local recipe mirror head sum refs
+  new_work_dir || { note "Could not create a build directory."; return 1; }
+  recipe=$work_dir/recipe
+  mirror=${REVERSAL_SOURCE_URL##*/}
+  mirror=$work_dir/sources/${mirror%.git}
+
+  say "Downloading the AUR recipe from aur.archlinux.org..."
+  if ! shown in_sandbox --net "$work_dir" "$work_dir" "${SANDBOX_GIT[@]}" \
+         clone --quiet --no-checkout -- "$REVERSAL_AUR_URL" "$recipe"; then
+    note "The AUR could not be reached, so nothing was built."
+    return 1
+  fi
+  shown in_sandbox "$work_dir" "$recipe" "${SANDBOX_GIT[@]}" \
+    checkout --quiet --detach "$REVERSAL_AUR_COMMIT" --
+  head=$(in_sandbox "$work_dir" "$recipe" "${SANDBOX_GIT[@]}" \
+           rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)
+  sum=""
+  [[ -f $recipe/PKGBUILD && ! -L $recipe/PKGBUILD ]] && sum=$(sha256sum <"$recipe/PKGBUILD")
+  if [[ $head != "$REVERSAL_AUR_COMMIT" || ${sum%% *} != "$REVERSAL_PKGBUILD_SHA256" ]]; then
+    note "The AUR recipe no longer has the version reviewed for this release, so"
+    note "nothing else was downloaded and nothing was built. Read it first:"
+    note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
+    return 1
+  fi
+  note "Recipe: AUR commit ${REVERSAL_AUR_COMMIT:0:12}, as reviewed."
+
+  say "Downloading the icons' source from GitHub, at the reviewed commit (about 20 MB)..."
+  if ! in_sandbox "$work_dir" "$work_dir" "${SANDBOX_GIT[@]}" init --quiet --bare -- "$mirror" ||
+     ! in_sandbox "$work_dir" "$mirror" "${SANDBOX_GIT[@]}" remote add origin "$REVERSAL_SOURCE_URL" ||
+     ! shown in_sandbox --net "$work_dir" "$mirror" "${SANDBOX_GIT[@]}" \
+         fetch --quiet --no-tags origin "+$REVERSAL_SOURCE_COMMIT:refs/heads/master"; then
+    note "The icons' source could not be downloaded at the reviewed commit, so"
+    note "nothing was built."
+    return 1
+  fi
+  head=$(in_sandbox "$work_dir" "$mirror" "${SANDBOX_GIT[@]}" \
+           rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)
+  refs=$(in_sandbox "$work_dir" "$mirror" "${SANDBOX_GIT[@]}" \
+           for-each-ref --format='%(refname)' 2>/dev/null)
+  if [[ $head != "$REVERSAL_SOURCE_COMMIT" || $refs != refs/heads/master ]]; then
+    note "The icons' source is not the reviewed commit, so nothing was built."
+    return 1
+  fi
+  note "Source: commit ${REVERSAL_SOURCE_COMMIT:0:12}, as reviewed."
+
+  # --holdver: the source is already in place, so makepkg does not update it.
+  say "Building the package, offline, in a sandbox that cannot use sudo..."
+  if ! shown in_sandbox "$work_dir" "$recipe" makepkg --holdver --nocheck --nocolor --noconfirm ||
+     ! find_built "$REVERSAL_AUR"; then
+    note "The build did not finish, so nothing was installed."
+    return 1
+  fi
+  say "Checking the package before pacman sees it..."
+  if ! check_built --name "$REVERSAL_AUR" --commit "$REVERSAL_SOURCE_COMMIT" \
+         --root usr/share/icons/Reversal --root usr/share/icons/Reversal-dark \
+         --build-root "$work_dir/build/$REVERSAL_AUR/pkg/$REVERSAL_AUR"; then
+    note "The package holds more than the two icon folders, so it was not installed."
+    return 1
+  fi
+  note "Checked: only Reversal and Reversal-dark, no install script, nothing setuid."
 }
+
 # Offered whenever Icons is included, whichever set was picked, and on its
 # own from the panel's Icons view (--reversal). Only the AUR package itself
 # counts as installed here -- a copy put in the icon folders by hand works,
@@ -133,6 +347,7 @@ reversal_recipe_verified() {
 # never after. Leaves reversal_result: installed, declined or failed.
 reversal_result=declined
 offer_reversal() {
+  local tools
   reversal_result=declined
   if pacman -Qq "$REVERSAL_AUR" &>/dev/null; then
     reversal_result=installed
@@ -161,21 +376,27 @@ panel then shows Reversal as not installed, and you can install it from there
 (Icons, then r) if you change your mind.
 WHY
   fi
+  tools=$(missing_tools "${REVERSAL_MAKEDEPENDS[@]}")
+  if ! sandbox_works && [[ -n $(missing_tools bubblewrap) ]]; then
+    tools="bubblewrap${tools:+ $tools}"
+  fi
   cat <<REVERSALAUR
 
 Reversal is not part of Omarchy or the official Arch repositories, so it comes
 from the AUR as $REVERSAL_AUR. Installing it:
-  - checks the AUR recipe first: downloads its PKGBUILD (a small text file)
-    from aur.archlinux.org and compares it with the one reviewed for this
-    release; a recipe that has changed is not built
-  - downloads the icons' source (about 20 MB) from
-    github.com/yeyushengfan258/Reversal-icon-theme
-  - builds the package as you, with yay, in ~/.cache/yay
-  - installs Reversal and Reversal-dark into /usr/share/icons with pacman,
-    which needs your password (sudo); that is asked for before anything is
-    downloaded
+  - downloads that AUR recipe from aur.archlinux.org and the icons' source
+    (about 20 MB) from github.com/yeyushengfan258/Reversal-icon-theme, each
+    at the exact commit reviewed for this release, not whatever is newest
+  - builds the package as you, offline, in a sandbox that cannot use sudo
+  - checks that it holds only the Reversal and Reversal-dark icon folders
+  - installs it into /usr/share/icons with pacman, which needs your password
+    (sudo); that is asked for before anything is downloaded
+REVERSALAUR
+  [[ -n $tools ]] &&
+    say "  - first installs $tools from the official repositories, to build it"
+  cat <<REVERSALAUR
 
-The command:  omarchy pkg aur add $REVERSAL_AUR
+Your AUR helper may rebuild it later; Omarchroma does not check those builds.
 Removing it later:  sudo pacman -R $REVERSAL_AUR
 REVERSALAUR
   say ""
@@ -184,21 +405,14 @@ REVERSALAUR
     return 0
   fi
   reversal_result=failed
-  if ! command -v omarchy >/dev/null; then
-    note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
-  elif ! authenticate_for "pacman installs Reversal at the end."; then
+  if ! authenticate_for "pacman installs Reversal at the end."; then
     note "No password given, so nothing was downloaded."
-  else
-    say "Checking the AUR recipe (downloading its PKGBUILD from aur.archlinux.org)..."
-    if ! reversal_recipe_verified; then
-      note "The AUR recipe for $REVERSAL_AUR is not the one this release was checked against"
-      note "(or the AUR could not be reached), so nothing else was downloaded. Read it first:"
-      note "  https://aur.archlinux.org/packages/$REVERSAL_AUR"
-      note "then install it with the command above if it looks right."
-    else
-      note "Recipe verified: it builds Reversal from github.com/yeyushengfan258/Reversal-icon-theme."
-      aur_install "$REVERSAL_AUR" && reversal_result=installed
-    fi
+  elif ! ensure_sandbox; then
+    note "The build sandbox (bubblewrap) does not start here, so nothing was downloaded."
+  elif ! install_build_tools "${REVERSAL_MAKEDEPENDS[@]}"; then
+    note "What the build needs was not installed, so nothing was downloaded."
+  elif build_reversal && install_built "$REVERSAL_AUR"; then
+    reversal_result=installed
   fi
   return 0
 }
@@ -560,6 +774,61 @@ fi
 # a full Electron app from source on install -- heavy enough, live on this
 # project's own 7.2GB test machine, to have pushed the whole session into
 # swap and taken the terminal down with it. -bin skips that build entirely.
+#
+# Built the way Reversal is -- in the sandbox, then checked and installed
+# with pacman -U -- but not pinned: its recipe moves with every upstream
+# release, faster than a review here could follow, and the user is told so.
+# What can be shown is: its install script, if it has one, is printed before
+# pacman asks.
+PEAR_AUR=pear-desktop-bin
+PEAR_AUR_URL=https://aur.archlinux.org/pear-desktop-bin.git
+build_pear() {
+  local recipe key value deps=() arch
+  local package_name='^[a-z0-9@_+][a-z0-9@._+-]*([<>]?=?[A-Za-z0-9.:_+~-]+)?$'
+  new_work_dir || { note "Could not create a build directory."; return 1; }
+  recipe=$work_dir/recipe
+  say "Downloading the AUR recipe from aur.archlinux.org..."
+  if ! shown in_sandbox --net "$work_dir" "$work_dir" "${SANDBOX_GIT[@]}" \
+         clone --quiet -- "$PEAR_AUR_URL" "$recipe"; then
+    note "The AUR could not be reached, so nothing was built."
+    return 1
+  fi
+  # The build tools it names, read from .SRCINFO as a capped plain file and
+  # taken only if each is a package name, so none can pass for an option.
+  arch=$(uname -m)
+  if [[ -f $recipe/.SRCINFO && ! -L $recipe/.SRCINFO ]]; then
+    while read -r key _ value; do
+      [[ $key == makedepends || $key == "makedepends_$arch" ]] || continue
+      if [[ ! $value =~ $package_name ]]; then
+        note "Its recipe names a build tool that is not a package name, so nothing was built."
+        return 1
+      fi
+      deps+=("$value")
+    done < <(head -c 65536 -- "$recipe/.SRCINFO")
+  fi
+  if (( ${#deps[@]} )) && ! install_build_tools "${deps[@]}"; then
+    note "What the build needs was not installed, so nothing was built."
+    return 1
+  fi
+  say "Downloading the app from the project's releases on GitHub (about 110 MB)..."
+  if ! shown in_sandbox --net "$work_dir" "$recipe" makepkg --verifysource --nocolor --noconfirm; then
+    note "The download did not finish, so nothing was built."
+    return 1
+  fi
+  # --nodeps: makepkg would refuse until the app's own dependencies are
+  # installed; pacman -U installs those from the official repositories, and
+  # lists them when it asks.
+  say "Packaging it, offline, in a sandbox that cannot use sudo..."
+  if ! shown in_sandbox "$work_dir" "$recipe" makepkg --nodeps --nocheck --holdver --nocolor --noconfirm ||
+     ! find_built "$PEAR_AUR"; then
+    note "Packaging did not finish, so nothing was installed."
+    return 1
+  fi
+  if ! check_built --name "$PEAR_AUR" --any-content; then
+    note "The package is not $PEAR_AUR, so it was not installed."
+    return 1
+  fi
+}
 if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
    [[ ! -d "$HOME/.config/YouTube Music" ]]; then
   head2 "Pear Desktop app"
@@ -571,21 +840,27 @@ It is not part of Omarchy or the official Arch repositories, so it comes from
 the AUR as pear-desktop-bin, the project's own prebuilt release. Installing it:
   - downloads its AUR recipe from aur.archlinux.org, and the app itself
     (about 110 MB) from the project's releases on GitHub
-  - packages it as you, with yay, in ~/.cache/yay
+  - packages it as you, in a sandbox that cannot use sudo
   - installs it with pacman, which needs your password (sudo); that is
-    asked for before anything is downloaded
+    asked for before anything is downloaded, and pacman asks once more
+PEARAUR
+  if ! sandbox_works && [[ -n $(missing_tools bubblewrap) ]]; then
+    say "  - first installs bubblewrap from the official repositories, to build it"
+  fi
+  cat <<'PEARAUR'
+Its recipe changes with every release, so unlike Reversal it is not pinned to
+a reviewed version. If it has an install script, that is shown first.
 
-The command:  omarchy pkg aur add pear-desktop-bin
 Removing it later:  sudo pacman -R pear-desktop-bin
 PEARAUR
   say ""
   if ask "Download and install Pear Desktop from the AUR"; then
-    if ! command -v omarchy >/dev/null; then
-      note "\"omarchy\" was not found, so this cannot be run for you; use the command above."
-    elif ! authenticate_for "pacman installs Pear Desktop at the end."; then
+    if ! authenticate_for "pacman installs Pear Desktop at the end."; then
       note "No password given, so nothing was downloaded."
+    elif ! ensure_sandbox; then
+      note "The build sandbox (bubblewrap) does not start here, so nothing was downloaded."
     else
-      aur_install pear-desktop-bin || true
+      build_pear && install_built "$PEAR_AUR"
     fi
   else
     note "Skipped; nothing was downloaded. The panel themes Pear Desktop once you install it."
@@ -602,9 +877,10 @@ setup has asked about runs through it, not the panel itself.
 It is built from source and installed with pacman, so it can be listed,
 upgraded and removed like any other package. Building it:
 
-- builds the service from this checkout with makepkg, which asks pacman to
-  install the result -- nothing is downloaded, and no QML is installed
-- pacman will ask for your password and show you exactly what it will install
+- builds the service from this checkout with makepkg, offline, in a sandbox
+  that cannot use sudo -- nothing is downloaded, and no QML is installed
+- checks the package, then pacman asks for your password and shows you
+  exactly what it will install
 - enables hyprchromad.service for your user, which watches for theme changes
 
 Once running it writes only inside your own home directory: GTK and Qt/KDE
@@ -632,40 +908,37 @@ if [[ ! -f $here/packaging/PKGBUILD ]]; then
   say "Could not find the package recipe next to this script ($here/packaging)."
   exit 1
 fi
-cd "$here/packaging" || exit 1
-# BUILDDIR moves only makepkg's own scratch space (src/ and pkg/), never the
-# source, which package() still reads from $startdir/.. exactly as before.
-# Left inside the checkout, that scratch space sits in the same directory
-# tree the Omarchy shell watches for plugin changes, and package() writing
-# dozens of files there fired that watcher dozens of times a second, mid-build
-# -- reloading the panel's whole QML component tree while a build was still
-# running underneath it, live on this project's own test machine.
+# Built like the AUR packages above: in a work directory of its own under the
+# user's cache (new_work_dir says why there), in the sandbox -- offline, with
+# no way to use sudo -- then checked and installed with pacman -U. It is this
+# checkout's own code, but its build has no need for the ticket either. Where
+# bubblewrap does not start, the build still runs with no new privileges, in
+# a session of its own and with a clean environment.
 #
-# Under the user's own cache directory, not /tmp: every other directory this
-# project ever touches lives under $HOME, and a fixed name in a directory
-# shared by every user on the machine is a squatting target regardless of
-# what mktemp's own randomized suffix does to make the specific path hard to
-# guess -- the rule here has always been about the directory, not just the
-# name. mktemp -p still gives the leaf a name nothing else could have created
-# first.
-build_cache="${XDG_CACHE_HOME:-$HOME/.cache}/hyprchroma-setup"
-mkdir -p -- "$build_cache" || { say "Could not create $build_cache."; exit 1; }
-BUILDDIR=$(mktemp -d -p "$build_cache") || { say "Could not create a build directory."; exit 1; }
-trap 'rm -rf -- "$BUILDDIR"; [[ -n $keepalive_pid ]] && kill "$keepalive_pid" 2>/dev/null' EXIT
-export BUILDDIR
-# BUILDDIR alone only moves makepkg's own scratch space (src/ and pkg/);
-# the finished package itself still defaults to $startdir -- this PKGBUILD's
-# own directory, back inside the watched plugin tree -- unless PKGDEST says
-# otherwise. That finished file landing there, right as makepkg's own sudo
-# pacman -U needs the password, reproduced the exact reload-storm-timed PAM
-# failure this was meant to fix, on this project's own test machine.
-export PKGDEST="$BUILDDIR"
-# Warmed here regardless of whether an earlier step already authenticated,
-# so a system with every dependency already satisfied -- which never called
-# run_sudo above -- does not hit its very first prompt deep inside makepkg's
-# own internal install step at the end of the build.
+# Warmed first regardless of whether an earlier step already authenticated,
+# so the password is asked for before the build rather than after it, the
+# same as before; the build itself cannot use it.
 run_sudo -v || { say "Could not authenticate; nothing was built."; exit 1; }
-makepkg -si --needed || { say "The build did not finish; nothing else was changed."; exit 1; }
+new_work_dir || { say "Could not create a build directory; nothing was built."; exit 1; }
+if sandbox_works; then
+  shown in_sandbox "$work_dir" "$here/packaging" makepkg --nocolor --noconfirm
+else
+  ( cd "$here/packaging" &&
+    shown setsid -w env -i PATH=/usr/bin HOME="$work_dir" LANG=C.UTF-8 \
+      BUILDDIR="$work_dir/build" PKGDEST="$work_dir/out" SRCDEST="$work_dir/sources" \
+      LOGDEST="$work_dir/build" setpriv --no-new-privs -- makepkg --nocolor --noconfirm </dev/null )
+fi || { say "The build did not finish; nothing else was changed."; exit 1; }
+hyprchroma_version="$(sed -n 's/^pkgver=//p' "$here/packaging/PKGBUILD")-$(sed -n 's/^pkgrel=//p' "$here/packaging/PKGBUILD")"
+if ! find_built hyprchroma ||
+   ! check_built --name hyprchroma --version "$hyprchroma_version" \
+       --root usr/bin/hyprchroma --root usr/lib/hyprchroma \
+       --root usr/lib/systemd/user/hyprchromad.service --root usr/share/hyprchroma \
+       --root usr/share/doc/hyprchroma --root usr/share/licenses/hyprchroma; then
+  say "The package is not what this checkout builds, so it was not installed."
+  exit 1
+fi
+run_sudo pacman -U --needed -- "$built_package" ||
+  { say "pacman did not install it; nothing else was changed."; exit 1; }
 
 # --- apply the choices, now that the tool exists --------------------------
 head2 "Applying your choices"

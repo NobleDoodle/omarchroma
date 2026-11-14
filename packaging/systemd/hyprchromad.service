@@ -39,5 +39,24 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 LockPersonality=yes
 
+# The theme hook hands its sync to this service, so
+# every theme change now runs here, with the restrictions above -- and with a
+# bound on what one can take. Measured: a cold
+# Icons apply, the heaviest step, peaked at 354 MiB with Reversal (file cache
+# included) and 119 MiB with Yaru; the daemon idles at about 11 MiB. With the
+# writers running side by side a theme change's sync peaked at 30
+# tasks and 158 MiB. Above MemoryHigh the kernel reclaims before anything is
+# killed; MemoryMax ends a runaway sync -- a hostile image, say -- rather than
+# the session, and the next theme change or window event runs it again.
+MemoryHigh=1G
+MemoryMax=1536M
+TasksMax=128
+# A theme change's sync runs while Omarchy is busy with the rest of the change
+# -- the background selector's thumbnails on every core among it. As a unit of
+# its own, it got only an equal share of the CPU against each of those, where
+# the same sync run from the hook shared theirs. Weighted ahead, it applied the
+# theme about 0.5 s sooner, measured live; idle, the weight costs nothing.
+CPUWeight=1000
+
 [Install]
 WantedBy=graphical-session.target

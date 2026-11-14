@@ -32,7 +32,17 @@ chk "a set that is not installed is still refused, dark or not" "$(pick dark Mis
 export HYPRCHROMA_LIB=$REPO/lib
 mkdir -p "$XDG_DATA_HOME/icons/breeze" "$XDG_DATA_HOME/icons/breeze-dark"
 THEME=$XDG_DATA_HOME/icons/Omarchroma
-kde() { MODE=$1; echo "$2" > "$ROOT/theme/icons.theme"; kde_icon_theme test 2>/dev/null; }
+# kde_icon_theme queues its files for the generator's one write-files
+# request; flushed here the way the generator does.
+kde() {
+  MODE=$1; echo "$2" > "$ROOT/theme/icons.theme"
+  changed_files=(); kde_icon_name=""
+  kde_icon_theme test 2>/dev/null
+  if (( ${#changed_files[@]} )); then
+    printf '%s\0' "${changed_files[@]}" | "$HYPRCHROMA_LIB/hyprchroma-state" write-files
+  fi
+  printf '%s' "$kde_icon_name"
+}
 inherits() { grep '^Inherits=' "$THEME/index.theme" | cut -d= -f2; }
 chk "KDE applications are pointed at Omarchroma's own theme" "$(kde dark Testset)" "Omarchroma"
 chk "...which looks in the Omarchy set first, then breeze-dark, on a dark theme" "$(inherits)" "Testset-dark,breeze-dark,hicolor"
@@ -46,7 +56,7 @@ kde dark Testset >/dev/null; before=$(stat -c %Y.%i "$THEME/index.theme"); sleep
 kde dark Testset >/dev/null
 chk "...and is rewritten only when it changes" "$(stat -c %Y.%i "$THEME/index.theme")" "$before"
 chk "kdeglobals is written with it" \
-  "$(grep -c '"$(kde_icon_theme sync-qt-kde-theme)"' "$REPO/lib/sync-qt-kde-theme")" "1"
+  "$(grep -c '"$scheme_file" "$kdeglobals" "$kde_icon_name" "$scheme_changed" "${changed_files\[@\]}"' "$REPO/lib/sync-qt-kde-theme")" "1"
 chk "the GTK icon setting is never touched" "$(grep -c 'gsettings set' "$REPO/lib/sync-qt-kde-theme")" "0"
 
 python3 - "$REPO" <<'PY'

@@ -44,7 +44,7 @@ def scenario(windows, started=BEFORE, binary="/usr/lib/xdg-desktop-portal-gtk",
     st.has_quit_action = lambda name, path, pid=None: False
     st.quit_application = lambda pid, name, path: quit.append(name) or True
     st.restart_portal_backend = lambda name: steps.append(("restart", name)) or restart_ok
-    st.resend_color_scheme = lambda: steps.append(("resend",)) or True
+    st.resend_color_scheme = lambda **kw: steps.append(("resend",)) or True
     st.refresh_idle_apps()
     return quit
 
@@ -251,3 +251,76 @@ chk "the GTK sync re-sends the color scheme when its colors changed, through the
 # A missing stylesheet (a fresh install) must not end the sync under pipefail.
 chk "comparing the stylesheets survives their absence" \
   "$(grep -c '{ cat -- "$HOME/.config/gtk-3.0/hyprchroma.css" "$HOME/.config/gtk-4.0/hyprchroma.css" 2>/dev/null || true; } | sha256sum' "$REPO/bin/hyprchroma")" "2"
+
+# -- the re-send runs detached now, so two can overlap:
+#    one at a time, under a lock in the runtime directory, and the next sync
+#    waits for a running one before it writes the GTK files again
+python3 - "$REPO" <<'E'
+import os, sys, tempfile, threading, time, types
+
+src = open(sys.argv[1] + "/lib/hyprchroma-state").read()
+st = types.ModuleType("st")
+exec(compile(src.replace('if __name__ == "__main__":\n    raise SystemExit(main())', ''),
+             "st", "exec"), st.__dict__)
+
+def chk(name, got, want):
+    print(f"  {'PASS' if got == want else 'FAIL'} {name}"
+          + ("" if got == want else f": got [{got}] want [{want}]"))
+
+os.environ["XDG_RUNTIME_DIR"] = tempfile.mkdtemp()
+current, sets, guard = ["prefer-dark"], [], threading.Lock()
+class Done:
+    def __init__(self, out=""): self.stdout, self.returncode = out, 0
+def fake_run(args, **kw):
+    with guard:
+        if args[1] == "get":
+            return Done(f"'{current[0]}'")
+        current[0] = args[-1]; sets.append(args[-1])
+        return Done()
+st.subprocess.run = fake_run
+st.COLOR_SCHEME_STEP_SECONDS = 0.2
+
+def overlapped(wait):
+    sets.clear(); current[0] = "prefer-dark"; results = []
+    def one():
+        results.append(st.resend_color_scheme_locked(wait=wait))
+    first = threading.Thread(target=one); first.start(); time.sleep(0.05)
+    second = threading.Thread(target=one); second.start()
+    first.join(); second.join()
+    return sorted(results), list(sets), current[0]
+
+chk("a second re-send while one is passing through is skipped",
+    overlapped(0.0), ([False, True], ["prefer-light", "prefer-dark"], "prefer-dark"))
+chk("one that waits runs after it, never in between",
+    overlapped(2.0), ([True, True], ["prefer-light", "prefer-dark", "prefer-light", "prefer-dark"], "prefer-dark"))
+# Without the lock, the second reads the first's passing value as the scheme
+# to put back: the hazard the lock is there for.
+sets.clear(); current[0] = "prefer-dark"
+a = threading.Thread(target=lambda: st.resend_color_scheme(through="opposite")); a.start(); time.sleep(0.05)
+b = threading.Thread(target=lambda: st.resend_color_scheme(through="opposite")); b.start()
+a.join(); b.join()
+chk("(unlocked, two overlapping re-sends end on the wrong scheme)", current[0], "prefer-light")
+chk("the lock lives in the runtime directory, as a private regular file",
+    (st.color_scheme_lock_path().parent == __import__("pathlib").Path(os.environ["XDG_RUNTIME_DIR"]),
+     oct(os.stat(st.color_scheme_lock_path()).st_mode & 0o777)), (True, "0o600"))
+E
+
+S=$REPO/bin/hyprchroma
+chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$3]"; }
+chk "the sync starts the re-send detached, without its sync lock" \
+  "$(grep -A2 -- '^    setsid "$HYPRCHROMA_LIB/hyprchroma-state"' "$S" | grep -c 'resend-color-scheme \\$'),$(grep -A3 'resend-color-scheme \\$' "$S" | grep -c '9>&- &$')" "1,1"
+chk "...and waits for a running one before writing the GTK files" \
+  "$(grep -B1 '^  "$HYPRCHROMA_LIB/sync-gtk-theme"$' "$S" | grep -c '^  wait_color_scheme$')" "1"
+# wait_color_scheme, run for real against a held lock: it returns only once
+# the holder has let go.
+wd=$(mktemp -d); trap 'rm -rf "$wd"' EXIT
+eval "$(sed -n '/^wait_color_scheme()/,/^}/p' "$S")"
+export XDG_RUNTIME_DIR=$wd STATE_DIR=$wd
+: > "$wd/hyprchroma-color-scheme.lock"; chmod 600 "$wd/hyprchroma-color-scheme.lock"
+( exec 7<"$wd/hyprchroma-color-scheme.lock"; flock 7; : > "$wd/held"; sleep 0.4; : > "$wd/released" ) &
+for _ in $(seq 50); do [[ -e $wd/held ]] && break; sleep 0.02; done
+wait_color_scheme
+chk "the GTK step waits until a running re-send has finished" "$([[ -e $wd/released ]] && echo after || echo before)" "after"
+wait
+rm "$wd/hyprchroma-color-scheme.lock"; mkfifo "$wd/hyprchroma-color-scheme.lock"
+chk "a FIFO in the lock's place is not opened (it would block)" "$(timeout 5 bash -c "$(declare -f wait_color_scheme); XDG_RUNTIME_DIR=$wd wait_color_scheme" && echo returned)" "returned"

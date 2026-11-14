@@ -44,8 +44,11 @@ printf 'x' | ./lib/hyprchroma-state write-file --path "$STAGE/m" --mode 4755 2>/
 chk "write-file cannot set setuid" "$(stat -c%a "$STAGE/m" 2>/dev/null)" "755"
 printf 'x' | ./lib/hyprchroma-state write-file --path "$STAGE/m2" --mode 2755 2>/dev/null
 chk "write-file cannot set setgid" "$(stat -c%a "$STAGE/m2" 2>/dev/null)" "755"
+printf '%s\0' "$STAGE/m3" 4755 x "$STAGE/m4" 6755 y | ./lib/hyprchroma-state write-files 2>/dev/null
+chk "nor can write-files, for any file of a request" "$(stat -c%a "$STAGE/m3" "$STAGE/m4" 2>/dev/null | paste -sd,)" "755,755"
+# Two: write-file's, and write-files' for each file of its request.
 chk "the mask is in the source, not just the result" \
-  "$(countcode '& 0o777' lib/hyprchroma-state)" "1"
+  "$(countcode '& 0o777' lib/hyprchroma-state)" "2"
 
 # --- 3. the unlink primitive is confined -----------------------------------
 mkfifo "$STAGE/victim.fifo"

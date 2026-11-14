@@ -41,6 +41,16 @@ hyprchroma_trusted_path() {
 PATH=$(hyprchroma_trusted_path)
 export PATH
 
+# Step timing, only while the hyprchroma sync that started this has it on
+# (its trace-timing file). The descriptor must be one that sync opened -- 10
+# or above, open for writing -- never stdout or stderr, which carry output.
+if [[ ${HYPRCHROMA_TRACE_FD:-} =~ ^[1-9][0-9]+$ && -w /proc/self/fd/$HYPRCHROMA_TRACE_FD ]]; then
+  BASH_XTRACEFD=$HYPRCHROMA_TRACE_FD
+  PS4='+${EPOCHREALTIME} ${BASHPID} ${BASH_SOURCE[0]##*/}:${LINENO} '
+  set -x
+fi
+unset HYPRCHROMA_TRACE_FD
+
 # Derived from this script's own resolved location, never from the
 # environment: it chooses which executable performs every write. See the same
 # reasoning in bin/hyprchroma.
@@ -140,7 +150,12 @@ omarchy_icon_theme() {
 # Hidden, so it is never offered as a choice anywhere; one declared directory,
 # because a theme listing none is taken as invalid and skipped entirely --
 # which is what an earlier, directory-less version of this ran into. Written
-# only when it changes, through the state helper like every other write here.
+# only when it changes, through the state helper like every other write here,
+# together with the scheme and kdeglobals. Sets
+# kde_icon_name (empty when there is nothing to inherit) and queues its files
+# in changed_files: path, mode and content for each.
+changed_files=()
+kde_icon_name=""
 kde_icon_theme() {
   local breeze=breeze own inherits=() data dir content
   [[ $(omarchy-theme-color mode 2>/dev/null) == dark ]] && breeze=breeze-dark
@@ -158,12 +173,10 @@ kde_icon_theme() {
     "Hidden=true" "Directories=actions/22" "" \
     "[actions/22]" "Size=22" "Context=Actions" "Type=Fixed")
   if ! [[ -f $dir/index.theme && ! -L $dir/index.theme && $content == "$(cat -- "$dir/index.theme" 2>/dev/null)" ]]; then
-    printf '%s\n' "$content" |
-      "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$dir/index.theme" --mode 644
+    changed_files+=("$dir/index.theme" 644 "$content"$'\n')
   fi
-  [[ -d $dir/actions/22 ]] ||
-    printf '' | "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$dir/actions/22/.omarchroma" --mode 644
-  printf "Omarchroma"
+  [[ -d $dir/actions/22 ]] || changed_files+=("$dir/actions/22/.omarchroma" 644 "")
+  kde_icon_name=Omarchroma
 }
 
 load_palette
@@ -320,13 +333,17 @@ scheme_changed=1
 # Read only when a regular file: a fifo planted in its place would block it.
 if [[ -f $scheme_file && ! -L $scheme_file && $scheme_content == "$(cat -- "$scheme_file" 2>/dev/null)" ]]; then
   scheme_changed=0
-else
-  printf '%s\n' "$scheme_content" |
-    "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$scheme_file" --mode 644
 fi
+kde_icon_theme sync-qt-kde-theme
 
-globals_changed=$(
-  python3 - "$HYPRCHROMA_LIB/hyprchroma-state" "$scheme_file" "$kdeglobals" "$(kde_icon_theme sync-qt-kde-theme)" <<'PY'
+# One Python start merges kdeglobals and hands the helper everything that
+# changed -- the scheme, the icon theme's files and kdeglobals -- in one
+# write-files request. It is given the scheme as
+# composed here rather than reading back the file it is about to write. It
+# prints whether kdeglobals changed, then the ConfigChanged payload.
+merge_output=$(
+  HYPRCHROMA_SCHEME_TEXT="$scheme_content"$'\n' /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" \
+    "$scheme_file" "$kdeglobals" "$kde_icon_name" "$scheme_changed" "${changed_files[@]}" <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import hashlib
 import os
@@ -337,10 +354,12 @@ from pathlib import Path
 
 scheme_path = Path(sys.argv[1])
 globals_path = Path(sys.argv[2])
-icon_theme = sys.argv[3] if len(sys.argv) > 3 else ""
-scheme_text = scheme_path.read_text()
+icon_theme = sys.argv[3]
+scheme_changed = sys.argv[4] == "1"
+queued = sys.argv[5:]  # path, mode and content of each icon theme file to write
+scheme_text = os.environ["HYPRCHROMA_SCHEME_TEXT"]
 current_text = globals_path.read_text() if globals_path.exists() else ""
-scheme_hash = hashlib.sha1(scheme_path.read_bytes()).hexdigest()
+scheme_hash = hashlib.sha1(scheme_text.encode()).hexdigest()
 
 
 def chunks(text):
@@ -439,27 +458,59 @@ if preamble:
 parts.extend("\n".join(section).rstrip() for section in output_sections)
 updated_text = "\n\n".join(part for part in parts if part) + "\n"
 
-if updated_text == current_text:
-    print(0)
-else:
-    # Handed to the state helper, which creates its temporary and renames it
-    # relative to a directory descriptor it has verified. This was the fifth
-    # copy of an atomic_write that made the temporary name exclusive but still
-    # resolved the destination directory by pathname.
+# Handed to the state helper, which creates each temporary and renames it
+# relative to a directory descriptor it has verified. This was the fifth copy
+# of an atomic_write that made the temporary name exclusive but still
+# resolved the destination directory by pathname.
+writes = []
+if scheme_changed:
+    writes.append((str(scheme_path), "644", scheme_text))
+for index in range(0, len(queued) - 2, 3):
+    writes.append(tuple(queued[index:index + 3]))
+globals_changed = updated_text != current_text
+if globals_changed:
     mode = (
         stat.S_IMODE(globals_path.stat().st_mode)
         if globals_path.exists()
         else 0o600
     )
+    writes.append((str(globals_path), format(mode, "o"), updated_text))
+if writes:
     subprocess.run(
-        [HELPER,
-         "write-file", "--path", str(globals_path), "--mode", format(mode, "o")],
-        input=updated_text.encode(),
+        [HELPER, "write-files"],
+        input=b"".join(os.fsencode(path) + b"\0" + mode.encode() + b"\0" + content.encode() + b"\0"
+                       for path, mode, content in writes),
         check=True,
     )
-    print(1)
+print(1 if globals_changed else 0)
+
+# The ConfigChanged payload: every key of every group the scheme sets.
+groups = {}
+current = None
+for line in scheme_text.splitlines():
+    line = line.strip()
+    if line.startswith("[") and line.endswith("]"):
+        # "[Colors:Header][Inactive]" is a subgroup; watchers key off the parent.
+        current = line[1:-1].split("][", 1)[0]
+        groups.setdefault(current, set())
+    elif current and "=" in line:
+        groups[current].add(line.split("=", 1)[0])
+groups.setdefault("General", set()).update({"ColorScheme", "ColorSchemeHash"})
+groups.setdefault("KDE", set()).add("contrast")
+
+
+def quote(value):
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+print("{" + ", ".join(
+    f"{quote(group)}: [{', '.join(quote(key) for key in sorted(keys))}]"
+    for group, keys in sorted(groups.items()) if keys
+) + "}")
 PY
 )
+globals_changed=${merge_output%%$'\n'*}
+notify_payload=${merge_output#*$'\n'}
 
 # Ask running apps to re-read kdeglobals, best effort.
 #
@@ -482,34 +533,6 @@ PY
 # so the payload below must stay unwrapped.
 if (( scheme_changed || globals_changed )) && \
    [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v gdbus >/dev/null; then
-  notify_payload=$(python3 - "$scheme_file" <<'NOTIFY'
-import sys
-from pathlib import Path
-
-groups = {}
-current = None
-for line in Path(sys.argv[1]).read_text().splitlines():
-    line = line.strip()
-    if line.startswith("[") and line.endswith("]"):
-        # "[Colors:Header][Inactive]" is a subgroup; watchers key off the parent.
-        current = line[1:-1].split("][", 1)[0]
-        groups.setdefault(current, set())
-    elif current and "=" in line:
-        groups[current].add(line.split("=", 1)[0])
-groups.setdefault("General", set()).update({"ColorScheme", "ColorSchemeHash"})
-groups.setdefault("KDE", set()).add("contrast")
-
-
-def quote(value):
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-print("{" + ", ".join(
-    f"{quote(group)}: [{', '.join(quote(key) for key in sorted(keys))}]"
-    for group, keys in sorted(groups.items()) if keys
-) + "}")
-NOTIFY
-  )
   gdbus emit --session --object-path /kdeglobals \
     --signal org.kde.kconfig.notify.ConfigChanged "$notify_payload" >/dev/null 2>&1 || true
 fi

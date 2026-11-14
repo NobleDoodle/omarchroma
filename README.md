@@ -39,6 +39,17 @@ theme change, and verifies the dependencies your choices need. Every download
 or install says what it fetches and why before it asks, and sudo asks for your
 password before anything comes from the AUR. Type `I understand` to build.
 
+Setup uses no AUR helper. It fetches an AUR recipe itself, builds the
+package as you in a [bubblewrap](https://github.com/containers/bubblewrap)
+sandbox that cannot use sudo (no network once the download is done, no
+access to your home folder), checks the result, and only then hands it to
+`pacman -U`, which shows it and asks. hyprchroma itself is built the same
+way, from the checkout. Reversal is built from the AUR recipe commit and
+the upstream source commit reviewed for this release, never the newest, and
+is refused unless the package holds only its two icon folders and no
+install script. Pear Desktop's recipe changes with every release, so it is
+not pinned; its install script, if any, is shown before pacman asks.
+
 **Standalone (service only):**
 
 ```bash
@@ -98,6 +109,7 @@ With the bar widget:
 | `/` | Show apps still using the old theme |
 | `Ctrl+Enter` (in that list) | Restart All: lists what will close, then Ctrl+Enter again to go ahead |
 | `Ctrl+Enter` (in that review) | Close and relaunch them |
+| `d` (in that list or review) | Dismiss: leave them as they are until the next theme change |
 | `s` | Settings |
 | `?` | About: plugin and service versions, license, and links |
 | `i` (in About) | Open a new issue: a bug report, a feature request, or a question |
@@ -157,6 +169,10 @@ With the bar widget:
   through a confirmation that lists each window it will close, warns you to
   save your work first, and spells out what can go wrong. It only goes ahead
   on **Ctrl+Enter** (or its Restart button); Esc leaves everything as it is.
+  **Dismiss** (`d`), in the list and in the confirmation, leaves the apps on
+  the old theme and stops counting them, on the bar icon and in the panel,
+  until the next theme change lists whatever that leaves behind. Nothing
+  closes.
   **Confirm** opens that confirmation by itself after a theme switch that
   leaves apps on the old theme; **Off**, the default, waits for Restart All.
   A global hotkey can open it from anywhere too (bind one to
@@ -234,13 +250,14 @@ stops and changes nothing.
 | `adw-gtk-theme` | GTK 3 applications | GTK 3 apps keep system defaults |
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
-| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to install it from the AUR |
+| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to build it from the AUR (not pinned) |
 | Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
 | `yaru-icon-theme` | Icons with Yaru | Ships with Omarchy |
-| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) | Icons with Reversal, the default pack | Setup offers it from the AUR (or later: Icons, then `r`), once its recipe matches the reviewed one; without it, Icons uses Yaru |
+| [Reversal](https://aur.archlinux.org/packages/reversal-icon-theme-git) | Icons with Reversal, the default pack | Setup offers to build it from the AUR (or later: Icons, then `r`) at the recipe and source commits reviewed for this release; without it, Icons uses Yaru |
 | `python-pillow` | Icons: app covers and Yaru folders | Setup offers to install it |
 | `python-numpy` | Icons: Yaru folders | Setup offers to install it with Yaru |
+| `bubblewrap` | Setup's build sandbox | Part of Omarchy; setup installs it before building an AUR package without it |
 | Firefox, Floorp, Zen, LibreWolf, Waterfox or Vivaldi | Additional browsers | Not offered |
 
 ## What it changes
@@ -278,8 +295,15 @@ pacman installation requires sudo).
   link to it in `~/.local/share/icons`, and sets GTK's icon theme. Each theme's
   own `icons.theme` is saved first and put back when Icons is switched off.
   With covers on, a desktop file of your own whose `Icon=` is a full path is
-  changed to name its cover, and changed back on switch-off. Reversal's sage
-  color is built from its green one when the color variants are installed.
+  changed to name its cover, with its original kept on an
+  `X-Omarchroma-Original-Icon=` line, and changed back on switch-off. A full
+  path is used only for app artwork: under `/usr`, `/opt`, Flatpak's and
+  Snap's folders, or, in your home, `~/.local/share`, `~/.local/opt`,
+  `~/.icons`, `~/Applications` and Omarchy's plugin folder. It must be an
+  image file of at most 4 MiB. Pictures, documents, downloads and other
+  programs' folders are never copied into the icon theme. Such an entry keeps
+  its own icon. Covers are readable by you only. Reversal's sage color is
+  built from its green one when the color variants are installed.
 
 Generated output is never included in backups.
 

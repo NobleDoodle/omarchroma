@@ -42,6 +42,16 @@ hyprchroma_trusted_path() {
 PATH=$(hyprchroma_trusted_path)
 export PATH
 
+# Step timing, only while the hyprchroma sync that started this has it on
+# (its trace-timing file). The descriptor must be one that sync opened -- 10
+# or above, open for writing -- never stdout or stderr, which carry output.
+if [[ ${HYPRCHROMA_TRACE_FD:-} =~ ^[1-9][0-9]+$ && -w /proc/self/fd/$HYPRCHROMA_TRACE_FD ]]; then
+  BASH_XTRACEFD=$HYPRCHROMA_TRACE_FD
+  PS4='+${EPOCHREALTIME} ${BASHPID} ${BASH_SOURCE[0]##*/}:${LINENO} '
+  set -x
+fi
+unset HYPRCHROMA_TRACE_FD
+
 # Derived from this script's own resolved location, never from the
 # environment: it chooses which executable performs every write. See the same
 # reasoning in bin/hyprchroma.
@@ -466,11 +476,14 @@ import_line='@import url("hyprchroma.css");'
 # with the palette unchanged -- a forced one, or one another framework set
 # off -- started the helper four times to rewrite identical files. Read only
 # when a regular file: a fifo planted in its place would block the read.
+# The stylesheets that did change go to the helper together, in one start:
+# path, mode and content, each ended by a NUL.
+changed_files=()
 write_if_changed() {
   if [[ -f $1 && ! -L $1 && $2 == "$(cat -- "$1" 2>/dev/null)" ]]; then
     return 0
   fi
-  printf '%s\n' "$2" | "$HYPRCHROMA_LIB/hyprchroma-state" write-file --path "$1" --mode 644
+  changed_files+=("$1" 644 "$2"$'\n')
 }
 import_if_missing() {
   if [[ -f $1 ]] && grep -qF -- "$import_line" "$1" 2>/dev/null; then
@@ -480,6 +493,9 @@ import_if_missing() {
 }
 write_if_changed "$gtk3_dir/hyprchroma.css" "$gtk3_css"
 write_if_changed "$gtk4_dir/hyprchroma.css" "$gtk4_css"
+if (( ${#changed_files[@]} )); then
+  printf '%s\0' "${changed_files[@]}" | "$HYPRCHROMA_LIB/hyprchroma-state" write-files
+fi
 import_if_missing "$gtk3_dir/gtk.css"
 import_if_missing "$gtk4_dir/gtk.css"
 trap - EXIT

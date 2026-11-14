@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Resolve the active palette, whatever is providing it.
 
 Omarchy is one source among others now, rather than the only one. A palette

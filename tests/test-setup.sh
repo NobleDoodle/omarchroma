@@ -63,8 +63,8 @@ chk "the keep-alive loop actually starts" \
   "$(grep -c 'background loop alive: yes' <<<"$keepalive_out")" "1"
 chk "a second sudo call does not start a second loop" \
   "$(grep -c 'still the same loop: yes' <<<"$keepalive_out")" "1"
-chk "both existing sudo calls go through it" \
-  "$(grep -c '^ *run_sudo pacman -S --needed' $S)" "2"
+chk "every pacman -S goes through it" \
+  "$(grep -c '^ *run_sudo pacman -S --needed' $S)" "3"
 chk "and the build warms the credential explicitly, in case neither did" \
   "$(grep -c '^run_sudo -v' $S)" "1"
 chk "the keep-alive is torn down on exit alongside the build directory" \
@@ -83,7 +83,7 @@ chk "the consent explains what hyprchroma is, not only how it is installed" \
 # must not appear is makepkg's own output.
 chk "and nothing was built" "$(grep -cE '==> Making package|Finished making' <<<"$out")" "0"
 chk "makepkg only runs after the check" \
-  "$(awk '/acknowledgement != "I understand"/{seen=1} /makepkg -si/{print (seen?"after":"before")}' $S)" "after"
+  "$(awk '/acknowledgement != "I understand"/{seen=1} /"\$here\/packaging" makepkg/{print (seen?"after":"before")}' $S)" "after"
 
 # --- the build's own scratch space stays out of the watched plugin tree ---
 # packaging/pkg and packaging/src, left where makepkg defaults to putting
@@ -91,27 +91,25 @@ chk "makepkg only runs after the check" \
 # changes. package() writing dozens of files there fired that watcher dozens
 # of times a second, mid-build, live on this project's own test machine.
 chk "the build directory is under the user's own cache, not the checkout" \
-  "$(grep -c 'BUILDDIR=\$(mktemp -d -p "\$build_cache")' $S)" "1"
+  "$(grep -c 'work_dir=\$(mktemp -d -p "\$build_cache")' $S)" "1"
 # Not /tmp: every other directory this project touches lives under \$HOME,
 # and a directory shared by every user on the machine is a squatting target
 # regardless of what mktemp's own randomized suffix does to the leaf name.
 chk "and that cache directory is under \$HOME, never /tmp" \
   "$(grep -c 'build_cache=\"\${XDG_CACHE_HOME:-\$HOME/.cache}/hyprchroma-setup\"' $S)" "1"
 chk "before makepkg ever runs, not after" \
-  "$(awk '/BUILDDIR=\$\(mktemp -d -p/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
-chk "it is exported so makepkg actually sees it" \
-  "$(grep -c '^export BUILDDIR$' $S)" "1"
+  "$(awk '/^new_work_dir \|\|/{seen=1} /"\$here\/packaging" makepkg/{print (seen?"before":"after"); exit}' $S)" "before"
+chk "makepkg is given it, in the sandbox and without one" \
+  "$(grep -c -- '--setenv BUILDDIR "\$work/build" --setenv PKGDEST "\$work/out"' $S),$(grep -c 'BUILDDIR="\$work_dir/build" PKGDEST="\$work_dir/out"' $S)" "1,1"
 chk "the temporary directory is removed no matter how the script exits" \
-  "$(grep -c 'trap .rm -rf -- .\$BUILDDIR.' $S)" "1"
+  "$(sed -n '/^finish()/,/^}/p' $S | grep -c 'rm -rf -- "\$dir"'),$(grep -c '^trap finish EXIT$' $S)" "1,1"
 # BUILDDIR alone only moves the build's scratch space (src/ and pkg/); the
 # finished package itself still defaults to \$startdir -- back inside the
 # watched tree -- unless PKGDEST says otherwise. That finished file landing
 # there, right as makepkg's own sudo pacman -U needs the password, reproduced
 # the same reload-storm-timed PAM failure this was meant to fix.
 chk "the finished package is kept out of the watched tree too" \
-  "$(grep -c '^export PKGDEST=\"\$BUILDDIR\"$' $S)" "1"
-chk "PKGDEST is set before makepkg ever runs, not after" \
-  "$(awk '/^export PKGDEST=/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+  "$(grep -c -- '--setenv PKGDEST "\$work/out"' $S),$(grep -c 'PKGDEST="\$work_dir/out"' $S)" "1,1"
 
 # --- both optional frameworks are explained, not just named ---------------
 chk "Pear is explained" "$(grep -c 'desktop app for YouTube Music' <<<"$out")" "1"
@@ -156,7 +154,7 @@ chk "it is raised when it was wanted" \
 chk "Dark Reader's info is never read as a bare command" \
   "$(grep -c 'hyprchroma-dark-reader --info' $S)" "0"
 chk "the check happens right where the question is answered, not after the build" \
-  "$(awk '/"\$here\/lib\/hyprchroma-dark-reader" --info/{seen=1} /makepkg -si --needed/{print (seen?"before":"after"); exit}' $S)" "before"
+  "$(awk '/"\$here\/lib\/hyprchroma-dark-reader" --info/{seen=1} /"\$here\/packaging" makepkg/{print (seen?"before":"after"); exit}' $S)" "before"
 # Isolated HOME: darkReaderInstalled is judged from files under $HOME, so a
 # fresh one deterministically reads as "not installed" regardless of which
 # browser happens to be this machine's actual default.
@@ -190,7 +188,7 @@ chk "yes to every framework asks none of them one by one" \
   "$(grep -cE 'Include (Thunderbird|Pear Desktop|Dark Reader|Flatpak apps|additional browsers|icons)' <<<"$all_out")" "0"
 chk "...and says what it switched on" "$(grep -c '^Switching on:' <<<"$all_out")" "1"
 chk "...then still offers what they need: Reversal, and the Dark Reader links" \
-  "$(grep -c 'omarchy pkg aur add reversal-icon-theme-git' <<<"$all_out"),$(grep -c 'Chrome Web Store' <<<"$all_out")" "1,1"
+  "$(grep -c 'from the AUR as reversal-icon-theme-git' <<<"$all_out"),$(grep -c 'Chrome Web Store' <<<"$all_out")" "1,1"
 
 # --- Pear Desktop is offered for install when wanted and missing ---------
 # A real machine may already have pear-desktop, or a ~/.config/YouTube Music
@@ -204,7 +202,7 @@ pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
 # n: decline Thunderbird. y: include Pear. n: decline Dark Reader, so its
 # dependency never enters it. n: decline whatever is asked next. no: cancel
 # before the build. Answering yes to the Pear install offer would really try
-# to run "omarchy pkg aur add" against this machine.
+# to download and build it on this machine.
 pear_out=$(export HOME="$pear_home"
            printf '\nn\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
 chk "a missing, wanted Pear Desktop is named, with why, before the question" \
@@ -213,8 +211,10 @@ chk "with what it downloads and that sudo comes first" \
   "$(grep -cE 'about 110 MB|asked for before anything is downloaded' <<<"$pear_out")" "2"
 # -bin specifically, not the plain package: that one builds a full Electron
 # app from source, which is what took the terminal down earlier this session.
-chk "with the AUR command to get it, the prebuilt package" \
-  "$(grep -c 'omarchy pkg aur add pear-desktop-bin' <<<"$pear_out")" "1"
+chk "with the AUR package it comes from, the prebuilt one" \
+  "$(grep -c 'the AUR as pear-desktop-bin, the project.s own prebuilt release' <<<"$pear_out")" "1"
+chk "...and that, unlike Reversal, it is not pinned to a reviewed version" \
+  "$(grep -c 'not pinned to' <<<"$pear_out")" "1"
 chk "declining leaves it uninstalled and says so" \
   "$(grep -c 'Skipped; nothing was downloaded. The panel themes Pear Desktop' <<<"$pear_out")" "1"
 # Reuses $out from the top of this file, where Pear was declined outright:
@@ -230,7 +230,7 @@ chk "Pear's own check is skipped entirely when it was not wanted" \
 chk "no question is asked about restarting" \
   "$(grep -c 'ask_default_yes' $S)" "0"
 chk "the restart instruction comes after the build, not before" \
-  "$(awk '/makepkg -si --needed/{seen=1} /Restart to finish/{print (seen?"after":"before")}' $S)" "after"
+  "$(awk '/"\$here\/packaging" makepkg/{seen=1} /Restart to finish/{print (seen?"after":"before")}' $S)" "after"
 chk "the shell restart command is shown" \
   "$(grep -c 'omarchy restart shell$' $S)" "1"
 # Not shown as code outside the printed block -- only as text inside it, and
@@ -296,7 +296,7 @@ chk "the question names the risk" \
 chk "it leads with what yes does" \
   "$(grep -A1 "^cat <<'RESTART'" $S | tail -1 | cut -c1-4)" "Yes:"
 chk "the choice is applied after the build" \
-  "$(awk '/makepkg -si --needed/{seen=1} /hyprchroma --restart-mode="\$want_restart"/{print (seen?"after":"before")}' $S)" "after"
+  "$(awk '/"\$here\/packaging" makepkg/{seen=1} /hyprchroma --restart-mode="\$want_restart"/{print (seen?"after":"before")}' $S)" "after"
 chk "the closing hint points at Settings" \
   "$(grep -c 'press s for Settings, then its number' $S)" "1"
 

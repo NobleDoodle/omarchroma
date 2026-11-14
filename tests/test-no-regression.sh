@@ -37,11 +37,14 @@ chk "...and it holds the only rename in either helper" \
 # goes through the state helper, which does it under a verified descriptor.
 chk "no shell script creates its own temporary" \
   "$(count 'mktemp' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "0"
-# The GTK generator's two stylesheets share one call site, in write_if_changed.
-# Two more in the Qt/KDE generator: the Omarchroma icon theme's index and the
-# file that keeps its one declared directory in place.
+# The GTK generator's two stylesheets share one call site, a write-files
+# request. The Qt/KDE generator's files -- the color scheme, the Omarchroma
+# icon theme's index and directory keeper, and kdeglobals -- go in one
+# write-files request from its merge step.
 chk "shell writes route through the audited helper" \
-  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "10"
+  "$(count 'hyprchroma-state\" write-file' bin/hyprchroma lib/sync-qt-kde-theme lib/sync-gtk-theme)" "7"
+chk "...and the Qt/KDE generator's all go in one request" \
+  "$(count '\[HELPER, "write-files"\]' lib/sync-qt-kde-theme),$(count 'write-file"' lib/sync-qt-kde-theme)" "1,0"
 
 chk "restore_file no longer uses copy2" "$(count 'shutil\.copy2\(snapshot_dir' lib/hyprchroma-state)" "0"
 chk "privileged block reads with O_NOFOLLOW" "$(count 'read_text\(\)' install.sh)" "0"

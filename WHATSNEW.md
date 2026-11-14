@@ -1,9 +1,7 @@
-# What's new in 4.0.0
+# What's new in 4.1.0
 
-- Icons (6): Reversal or Yaru for every theme, folders in the theme's colors
-- Reversal is the default pack; skip it and Icons uses Yaru, Omarchy's own
-- Files and other GTK 4 apps restyle at a theme change, with no restart
-- Setup describes each framework: enable all at once, or one by one
-- Downloads say what and why first; sudo asks before anything from the AUR
-- Uninstall from the panel: Settings, then u
-- Keys: Additional Apps 7, Thunderbird 8, Pear 9; right-click: folder color
+- Dismiss in the apps-to-close list (d): leave them on the old theme, and stop
+  counting them until the next theme change. Nothing closes.
+- Dismiss and Restart close the panel once you choose.
+- Theme changes apply faster: the frameworks are written side by side.
+- Security and performance improvements throughout.

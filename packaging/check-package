@@ -1,0 +1,274 @@
+#!/usr/bin/python3 -I
+"""Check a built pacman package before setup hands it to pacman as root.
+
+Setup builds Reversal (and Pear Desktop, and hyprchroma itself) in a sandbox
+that cannot use sudo, then installs the result with "pacman -U". pacman runs
+as root, so the package is where a build that went wrong -- or a recipe or
+source that changed from the one reviewed -- would do its damage: a file in
+/etc/sudoers.d or /usr/lib/systemd/system, an install script, a setuid file.
+This reads the package the way pacman will, through libarchive (bsdtar), and
+refuses it unless:
+
+  - its .PKGINFO names the expected package (and version, when given), with
+    no keys beyond the plain metadata a package like this needs;
+  - every entry lies inside the folders given with --root, or is one of the
+    plain directories leading to them, or the empty debug-source directories
+    makepkg adds;
+  - there is no install script (.INSTALL) or any other control file;
+  - no entry is a hard link, device, FIFO or socket; none is setuid, setgid,
+    sticky or writable by others; all are owned by root;
+  - no entry sits under a symbolic link the package itself creates;
+  - every symbolic link points inside the --root folders. ".." may only lead
+    a target, so where it points can be read from its text alone. An absolute
+    target is accepted only under --build-root, the directory the package was
+    assembled in: upstream install scripts write a few such links, and they
+    can only dangle once that directory is gone.
+
+With --any-content only the name is checked -- for Pear Desktop, whose
+recipe is not pinned -- and its install script, if it has one, is printed.
+
+Exit status: 0 accepted, 1 refused (reasons on stdout), 2 unreadable.
+"""
+import argparse
+import posixpath
+import re
+import subprocess
+import sys
+
+BSDTAR = "/usr/bin/bsdtar"
+LISTING_CAP = 256 * 1024 * 1024
+TEXT_CAP = 64 * 1024
+CONTROL = {".PKGINFO", ".BUILDINFO", ".MTREE"}
+PKGINFO_KEYS = {
+    "pkgname", "pkgbase", "xdata", "pkgver", "pkgdesc", "url", "builddate",
+    "packager", "size", "arch", "license", "depend", "optdepend",
+    "makedepend", "checkdepend",
+}
+SHOWN = 12
+
+
+def printable(text):
+    """A name from the package, safe to put on a terminal."""
+    return "".join(c if c.isprintable() else "?" for c in text)[:300]
+
+
+def bsdtar(*args, cap=LISTING_CAP):
+    result = subprocess.run([BSDTAR, *args], stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=300, check=False)
+    if result.returncode != 0 or len(result.stdout) > cap:
+        raise OSError(f"bsdtar {args[0]} failed ({result.returncode})")
+    return result.stdout
+
+
+def unvis(field):
+    """libarchive's mtree writer escapes every byte outside printable ASCII,
+    and space, "#", "=" and backslash, as a backslash and three octal digits."""
+    raw = field.encode("ascii")
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        if raw[i] == 0x5C:
+            digits = raw[i + 1:i + 4]
+            if len(digits) != 3 or any(d < 0x30 or d > 0x37 for d in digits):
+                raise ValueError("bad escape")
+            out.append(int(digits, 8))
+            i += 4
+        else:
+            out.append(raw[i])
+            i += 1
+    return out.decode("utf-8", "surrogateescape")
+
+
+def entries(package):
+    """(path, type, mode, uid, gid, link) for every entry, as libarchive sees it."""
+    listing = bsdtar("-cf", "-", "--format=mtree",
+                     "--options=!all,type,mode,uid,gid,link", "@" + package)
+    found = []
+    for line in listing.decode("ascii").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        fields = line.split(" ")
+        if fields[0].startswith("/"):
+            raise ValueError("unexpected mtree command " + printable(fields[0]))
+        name = unvis(fields[0])
+        keys = {}
+        for field in fields[1:]:
+            key, _, value = field.partition("=")
+            keys[key] = unvis(value)
+        if not name.startswith("./"):
+            raise ValueError("unexpected entry " + printable(name))
+        found.append((name[2:], keys.get("type", ""), int(keys.get("mode", "0"), 8),
+                      keys.get("uid", ""), keys.get("gid", ""), keys.get("link")))
+    return found
+
+
+def hard_links(package):
+    # The mtree view shows a hard link as a plain file, so the type comes
+    # from the verbose listing, where its line starts with "h".
+    listing = bsdtar("-tvf", package)
+    return sum(1 for line in listing.split(b"\n") if line.startswith(b"h"))
+
+
+def under(path, root):
+    return path == root or path.startswith(root + "/")
+
+
+def clean(path):
+    parts = path.split("/")
+    return bool(path) and all(p not in ("", ".", "..") for p in parts)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("package")
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--version")
+    parser.add_argument("--commit")
+    parser.add_argument("--root", action="append", default=[])
+    parser.add_argument("--build-root")
+    parser.add_argument("--any-content", action="store_true")
+    args = parser.parse_args()
+
+    refused = []
+
+    def refuse(path, why):
+        refused.append(f"{printable(path)}: {why}")
+
+    try:
+        listed = entries(args.package)
+        hard = hard_links(args.package)
+        pkginfo = bsdtar("-xOf", args.package, ".PKGINFO", cap=TEXT_CAP)
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as error:
+        print(f"could not read the package: {printable(str(error))}")
+        return 2
+
+    # --- what the package says it is ---------------------------------------
+    info = {}
+    for line in pkginfo.decode("utf-8", "replace").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        key, sep, value = line.partition(" = ")
+        if not sep:
+            refuse(".PKGINFO", "a line that is not key = value")
+            continue
+        info.setdefault(key, []).append(value)
+    if info.get("pkgname") != [args.name]:
+        refuse(".PKGINFO", f"names {printable(','.join(info.get('pkgname', [])))}, not {args.name}")
+    if info.get("pkgbase", [args.name]) != [args.name]:
+        refuse(".PKGINFO", "a different pkgbase")
+    version = info.get("pkgver", [""])
+    if len(version) != 1:
+        refuse(".PKGINFO", "no single pkgver")
+    version = version[0]
+    if args.version is not None and version != args.version:
+        refuse(".PKGINFO", f"version {printable(version)}, not {args.version}")
+    if args.commit is not None:
+        # A -git package's version is r<commits>.<short hash>-<release>.
+        match = re.fullmatch(r"r[0-9]+\.([0-9a-f]{7,40})-[0-9]+", version)
+        if not match or not args.commit.startswith(match.group(1)):
+            refuse(".PKGINFO", f"version {printable(version)} is not built from {args.commit[:12]}")
+    if not args.any_content:
+        for key in sorted(set(info) - PKGINFO_KEYS):
+            refuse(".PKGINFO", f"unexpected key {printable(key)}")
+
+    # --- what it contains --------------------------------------------------
+    paths = [entry[0] for entry in listed]
+    if len(set(paths)) != len(paths):
+        refuse("(package)", "the same path more than once")
+    if hard:
+        refuse("(package)", f"{hard} hard link(s)")
+    links = {entry[0] for entry in listed if entry[1] == "link"}
+    has_install = False
+
+    roots = [r.strip("/") for r in args.root]
+    debug = f"usr/src/debug/{args.name}"
+    leading = set()
+    for root in roots + [debug]:
+        parts = root.split("/")
+        leading.update("/".join(parts[:i]) for i in range(1, len(parts)))
+    build_root = args.build_root.rstrip("/") + "/" if args.build_root else None
+
+    for path, kind, mode, uid, gid, target in listed:
+        if not clean(path):
+            refuse(path, "not a plain relative path")
+            continue
+        if "/" not in path and path.startswith("."):
+            if path == ".INSTALL":
+                has_install = True
+                if not args.any_content:
+                    refuse(path, "an install script, which pacman runs as root")
+            elif path not in CONTROL:
+                if not args.any_content:
+                    refuse(path, "an unexpected control file")
+            elif kind != "file":
+                refuse(path, "a control file that is not a file")
+            continue
+        parent = path.rpartition("/")[0]
+        while parent:
+            if parent in links:
+                refuse(path, "inside a symbolic link of the package")
+                break
+            parent = parent.rpartition("/")[0]
+        if args.any_content:
+            continue
+        if kind not in ("file", "dir", "link"):
+            refuse(path, f"a {kind or 'special file'}")
+            continue
+        if uid != "0" or gid != "0":
+            refuse(path, "not owned by root")
+        if mode & 0o7000:
+            refuse(path, "setuid, setgid or sticky")
+        if kind != "link" and mode & 0o002:
+            refuse(path, "writable by others")
+        if any(under(path, root) for root in roots):
+            pass
+        elif kind == "dir" and (path in leading or under(path, debug)):
+            continue
+        else:
+            refuse(path, "outside " + ", ".join(roots))
+            continue
+        if kind != "link":
+            continue
+        if not target:
+            refuse(path, "a symbolic link with no target")
+            continue
+        if target.startswith("/"):
+            if not build_root or not target.startswith(build_root):
+                refuse(path, f"a symbolic link to {printable(target)}")
+                continue
+            relative = target[len(build_root):]
+            if not clean(relative):
+                refuse(path, f"a symbolic link to {printable(target)}")
+                continue
+            resolved = relative
+        else:
+            # "." and empty parts never change where a link points.
+            parts = [p for p in target.split("/") if p not in ("", ".")]
+            climb = 0
+            while climb < len(parts) and parts[climb] == "..":
+                climb += 1
+            rest = "/".join(parts[climb:])
+            if not clean(rest):
+                refuse(path, f"a symbolic link to {printable(target)}")
+                continue
+            resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path), target))
+        if not any(under(resolved, root) for root in roots):
+            refuse(path, f"a symbolic link out of {', '.join(roots)}")
+
+    if refused:
+        for reason in refused[:SHOWN]:
+            print("  " + reason)
+        if len(refused) > SHOWN:
+            print(f"  ...and {len(refused) - SHOWN} more")
+        return 1
+
+    if args.any_content and has_install:
+        script = bsdtar("-xOf", args.package, ".INSTALL", cap=TEXT_CAP)
+        print("It has an install script, which pacman runs as root:")
+        for line in script.decode("utf-8", "replace").splitlines()[:60]:
+            print("  | " + printable(line))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

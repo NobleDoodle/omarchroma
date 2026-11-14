@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 import argparse
 import codecs
 import fcntl
@@ -1994,7 +1994,7 @@ def browsers_enabled(state_dir):
 def spawn_browsers_waiter(state_dir, data_dir):
     """Wait for Vivaldi to exit in the background, then finish the job."""
     subprocess.Popen(
-        [os.path.realpath(__file__), "--state-dir", str(state_dir),
+        [own_helper(), "--state-dir", str(state_dir),
          "--data-dir", str(data_dir), "watch-browsers-exit"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=True)
@@ -2109,7 +2109,7 @@ def thunderbird_enabled(state_dir):
 def spawn_thunderbird_waiter(state_dir, data_dir):
     """Wait for Thunderbird to exit, then finish a revert it was holding."""
     subprocess.Popen(
-        [os.path.realpath(__file__), "--state-dir", str(state_dir),
+        [own_helper(), "--state-dir", str(state_dir),
          "--data-dir", str(data_dir), "watch-thunderbird-exit"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL, start_new_session=True)
@@ -2568,14 +2568,55 @@ def running_executables():
     return names
 
 
+def stale_stamp(status):
+    """The theme change a stale list belongs to, as status.json records it."""
+    if not isinstance(status, dict):
+        return None
+    stamp = status.get("themeChangedAt") or status.get("lastSync")
+    return stamp if isinstance(stamp, str) else None
+
+
+def stale_dismissed(state_dir, status=None):
+    """Whether the list was dismissed for the theme change now in effect. The
+    panel's Dismiss records that change's stamp; the next theme change moves
+    themeChangedAt, so the applications it leaves behind are listed again.
+    Only an exact match counts: a stamp written by anything else dismisses
+    nothing, and the worst a forged one can do is hide the list."""
+    status = read_json(state_dir / "status.json") if status is None else status
+    stamp = stale_stamp(status)
+    return stamp is not None and status.get("staleDismissed") == stamp
+
+
+def dismiss_stale_apps(state_dir):
+    """The panel's Dismiss: stop listing the applications still showing the
+    previous theme, until the next theme change. Nothing is closed, restarted
+    or recycled -- they simply stop being counted on the bar and in the panel.
+    Under the sync's lock, like a waiter's write, so it cannot interleave with
+    a sync's read-modify-write of status.json. False when no theme change has
+    been recorded yet, so there is nothing to dismiss."""
+    path = state_dir / "status.json"
+    with sync_lock(state_dir):
+        status = read_json(path)
+        stamp = stale_stamp(status)
+        if stamp is None:
+            return False
+        status["staleDismissed"] = stamp
+        status["staleApps"] = []
+        status["staleWindows"] = {}
+        write_json(path, status)
+    return True
+
+
 def record_stale_apps(state_dir, windows):
     """Keep the applications still showing the previous theme in status.json,
     with how many windows each has open, where the bar widget reads how many
     there are to close. staleApps stays the plain list, for a panel older than
     the counts. Rewritten only when either changes, and never to create a
-    status file just to say "none"."""
+    status file just to say "none". Empty once dismissed for this change."""
     path = state_dir / "status.json"
     status = read_json(path)
+    if stale_dismissed(state_dir, status):
+        windows = {}
     names = sorted(windows)
     counts = {name: windows[name] for name in names}
     if ((status.get("staleApps") != names or status.get("staleWindows") != counts)
@@ -3689,6 +3730,11 @@ EVENT_RETRY_SECONDS = 0.5
 # this long, so anything the watch misses is caught within it.
 FULL_CHECK_SECONDS = 600
 QUIET_SYNC = ["/usr/bin/hyprchroma", "--quiet"]
+# What the theme hook used to run itself. It now asks this service with
+# SIGUSR1, so the sync runs here, in the unit's sandbox, and the hook returns
+# at once -- see share/hooks/hyprchroma.
+FORCED_SYNC = ["/usr/bin/hyprchroma", "--force", "--quiet"]
+HANDOFF_FILE = "hyprchroma-handoff"
 OPT_IN_FRAMEWORKS = ("flatpak", "browsers")
 
 
@@ -4195,6 +4241,47 @@ def resend_color_scheme(through="default"):
     return True
 
 
+# One re-send at a time. Two that overlap read each other's passing value as
+# the scheme to put back, and one can leave the desktop on the wrong one. The
+# sync script starts a re-send detached, after the GTK files are written, and
+# the next sync waits on this lock before it writes them again (see
+# wait_color_scheme in bin/hyprchroma), so a restore cannot land after it.
+COLOR_SCHEME_WAIT_SECONDS = 3.0
+
+
+def color_scheme_lock_path():
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        base = Path(runtime)
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "hyprchroma"
+    return base / "hyprchroma-color-scheme.lock"
+
+
+def resend_color_scheme_locked(through="opposite", wait=0.0):
+    """resend_color_scheme under the color-scheme lock. With no wait, a
+    re-send already under way is enough and this one is skipped; with one, it
+    waits that long for it to finish. False if it did not send."""
+    try:
+        prepare_lock(color_scheme_lock_path())
+        handle = open(color_scheme_lock_path(), "r")
+    except (OSError, ValueError):
+        return False
+    try:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.05)
+        return resend_color_scheme(through=through)
+    finally:
+        handle.close()
+
+
 def gtk_portal_pids():
     """PIDs currently serving a GTK portal backend."""
     pids = set()
@@ -4293,7 +4380,7 @@ def _refresh_idle_apps(newer_than, windows):
     for name in recycled:
         if name not in restarted:
             print(f"Hyprchroma: {name} did not start again; apps may miss the next color scheme change")
-    if restarted and resend_color_scheme():
+    if restarted and resend_color_scheme_locked(through="default", wait=COLOR_SCHEME_WAIT_SECONDS):
         print("Hyprchroma: sent the color scheme again through the restarted portal")
 
     for name in sorted(running):
@@ -4316,6 +4403,13 @@ def _refresh_idle_apps(newer_than, windows):
             # the log; naming the holdout is what makes a genuine failure
             # findable instead of just a window someone reports as stale.
             print(f"Hyprchroma: {name} did not quit; its next window may still be themed")
+
+
+def own_helper():
+    """This helper's own command. In a checkout that is this file; where it is
+    installed, this code is the module hyprchroma_state.py, started through a
+    launcher of the helper's name beside it (see the Makefile)."""
+    return str(Path(os.path.realpath(__file__)).with_name("hyprchroma-state"))
 
 
 def dark_reader_helper():
@@ -4477,11 +4571,22 @@ def dark_reader_module():
         # Python's own import machinery, for a file without a .py name. The file
         # is the sibling of this one that the daemon would otherwise run as a
         # process, so loading it here trusts nothing that was not trusted.
+        #
+        # Where it is installed, the helper is a launcher and its code the
+        # module hyprchroma_dark_reader.py beside it, compiled with the
+        # package: loaded from there, its bytecode is used. The launcher that
+        # started this has already turned off writing bytecode.
         from importlib.machinery import SourceFileLoader
-        from importlib.util import module_from_spec, spec_from_loader
-        loader = SourceFileLoader("hyprchroma_dark_reader", dark_reader_helper())
-        module = module_from_spec(spec_from_loader(loader.name, loader))
-        loader.exec_module(module)
+        from importlib.util import module_from_spec, spec_from_file_location, spec_from_loader
+        installed = Path(dark_reader_helper()).with_name("hyprchroma_dark_reader.py")
+        if installed.is_file():
+            spec = spec_from_file_location("hyprchroma_dark_reader", installed)
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+        else:
+            loader = SourceFileLoader("hyprchroma_dark_reader", dark_reader_helper())
+            module = module_from_spec(spec_from_loader(loader.name, loader))
+            loader.exec_module(module)
         _DARK_READER["module"] = module
     return _DARK_READER["module"]
 
@@ -4561,7 +4666,7 @@ def event_work(state_dir, data_dir, memory):
     # own; restarted here only if that waiter is gone -- the job a quiet sync
     # did by running every framework on every event while anything waited.
     status = read_json(state_dir / "status.json")
-    helper = [os.path.realpath(__file__), "--state-dir", str(state_dir), "--data-dir", str(data_dir)]
+    helper = [own_helper(), "--state-dir", str(state_dir), "--data-dir", str(data_dir)]
     work = []
     if (framework_enabled(frameworks, "qtKde") and status.get("qtKde") == "deferred"
             and not waiter_running(state_dir, "hyprchroma-kde-wait.lock")):
@@ -4627,6 +4732,66 @@ def event_pass(state_dir, data_dir, memory):
     return True
 
 
+class Handoff:
+    """The theme hook's side of a forced sync run by this service.
+
+    A signal carries nothing, so the hook cannot say which sync it is waiting
+    for. This file says how many requests have arrived and how many of them
+    the last finished sync covered, with that sync's exit status, under this
+    process's pid: the hook reads it before it signals, and waits until a sync
+    that started after its request has finished. It lives in the runtime
+    directory, written like every other file and readable only by this user,
+    and it is trusted with nothing: a hook that cannot read it, or finds
+    another pid in it, runs the sync itself as before."""
+
+    def __init__(self, runtime):
+        self.path = Path(runtime) / HANDOFF_FILE
+        self.requested = self.done = self.status = 0
+        # Which watcher this is, beyond its pid: a hook compares counters only
+        # while this stays the same, so a restart that happens to reuse the
+        # pid cannot be mistaken for the watcher it signalled.
+        self.started = time.time_ns()
+
+    def publish(self):
+        atomic_write(self.path, f"{os.getpid()} {self.started} {self.requested} {self.done} "
+                                f"{self.status}\n", 0o600)
+
+    def withdraw(self):
+        try:
+            safe_unlink(self.path)
+        except OSError:
+            pass
+
+    def serve(self, wake):
+        """Run forced syncs until every request so far is covered. Requests
+        that arrive during one fold into exactly one more."""
+        while self.done < self.requested:
+            taken = self.requested
+            try:
+                status = subprocess.run(FORCED_SYNC, stdin=subprocess.DEVNULL, check=False).returncode
+            except OSError as error:
+                print(f"Hyprchroma: could not run the requested sync: {error}", file=sys.stderr, flush=True)
+                status = 1
+            self.done, self.status = taken, status
+            if drain_wakeups(wake):
+                self.requested += 1
+            self.publish()
+
+
+def drain_wakeups(wake):
+    """Whether SIGUSR1 has arrived since the last call, emptying the wakeup
+    socket the signal machinery writes each signal's number into."""
+    requested = False
+    while True:
+        try:
+            data = wake.recv(512)
+        except (BlockingIOError, InterruptedError):
+            return requested
+        if not data:
+            return requested
+        requested = requested or signal.SIGUSR1 in data
+
+
 def watch_events(state_dir, data_dir):
     """Act on every window that opens or closes.
 
@@ -4667,34 +4832,62 @@ def watch_events(state_dir, data_dir):
     own_code = file_signature(os.path.realpath(__file__))
     record_stale_now(state_dir)
     import socket  # here, not at the top: only the daemon and the KDE waiter need it
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-        stream.connect(str(stream_path))
-        pending = b""
-        deadline = None
-        while True:
-            if deadline is None:
-                stream.settimeout(None)
-            else:
-                stream.settimeout(max(0.05, deadline - time.monotonic()))
-            try:
+    # The theme hook's request: SIGUSR1, sent to this
+    # process alone (the unit's main process). The handler does nothing; the
+    # signal machinery writes the signal's number into a socket this loop
+    # waits on together with Hyprland's stream, so a request wakes it at
+    # once, and one that arrives during a sync is seen right after it. No
+    # socket, FIFO or bus name is opened for it: a signal carries no data.
+    wake, wake_writer = socket.socketpair()
+    wake.setblocking(False)
+    wake_writer.setblocking(False)
+    handoff = Handoff(lock_dir)
+    signal.set_wakeup_fd(wake_writer.fileno(), warn_on_full_buffer=False)
+    signal.signal(signal.SIGUSR1, lambda *_: None)
+    # Stopping the unit sends SIGTERM; leaving through finally withdraws the
+    # handoff file, rather than leaving one behind that names a dead watcher.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        handoff.publish()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
+            stream.connect(str(stream_path))
+            pending = b""
+            deadline = None
+            while True:
+                timeout = None if deadline is None else max(0.05, deadline - time.monotonic())
+                readable, _, _ = select.select([stream, wake], [], [], timeout)
+                if wake in readable:
+                    if drain_wakeups(wake):
+                        handoff.requested += 1
+                        handoff.publish()
+                        handoff.serve(wake)
+                    continue
+                if not readable:
+                    deadline = None
+                    if file_signature(os.path.realpath(__file__)) != own_code:
+                        print("Hyprchroma: updated on disk; restarting to run the new version",
+                              flush=True)
+                        return
+                    if not event_pass(state_dir, data_dir, memory):
+                        deadline = time.monotonic() + EVENT_RETRY_SECONDS
+                    continue
                 chunk = stream.recv(4096)
-            except TimeoutError:
-                deadline = None
-                if file_signature(os.path.realpath(__file__)) != own_code:
-                    print("Hyprchroma: updated on disk; restarting to run the new version",
-                          flush=True)
-                    return
-                if not event_pass(state_dir, data_dir, memory):
-                    deadline = time.monotonic() + EVENT_RETRY_SECONDS
-                continue
-            if not chunk:
-                return  # Hyprland went away
-            pending += chunk
-            while b"\n" in pending:
-                line, pending = pending.split(b"\n", 1)
-                if (line.startswith((b"openwindow>>", b"closewindow>>"))
-                        and deadline is None):
-                    deadline = time.monotonic() + EVENT_DEBOUNCE_SECONDS
+                if not chunk:
+                    return  # Hyprland went away
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    if (line.startswith((b"openwindow>>", b"closewindow>>"))
+                            and deadline is None):
+                        deadline = time.monotonic() + EVENT_DEBOUNCE_SECONDS
+    finally:
+        # Gone with this process, so no hook waits on a watcher that is not
+        # there; a request that raced the exit is run by the hook itself.
+        handoff.withdraw()
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+        signal.set_wakeup_fd(-1)
+        wake.close()
+        wake_writer.close()
 
 
 def watch_kde_exit(state_dir, data_dir, action="sync"):
@@ -4947,8 +5140,35 @@ def restore(state_dir, data_dir, targets, mode):
         safe_unlink(path)
 
 
+WRITE_FILES_LIMIT = 64 << 20
+_WRITE_MODE = re.compile(r"[0-7]{3,4}")
+
+
+def write_files_request(data):
+    """The (path, mode, content) triples of a write-files request, checked
+    before anything is written: a malformed request writes nothing at all.
+    Paths must be absolute, modes octal, masked to the permission bits as
+    write-file masks them; an empty mode keeps atomic_write's default."""
+    if len(data) > WRITE_FILES_LIMIT:
+        raise SystemExit("write-files: request too large")
+    fields = data.split(b"\0")
+    if fields[-1] != b"" or (len(fields) - 1) % 3:
+        raise SystemExit("write-files: expected path, mode and content for each file, each ended by NUL")
+    requests = []
+    for index in range(0, len(fields) - 1, 3):
+        path, mode, content = fields[index:index + 3]
+        name = os.fsdecode(path)
+        if not name.startswith("/"):
+            raise SystemExit(f"write-files: not an absolute path: {name!r}")
+        mode_text = mode.decode("ascii", "replace")
+        if mode_text and not _WRITE_MODE.fullmatch(mode_text):
+            raise SystemExit(f"write-files: not an octal mode: {mode_text!r}")
+        requests.append((Path(name), (int(mode_text, 8) & 0o777) if mode_text else None, content))
+    return requests
+
+
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(prog="hyprchroma-state")
     # write-file and prepare-lock act on one named path and touch neither
     # tree, so they are not made to supply directories they will not use.
     # Everything else still is, checked below.
@@ -4956,7 +5176,9 @@ def main():
     parser.add_argument("--data-dir", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     snap = sub.add_parser("snapshot")
-    snap.add_argument("--target", required=True)
+    # Repeatable: a sync takes every capture it needs in one start of this
+    # helper, before its writers run side by side.
+    snap.add_argument("--target", required=True, action="append")
     rest = sub.add_parser("restore")
     rest.add_argument("--target", default="all", choices=("all",) + TARGETS)
     rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
@@ -4981,6 +5203,8 @@ def main():
                        help="judge staleness against when the theme last changed (the default)")
     stale.add_argument("--record", action="store_true",
                        help="also keep the list in status.json, for the bar widget's count")
+    sub.add_parser("dismiss-stale-apps",
+                   help="stop listing stale applications until the next theme change")
     restart = sub.add_parser("restart-stale-apps")
     # The hyprchroma entry point to run once everything is closed and before
     # anything is relaunched; given by bin/hyprchroma as its own path.
@@ -5019,6 +5243,10 @@ def main():
     write = sub.add_parser("write-file")
     write.add_argument("--path", required=True)
     write.add_argument("--mode", default=None)
+    # Several files in one start of this helper: on
+    # standard input, path, mode and content for each, every field ended by
+    # a NUL byte. Each goes through atomic_write exactly as write-file does.
+    sub.add_parser("write-files")
 
     lock = sub.add_parser("prepare-lock")
     lock.add_argument("--path", required=True)
@@ -5029,7 +5257,7 @@ def main():
 
     # write-file and prepare-lock act on one named path; everything else
     # works on the state and data trees and must be given both.
-    if args.command not in ("write-file", "prepare-lock", "detect-browsers",
+    if args.command not in ("write-file", "write-files", "prepare-lock", "detect-browsers",
                             "detect-thunderbird", "ensure-import", "remove-import") and (
             args.state_dir is None or args.data_dir is None):
         parser.error("--state-dir and --data-dir are required for " + args.command)
@@ -5042,7 +5270,8 @@ def main():
         return
 
     if args.command == "snapshot":
-        snapshot(args.state_dir, args.data_dir, args.target)
+        for target in args.target:
+            snapshot(args.state_dir, args.data_dir, target)
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
     elif args.command == "sync-flatpak":
@@ -5078,7 +5307,9 @@ def main():
             since = int(time.time()) - LAUNCH_GRACE_SECONDS
         else:
             since = stale_baseline(args.state_dir)
-        windows = stale_open_windows(since)
+        # Dismissed for this theme change: nothing is listed, and so nothing
+        # is counted on the bar or offered to Restart All.
+        windows = {} if stale_dismissed(args.state_dir) else stale_open_windows(since)
         if args.record:
             record_stale_apps(args.state_dir, windows)
         for name in sorted(windows):
@@ -5098,14 +5329,17 @@ def main():
                                    stderr=subprocess.DEVNULL, check=False, timeout=180)
                 except subprocess.TimeoutExpired:
                     pass
-        restarted, pending, failed = restart_stale_apps(
-            args.state_dir, stale_baseline(args.state_dir), between)
+        restarted, pending, failed = ([], [], []) if stale_dismissed(args.state_dir) else \
+            restart_stale_apps(args.state_dir, stale_baseline(args.state_dir), between)
         for name in restarted:
             print(f"restarted {name}")
         for name in pending:
             print(f"pending {name}")
         for name in failed:
             print(f"failed {name}")
+    elif args.command == "dismiss-stale-apps":
+        if not dismiss_stale_apps(args.state_dir):
+            print("Hyprchroma: no theme change recorded yet; nothing to dismiss", file=sys.stderr)
     elif args.command == "kde-color-clients":
         for name in kde_color_clients():
             print(name)
@@ -5114,7 +5348,7 @@ def main():
     elif args.command == "watch-events":
         watch_events(args.state_dir, args.data_dir)
     elif args.command == "resend-color-scheme":
-        resend_color_scheme(through="opposite")
+        resend_color_scheme_locked(through="opposite")
     elif args.command == "event-pass":
         if args.clear_app_color_schemes:
             clear_app_color_schemes(args.state_dir)
@@ -5137,6 +5371,9 @@ def main():
         # into a way of setting them.
         atomic_write(Path(args.path), sys.stdin.buffer.read(),
                      (int(args.mode, 8) & 0o777) if args.mode else None)
+    elif args.command == "write-files":
+        for path, mode, content in write_files_request(sys.stdin.buffer.read(WRITE_FILES_LIMIT + 1)):
+            atomic_write(path, content, mode)
     elif args.command == "prepare-lock":
         prepare_lock(Path(args.path))
     elif args.command == "watch-browser-exit":
