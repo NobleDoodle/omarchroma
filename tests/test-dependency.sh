@@ -22,7 +22,7 @@ chk "PKGBUILD pkgver matches VERSION" \
 chk "the service reports that version" \
   "$(./bin/hyprchroma --version | awk '{print $2}')" "$version"
 chk "the panel reads the manifest rather than hardcoding a number" \
-  "$(grep -A1 'var manifest = JSON.parse(text())' Panel.qml | grep -c 'String(manifest.version')" "1"
+  "$(grep -A1 'var manifest = JSON.parse(text)' Panel.qml | grep -c 'String(manifest.version')" "1"
 chk "no hand-maintained minimum is left" \
   "$(grep -c 'minimumVersion\|requiredVersion' Panel.qml manifest.json | grep -v ':0$' | wc -l)" "0"
 
@@ -101,16 +101,20 @@ chk "...and installs with pacman -U, never makepkg -i" \
 chk "hyprchroma itself has no AUR dependency" \
   "$(countcode 'pkg aur add|yay -S' Panel.qml)" "0"
 # Setup fetches and builds the two AUR packages it
-# offers itself -- Pear Desktop and Reversal, never hyprchroma -- and
+# offers itself -- Reversal only, never hyprchroma or Pear Desktop -- and
 # tests/test-aur-build.sh runs that against fake repositories.
 chk "no AUR helper is used" \
   "$(countcode 'pkg aur add|yay |paru ' bin/hyprchroma-setup)" "0"
-chk "the AUR is reached for exactly two packages, by fixed URLs" \
-  "$(grep -c '^REVERSAL_AUR_URL=https://aur.archlinux.org/reversal-icon-theme-git.git$' bin/hyprchroma-setup),$(grep -c '^PEAR_AUR_URL=https://aur.archlinux.org/pear-desktop-bin.git$' bin/hyprchroma-setup),$(countcode 'aur\.archlinux\.org/[a-z-]+\.git' bin/hyprchroma-setup)" "1,1,2"
+chk "the AUR is reached for exactly one package, Reversal, by a fixed URL" \
+  "$(grep -c '^REVERSAL_AUR_URL=https://aur.archlinux.org/reversal-icon-theme-git.git$' bin/hyprchroma-setup),$(countcode 'PEAR_AUR|build_pear' bin/hyprchroma-setup),$(countcode 'aur\.archlinux\.org/[a-z-]+\.git' bin/hyprchroma-setup)" "1,0,1"
+# Setup names Pear Desktop's package when the app is missing, so the user
+# knows which YouTube Music app is meant -- but only in printed notes.
+chk "Pear Desktop's package is only ever printed, never a variable, URL to fetch or command" \
+  "$(grep -c 'pear-desktop-bin' bin/hyprchroma-setup),$(grep 'pear-desktop-bin' bin/hyprchroma-setup | grep -cv '^  note "')" "2,0"
 # The password comes before anything is fetched from the AUR, not at the end
 # of a build.
-chk "sudo is asked for before each AUR download" \
-  "$(sed -n '/^offer_reversal()/,/^}/p' bin/hyprchroma-setup | awk '/authenticate_for/{a=NR} /build_reversal/{b=NR} END{print (a && b && a < b) ? "first" : "after"}'),$(sed -n '/^if \[\[ \$want_pear == yes \]\]/,/^fi$/p' bin/hyprchroma-setup | awk '/authenticate_for/{a=NR} /build_pear/{b=NR} END{print (a && b && a < b) ? "first" : "after"}')" "first,first"
+chk "sudo is asked for before the AUR download" \
+  "$(sed -n '/^offer_reversal()/,/^}/p' bin/hyprchroma-setup | awk '/authenticate_for/{a=NR} /build_reversal/{b=NR} END{print (a && b && a < b) ? "first" : "after"}')" "first"
 chk "authenticating is sudo -v, through the keepalive" \
   "$(grep -A3 '^authenticate_for()' bin/hyprchroma-setup | grep -c 'run_sudo -v')" "1"
 chk "an AUR install is checked with pacman afterwards" \

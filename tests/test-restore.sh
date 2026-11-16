@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 set -uo pipefail
 REPO=$REPO
@@ -21,7 +24,11 @@ mkdir -p "$S/original/files" "$D" "$HOME/.config/gtk-3.0" "$HOME/.config/gtk-4.0
          "$HOME/.local/share/color-schemes" "$HOME/.config/YouTube Music"
 
 printf 'ORIGINAL-GTK3\n' > "$S/original/files/gtk3_css"
-printf 'ORIGINAL-KDEGLOBALS\n' > "$S/original/files/kdeglobals"
+# The user's kdeglobals as captured -- with two lines no capture of theirs
+# would hold, which a restore must not put back: a program for KDE to start,
+# and a key whose value KConfig would run as a shell command.
+printf '[General]\nColorScheme=UserScheme\nfont=Noto Sans,10\n\n[Colors:Window]\nBackgroundNormal=1,2,3\n\n[KDE]\nTerminalApplication=/tmp/planted\n\n[Colors:View]\nBackgroundNormal[$e]=$(planted)\n' \
+  > "$S/original/files/kdeglobals"
 printf '{\n\t"window-size": {"width": 900},\n\t"url": "USER-URL",\n\t"options": {"themes": ["/u/mine.css"]}\n}\n' \
   > "$S/original/files/pear_config"
 
@@ -42,7 +49,7 @@ seed() {
   mkdir -p "$HOME/.local/share/color-schemes"
   printf 'HYPRCHROMA-GENERATED\n' > "$HOME/.config/gtk-3.0/gtk.css"
   printf 'HYPRCHROMA-GENERATED\n' > "$HOME/.config/gtk-4.0/gtk.css"
-  printf 'HYPRCHROMA-GENERATED\n' > "$HOME/.config/kdeglobals"
+  printf '[General]\nColorScheme=Hyprchroma\nfont=Inter,11\n\n[Colors:Window]\nBackgroundNormal=9,9,9\n\n[Icons]\nTheme=Omarchroma\n\n[Shortcuts]\nfoo=bar\n' > "$HOME/.config/kdeglobals"
   printf 'HYPRCHROMA\n' > "$HOME/.local/share/color-schemes/Hyprchroma.colors"
   printf 'HYPRCHROMA\n' > "$HOME/.config/YouTube Music/hyprchroma.css"
   printf '{\n\t"window-size": {"width": 351},\n\t"url": "LATER-URL",\n\t"options": {"themes": ["/u/mine.css", "%s/.config/YouTube Music/hyprchroma.css"]}\n}\n' "$HOME" \
@@ -85,7 +92,14 @@ ex  "kdeglobals deleted" "$HOME/.config/kdeglobals"
 ex  "Hyprchroma.colors deleted" "$HOME/.local/share/color-schemes/Hyprchroma.colors"
 
 echo "--- captured: qt-kde ---"; seed; run --target qt-kde --mode captured >/dev/null
-chk "kdeglobals restored" "$(cat "$HOME/.config/kdeglobals")" "ORIGINAL-KDEGLOBALS"
+k=$(cat "$HOME/.config/kdeglobals")
+chk "kdeglobals gets the user's own colors and scheme back" \
+  "$(grep -cxE 'ColorScheme=UserScheme|BackgroundNormal=1,2,3' <<<"$k")" "2"
+chk "...keeping what KDE and the user set since, in the live file" \
+  "$(grep -cxE 'font=Inter,11|\[Shortcuts\]|foo=bar' <<<"$k")" "3"
+chk "...and none of Hyprchroma's own" "$(grep -cE 'Hyprchroma|9,9,9|Theme=Omarchroma' <<<"$k")" "0"
+chk "...nor anything from the capture outside the keys Hyprchroma writes" \
+  "$(grep -cE 'TerminalApplication|planted|\[\$e\]|Noto Sans' <<<"$k")" "0"
 
 echo "--- pear: user state must survive ---"; seed
 run --target pear --mode captured >/dev/null

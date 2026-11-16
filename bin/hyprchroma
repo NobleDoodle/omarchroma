@@ -110,15 +110,43 @@ install_hooks() {
   [[ $("$HYPRCHROMA_LIB/hyprchroma-palette" --source 2>/dev/null) == omarchy ]] || return 0
   for hook in theme-set font-set; do
     local destination="$HOME/.config/omarchy/hooks/$hook.d/hyprchroma"
+    if [[ -f $destination && ! -L $destination ]] && cmp -s "$source" "$destination" 2>/dev/null; then
+      continue  # already this release's
+    fi
+    # Something else is there. One of the hooks an earlier release installed
+    # is replaced as an update. Anything else is a hook of the user's own that
+    # happens to have this name: it is moved into the state folder -- kept,
+    # never deleted, and no longer run, since a copy of an old Omarchroma
+    # hook running beside this one would sync every theme change twice -- and
+    # said so. One that cannot be moved (a FIFO, a folder) is left exactly
+    # where it is, and this hook is not installed beside it.
+    if [[ -e $destination || -L $destination ]] && ! shipped_hook "$destination"; then
+      if ! "$HYPRCHROMA_LIB/hyprchroma-state" --state-dir "$STATE_DIR" --data-dir "$DATA_DIR" \
+           preserve-file --path "$destination" --into "$STATE_DIR/replaced-hooks" \
+           --name "$hook-$EPOCHSECONDS"; then
+        echo "hyprchroma: left $destination as it is; it is not a hook hyprchroma installed" >&2
+        continue
+      fi
+      echo "hyprchroma: your own $hook hook named hyprchroma was moved to $STATE_DIR/replaced-hooks/$hook-$EPOCHSECONDS" >&2
+    fi
     # Through the state helper rather than mkdir plus install: this writes an
     # executable that Omarchy runs on every theme change, so it is the last
     # place to resolve a destination directory by pathname and hope no
     # ancestor was swapped.
-    if ! cmp -s "$source" "$destination" 2>/dev/null; then
-      "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
-        --path "$destination" --mode 755 < "$source" || return 1
-    fi
+    "$HYPRCHROMA_LIB/hyprchroma-state" write-file \
+      --path "$destination" --mode 755 < "$source" || return 1
   done
+}
+
+# Whether path is a hook an Omarchroma release installed: a regular file whose
+# SHA-256 is in the list shipped beside the hook. Read under a time limit, so a
+# file swapped for a FIFO after the check cannot hold the daemon's start.
+shipped_hook() {
+  local sum known="$HYPRCHROMA_SHARE/hooks/hyprchroma.sha256"
+  [[ -f $1 && ! -L $1 && -r $known ]] || return 1
+  (( $(stat -c %s -- "$1" 2>/dev/null || echo 1048577) <= 1048576 )) || return 1
+  sum=$(timeout 5 sha256sum -- "$1" 2>/dev/null) || return 1
+  grep -qxF -- "${sum%% *}" "$known"
 }
 
 # Defined ahead of the subcommand dispatch below, which uses both.
@@ -488,7 +516,7 @@ PY
     esac
     ;;
   --version|version)
-    echo "hyprchroma 4.1.0"
+    echo "hyprchroma 4.1.1"
     exit 0
     ;;
 esac

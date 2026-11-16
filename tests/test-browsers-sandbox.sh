@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # A Flatpak browser writes its profile inside its sandbox, under ~/.var/app/<id>,
 # and this service reads and writes that same folder from outside the sandbox.
 # So everything below that folder is treated as hostile: a link planted there

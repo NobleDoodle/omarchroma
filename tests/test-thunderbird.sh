@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # Thunderbird does not follow the GTK theme in its own window. It is themed
 # the way a Firefox profile is: a stylesheet, one import in userChrome.css,
 # and one user.js line, under its own framework and its own manifest key.

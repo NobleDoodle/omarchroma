@@ -32,25 +32,66 @@ Panel {
   // own PATH regardless, so this is a floor rather than the whole defense.
   readonly property string trustedPath: "/usr/bin:/usr/share/omarchy/bin"
 
-  FileView {
-    id: themeNameFile
-    path: root.omarchyCurrent + "/theme.name"
-    watchChanges: true
-    printErrors: false
-    onLoaded: {
-      root.themeName = String(text() || "").trim()
-      themeColorsFile.reload()
+  // A file other programs running as this user can write, read without
+  // trusting it: a watcher that never loads the file says when it changed,
+  // and head reads at most limit bytes of it, under a time limit, in a
+  // process of its own. A file larger than limit is refused rather than
+  // loaded into the shell, and a FIFO in its place costs one short-lived
+  // process instead of a stuck read.
+  component CappedFile: Item {
+    id: capped
+    property string path: ""
+    property int limit: 65536
+    signal loaded(string text)
+    signal loadFailed()
+    function reload() {
+      // Setting the path again also starts watching a file whose folder did
+      // not exist when it was first set, without loading it.
+      watcher.path = ""
+      watcher.path = capped.path
+      if (capped.path === "") return
+      reader.running = false
+      reader.running = true
     }
-    onFileChanged: reload()
+    FileView {
+      id: watcher
+      path: capped.path
+      watchChanges: true
+      preload: false
+      blockLoading: false
+      printErrors: false
+      onFileChanged: capped.reload()
+    }
+    Process {
+      id: reader
+      command: [ "/usr/bin/timeout", "-k", "1", "5", "/usr/bin/head", "-c", String(capped.limit + 1), "--", capped.path ]
+      environment: ({ PATH: "/usr/bin" })
+      stdout: StdioCollector {
+        onStreamFinished: {
+          var content = text
+          // UTF-8 bytes, which is what limit counts.
+          if (content === "" || unescape(encodeURIComponent(content)).length > capped.limit) capped.loadFailed()
+          else capped.loaded(content)
+        }
+      }
+    }
+    Component.onCompleted: reload()
   }
 
-  FileView {
+  CappedFile {
+    id: themeNameFile
+    path: root.omarchyCurrent + "/theme.name"
+    limit: 256
+    onLoaded: (text) => {
+      root.themeName = String(text || "").trim()
+      themeColorsFile.reload()
+    }
+  }
+
+  CappedFile {
     id: themeColorsFile
     path: root.omarchyCurrent + "/theme/colors.toml"
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.readThemeColors(text())
-    onFileChanged: reload()
+    onLoaded: (text) => root.readThemeColors(text)
   }
 
   readonly property string settingsPath: stateDir + "/settings.json"
@@ -117,17 +158,14 @@ Panel {
   readonly property bool installPending: dependencyChecked && !dependencyPresent
   readonly property bool serviceAlert: root.outdated || root.installPending
 
-  FileView {
+  // Watched, so "omarchy plugin update" lights the bar icon as soon as the
+  // checkout moves ahead of the installed service, not at the next login.
+  CappedFile {
     id: manifestFile
     path: Quickshell.env("HOME") + "/.config/omarchy/plugins/" + root.moduleName + "/manifest.json"
-    printErrors: false
-    // Watched, so "omarchy plugin update" lights the bar icon as soon as the
-    // checkout moves ahead of the installed service, not at the next login.
-    watchChanges: true
-    onFileChanged: reload()
-    onLoaded: {
+    onLoaded: (text) => {
       try {
-        var manifest = JSON.parse(text())
+        var manifest = JSON.parse(text)
         root.expectedVersion = String(manifest.version || "")
         root.pluginLicense = String(manifest.license || "")
         root.pluginAuthor = String(manifest.author || "")
@@ -140,15 +178,14 @@ Panel {
   // And the other side: pacman replacing the service's binary -- an update run
   // from a terminal rather than from here -- asks the version again, so the
   // alert clears without the panel having to be opened.
+  // Only watched, never loaded: the change is the news.
   FileView {
     id: serviceBinary
     path: "/usr/bin/hyprchroma"
     printErrors: false
     watchChanges: true
-    onFileChanged: {
-      reload()
-      presenceProcess.running = true
-    }
+    preload: false
+    onFileChanged: presenceProcess.running = true
   }
 
   // Asked once as the shell starts, not only when the panel opens: the bar icon
@@ -715,14 +752,11 @@ Panel {
     }
   }
 
-  FileView {
+  CappedFile {
     id: iconsStatusFile
     path: root.stateDir + "/icons/status.json"
-    printErrors: false
-    watchChanges: true
     onLoadFailed: root.iconStatusLoaded = false
-    onLoaded: { root.iconStatusLoaded = true; root.readIconStatus(text()) }
-    onFileChanged: reload()
+    onLoaded: (text) => { root.iconStatusLoaded = true; root.readIconStatus(text) }
   }
 
   function iconsCoversText() {
@@ -993,15 +1027,13 @@ Panel {
     }
   }
 
-  FileView {
+  CappedFile {
     id: settingsFile
     path: root.settingsPath
-    printErrors: false
-    watchChanges: true
-    onLoaded: {
+    onLoaded: (text) => {
       root.settingsLoaded = true
       try {
-        var parsed = JSON.parse(text())
+        var parsed = JSON.parse(text)
         var frameworks = parsed.frameworks || {}
         // Frameworks the user said they did not want. Off is a toggle; removed
         // takes the row out of the panel entirely.
@@ -1029,23 +1061,23 @@ Panel {
       root.enabledTargets = { gtk: true, qtKde: true, darkReader: true, pear: true, flatpak: false, browsers: false, thunderbird: false, icons: false }
       root.restartMode = "off"
     }
-    onFileChanged: reload()
   }
 
   // The applications still showing the previous theme, as the service keeps
   // them: after each sync, and each time a window opens or closes. Watched
   // rather than asked for, so the bar icon's count follows an application
   // being closed without anything here polling.
-  FileView {
+  // At most 256 KiB: the list is capped at staleListed names of at most 64
+  // characters, with a count each, so a real file is a small fraction of it.
+  CappedFile {
     id: statusFile
     path: root.statusPath
-    printErrors: false
-    watchChanges: true
+    limit: 262144
     onLoadFailed: root.statusLoaded = false
-    onLoaded: {
+    onLoaded: (text) => {
       root.statusLoaded = true
       try {
-        var status = JSON.parse(text())
+        var status = JSON.parse(text)
         var names = status.staleApps
         if (Array.isArray(names)) {
           var counts = status.staleWindows
@@ -1057,16 +1089,16 @@ Panel {
         // flicker the count to zero.
       }
     }
-    onFileChanged: reload()
   }
 
   // A file whose folder does not exist yet is never watched: the folder is
   // made later -- by setup, on a first install or after Uninstall removed
   // it -- and the file appears without a word. Measured on Quickshell: a
   // missing file in an existing folder is noticed when it is created; one in
-  // a missing folder is not, until reload() loads it, after which changes
-  // are watched as usual. So while the service is here and a file has not
-  // loaded, it is asked again every two seconds; once all have, this stops.
+  // a missing folder is not, until its watcher's path is set again, which
+  // CappedFile.reload() does, after which changes are watched as usual. So
+  // while the service is here and a file has not loaded, it is asked again
+  // every two seconds; once all have, this stops.
   property bool settingsLoaded: false
   property bool statusLoaded: false
   property bool iconStatusLoaded: false

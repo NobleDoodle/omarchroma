@@ -48,8 +48,8 @@ chk "gtk.css is cleaned before it is backed up" \
   "$(countcode '"gtk3_css": strip_hyprchroma_import' lib/hyprchroma-state)" "1"
 chk "gtk.css is no longer treated as wholly ours" \
   "$(countcode 'WHOLLY_GENERATED = frozenset\(\{"hyprchroma_colors", "pear_css",' lib/hyprchroma-state)" "1"
-chk "the stylesheet we own is" \
-  "$(countcode 'gtk3_hyprchroma_css' lib/hyprchroma-state)" "4"
+chk "the stylesheet we own is, and a revert removes it whatever a capture says" \
+  "$(python3 -I -c 'import re,sys; s=open(sys.argv[1]).read(); m=re.search(r"WHOLLY_GENERATED = frozenset\(\{(.*?)\}\)", s, re.S); print("gtk3_hyprchroma_css" in m.group(1) and "gtk4_hyprchroma_css" in m.group(1))' lib/hyprchroma-state),$(sed -n '/^def restore_file/,/^def /p' lib/hyprchroma-state | grep -c '^    if key in WHOLLY_GENERATED:$')" "True,1"
 
 # --- both restore paths take the import back out ---------------------------
 chk "captured and stock restores both strip it" \

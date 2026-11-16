@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # The bar icon says how many windows are still showing the previous theme:
 # the theme's urgent color, with a small raised count, unless Settings has
 # hidden that display. The service keeps the list in status.json and the
@@ -112,7 +115,7 @@ chk(){ [[ $2 == "$3" ]] && echo "  PASS $1" || echo "  FAIL $1: got [$2] want [$
 chk "the sync's own report records the list" \
   "$(grep -c 'report-stale-apps --record 2>' bin/hyprchroma)" "1"
 chk "the panel watches status.json for it, rather than polling" \
-  "$(grep -c 'path: root.statusPath' Panel.qml),$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'watchChanges: true')" "1,1"
+  "$(grep -c 'path: root.statusPath' Panel.qml),$(awk '/id: statusFile/,/^  }/' Panel.qml | grep -c 'CappedFile\|id: statusFile'),$(awk '/component CappedFile/,/^  }/' Panel.qml | grep -c 'watchChanges: true')" "1,1,1"
 chk "the icon turns the theme's urgent color while any are left" \
   "$(grep -c 'active: root.alertCount > 0' BarWidget.qml)" "1"
 chk "...counting windows, not applications" \
@@ -220,7 +223,7 @@ chk "not installed is the panel's own check, once it has run" \
 chk "the version is asked as the shell starts, not only when the panel opens" \
   "$(grep -c 'Component.onCompleted: presenceProcess.running = true' Panel.qml)" "1"
 chk "...again when the plugin's manifest changes" \
-  "$(awk '/id: manifestFile/,/^  }/' Panel.qml | grep -cE 'watchChanges: true|onFileChanged: reload\(\)')" "2"
+  "$(grep -B1 'id: manifestFile' Panel.qml | grep -c 'CappedFile {'),$(awk '/component CappedFile/,/^  }/' Panel.qml | grep -cE 'watchChanges: true|onFileChanged: capped.reload\(\)')" "1,2"
 chk "...and when pacman replaces the service's binary" \
   "$(awk '/id: serviceBinary/,/^  }/' Panel.qml | grep -cE 'path: "/usr/bin/hyprchroma"|watchChanges: true|presenceProcess.running = true')" "3"
 chk "the Install and Update button is lit in the urgent color while either is pending: a fill and a border of it" \

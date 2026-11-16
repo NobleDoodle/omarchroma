@@ -140,6 +140,23 @@ OMARCHY_OWNED_GSETTINGS = ("gtk-theme", "color-scheme", "icon-theme")
 # sets them, so stock is the schema default.
 HYPRCHROMA_ONLY_GSETTINGS = ("accent-color", "monospace-font-name")
 
+# Where each captured file belongs, relative to the home folder, mirroring
+# snapshot() below. A restore writes or removes only these paths, and reads a
+# capture only from original/files/<key>. The manifest's own "path" and
+# "backup" fields are never consulted: the state folder can be written by any
+# program running as this user, and a forged entry must not choose where a
+# restore writes, what it reads, or what it removes.
+RESTORE_DESTINATIONS = {
+    "gtk3_css": ".config/gtk-3.0/gtk.css",
+    "gtk4_css": ".config/gtk-4.0/gtk.css",
+    "gtk3_hyprchroma_css": ".config/gtk-3.0/hyprchroma.css",
+    "gtk4_hyprchroma_css": ".config/gtk-4.0/hyprchroma.css",
+    "kdeglobals": ".config/kdeglobals",
+    "hyprchroma_colors": ".local/share/color-schemes/Hyprchroma.colors",
+    "pear_config": ".config/YouTube Music/config.json",
+    "pear_css": ".config/YouTube Music/hyprchroma.css",
+}
+
 # Files Omarchy itself never creates, so stock means absent rather than any
 # recorded content. gtk.css, kdeglobals and a color-scheme are all Hyprchroma's
 # alone; Omarchy ships no GTK-CSS and no KDE theming at all.
@@ -543,7 +560,11 @@ def strip_generated_kdeglobals(path):
     A backup must never hold Hyprchroma's own output: restoring it would put
     back the colors the restore was meant to remove, and capturing it again
     later would carry the same content forward indefinitely."""
-    text = read_capped(path)
+    return strip_generated_kdeglobals_text(read_capped(path))
+
+
+def strip_generated_kdeglobals_text(text):
+    """strip_generated_kdeglobals for text already read."""
     if text is None:
         return None
     lines = text.splitlines()
@@ -652,12 +673,13 @@ def strip_generated_pear_themes(snapshot_dir, manifest):
     keeps a re-capture from recording our own stylesheet as part of the original.
     """
     entry = manifest.get("files", {}).get("pear_config", {})
-    if not entry.get("existed"):
+    if not isinstance(entry, dict) or not entry.get("existed"):
         return
-    backup = snapshot_dir / entry["backup"]
+    backup = captured_backup(snapshot_dir, "pear_config")
+    text = read_capped(backup)
     try:
-        config = json.loads(backup.read_text())
-    except (OSError, ValueError, RecursionError):
+        config = json.loads(text) if text is not None else None
+    except (ValueError, RecursionError):
         return
     options = config.get("options") if isinstance(config, dict) else None
     if not isinstance(options, dict) or not isinstance(options.get("themes"), list):
@@ -1956,6 +1978,8 @@ def revert_vivaldi_profile(profile, manifest):
         else:
             pref_delete(prefs, VIVALDI_USER_THEMES)
     record = manifest.get("browsers", {}).get("vivaldi", {}).get(str(profile), {})
+    if not isinstance(record, dict):
+        record = {}
     for keys, has, value in ((VIVALDI_CURRENT, "hasCurrent", "current"),
                              (VIVALDI_OS_SCHEDULE, "hasOS", "os")):
         # Only a value that still selects ours is taken back. One that does not
@@ -1963,7 +1987,8 @@ def revert_vivaldi_profile(profile, manifest):
         # revert -- and a revert repeated with no capture left must not clear it.
         if not is_ours(pref_get(prefs, keys)[1]):
             continue
-        if record.get(has) and not is_ours(record.get(value)):
+        if (record.get(has) and not is_ours(record.get(value))
+                and vivaldi_theme_choice(record.get(value))):
             pref_set(prefs, keys, record[value])
         else:
             # Never set before this, or captured from an earlier run of this
@@ -1974,6 +1999,19 @@ def revert_vivaldi_profile(profile, manifest):
     # Reverted: whatever the profile holds from here on is the user's, so a
     # later switch back on captures that rather than this stale record.
     manifest.get("browsers", {}).get("vivaldi", {}).pop(str(profile), None)
+
+
+_VIVALDI_THEME_ID = re.compile(r"[A-Za-z0-9._+-]{1,128}")
+
+
+def vivaldi_theme_choice(value):
+    """A captured theme selection of the shapes Vivaldi keeps: a theme id, or
+    the light/dark pair of ids its OS schedule uses."""
+    if isinstance(value, str):
+        return bool(_VIVALDI_THEME_ID.fullmatch(value))
+    return (isinstance(value, dict) and 0 < len(value) <= 2
+            and set(value) <= {"light", "dark"}
+            and all(isinstance(v, str) and _VIVALDI_THEME_ID.fullmatch(v) for v in value.values()))
 
 
 def vivaldi_pids():
@@ -2376,22 +2414,147 @@ def snapshot(state_dir, data_dir, target):
         write_json(manifest_path, manifest)
 
 
-def restore_file(snapshot_dir, entry):
-    path = Path(entry["path"])
-    if not entry.get("existed"):
-        safe_unlink(path)
+def captured_backup(snapshot_dir, key):
+    """Where snapshot_file keeps the capture for key -- never a path the
+    manifest names."""
+    return snapshot_dir / "files" / key
+
+
+def restore_file(snapshot_dir, key, entry):
+    """Put one captured file back at its own destination (RESTORE_DESTINATIONS).
+
+    What may come back is decided per file, by what a program does with it:
+    - gtk.css is a stylesheet, which can style but not run anything, and is
+      the user's own: it comes back whole.
+    - The files named after Hyprchroma -- its two stylesheets, its KDE color
+      scheme and Pear's stylesheet -- are Hyprchroma's by name, so a revert
+      removes them, whatever a capture says.
+    - kdeglobals is shared with KDE, and KDE reads settings from it that start
+      programs; only the keys Hyprchroma writes come back, checked, into the
+      file as it is now (restore_kdeglobals).
+    - Pear's config.json is edited in place by the caller."""
+    relative = RESTORE_DESTINATIONS.get(key)
+    if relative is None or not isinstance(entry, dict):
         return
-    backup = snapshot_dir / entry["backup"]
-    # Replace the destination rather than writing into it. shutil.copy2 opens
-    # the destination by name and follows a symlink left there, so a link where
-    # a config file used to be would send the restore somewhere else entirely;
-    # atomic_write renames over the path, which replaces the link itself.
-    atomic_write(path, backup.read_bytes(), mode=stat.S_IMODE(backup.stat().st_mode))
+    path = Path.home() / relative
+    if key in WHOLLY_GENERATED:
+        safe_unlink(path)
+    elif key == "kdeglobals":
+        restore_kdeglobals(snapshot_dir, entry, path)
+    elif not entry.get("existed"):
+        safe_unlink(path)
+    else:
+        backup = captured_backup(snapshot_dir, key)
+        data = read_capped_bytes(backup)
+        if data is None:
+            print(f"Hyprchroma: the capture of {relative} is missing or unreadable; left as it is",
+                  file=sys.stderr)
+            return
+        try:
+            mode = stat.S_IMODE(os.lstat(backup).st_mode) & 0o666
+        except OSError:
+            mode = 0o644
+        # Replace the destination rather than writing into it: atomic_write
+        # renames over the path, which replaces a link left there rather than
+        # following it somewhere else.
+        atomic_write(path, data, mode=mode)
+
+
+# kdeglobals lines a restore may put back: a key Hyprchroma writes, with a
+# value of the kinds those keys hold -- colors, numbers, scheme and icon theme
+# names. No KConfig flags ("Key[$e]" expands a shell command), no paths, no
+# shell characters.
+_KDE_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,63}")
+_KDE_VALUE = re.compile(r"[A-Za-z0-9 ,._+#-]{0,128}")
+_KDE_SECTION = re.compile(r"\[(?:Colors|ColorEffects):[A-Za-z]{1,32}\](?:\[[A-Za-z]{1,32}\])?|\[WM\]")
+
+
+def owned_kdeglobals_lines(text):
+    """The parts of a captured kdeglobals that Hyprchroma writes, as
+    {section: [line, ...]}, each checked; everything else in it is ignored."""
+    owned, section = {}, None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            whole = (line in HYPRCHROMA_KDE_SECTIONS
+                     or line.startswith(HYPRCHROMA_KDE_SECTION_PREFIXES))
+            if whole and not _KDE_SECTION.fullmatch(line):
+                section = None  # a section name with anything unexpected in it
+            elif whole or line in HYPRCHROMA_KDE_KEYS:
+                section = line
+            else:
+                section = None
+            continue
+        if section is None or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        if not _KDE_KEY.fullmatch(key) or not _KDE_VALUE.fullmatch(value):
+            continue
+        if section in HYPRCHROMA_KDE_KEYS and key not in HYPRCHROMA_KDE_KEYS[section]:
+            continue
+        owned.setdefault(section, []).append(f"{key}={value}")
+    return owned
+
+
+def restore_kdeglobals(snapshot_dir, entry, path):
+    """kdeglobals as it is now, with what Hyprchroma wrote taken out and the
+    user's own values for those same keys -- from the capture, checked -- put
+    back. Whatever else is in it, KDE's and the user's, is the live file's."""
+    if path.is_symlink():
+        safe_unlink(path)
+        current = ""
+    elif path.exists():
+        current = read_capped(path)
+        if current is None:
+            return  # not a regular file, or too large to be one KDE wrote: left alone
+    else:
+        current = ""
+    kept = strip_generated_kdeglobals_text(current) or ""
+    original = {}
+    if entry.get("existed"):
+        original = owned_kdeglobals_lines(read_capped(captured_backup(snapshot_dir, "kdeglobals")))
+    lines = kept.splitlines()
+    for section, values in original.items():
+        if section in HYPRCHROMA_KDE_KEYS:
+            # A section the user owns: the keys go back into it, or it is added.
+            try:
+                at = next(i for i, line in enumerate(lines) if line.strip() == section)
+                lines[at + 1:at + 1] = values
+                continue
+            except StopIteration:
+                pass
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(section)
+        lines.extend(values)
+    if any(line.strip() for line in lines):
+        atomic_write(path, "\n".join(lines).rstrip("\n") + "\n")
+    else:
+        safe_unlink(path)
+
+
+# The GNOME interface keys a capture records (snapshot_gsettings), and the
+# form "gsettings get" prints them in: a quoted string of a font, theme or
+# accent name. Anything else in a capture is not restored.
+GSETTINGS_RESTORABLE = ("gtk-theme", "color-scheme", "accent-color", "icon-theme",
+                        "monospace-font-name")
+_GSETTINGS_VALUE = re.compile(r"'[A-Za-z0-9 ._+-]{0,128}'")
 
 
 def restore_gsettings(values):
-    for key, value in values.items():
-        subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", key, value], check=False)
+    if not isinstance(values, dict):
+        return
+    for key in GSETTINGS_RESTORABLE:
+        value = values.get(key)
+        if not isinstance(value, str) or not _GSETTINGS_VALUE.fullmatch(value):
+            continue
+        try:
+            subprocess.run(["gsettings", "set", "org.gnome.desktop.interface", key, value],
+                           check=False, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def config_home():
@@ -2524,18 +2687,35 @@ def clear_app_color_schemes(state_dir):
         write_json(manifest_path, manifest)
 
 
+_RC_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}rc")
+_SCHEME_NAME = re.compile(r"[A-Za-z0-9 ._+-]{1,128}")
+
+
 def restore_app_color_schemes(manifest):
-    for raw_path, entry in manifest.get("appColorSchemes", {}).items():
-        if not entry.get("existed"):
+    """Put back the color schemes clear_app_color_schemes removed. Only into
+    an rc file directly in this user's config folder -- the only kind that
+    clears -- and only a scheme name: the manifest that lists them can be
+    written by any program running as this user."""
+    recorded = manifest.get("appColorSchemes", {})
+    if not isinstance(recorded, dict):
+        return
+    folder = config_home()
+    for raw_path, entry in recorded.items():
+        if not isinstance(entry, dict) or not entry.get("existed"):
             continue
-        path = Path(raw_path)
+        name = os.path.basename(str(raw_path))
+        value = entry.get("value")
+        if (str(raw_path) != str(folder / name) or not _RC_NAME.fullmatch(name)
+                or not isinstance(value, str) or not _SCHEME_NAME.fullmatch(value)):
+            continue
+        path = folder / name
         if path.is_symlink() or not path.is_file():
             continue
         text = read_capped(path)
         if text is None:
             continue
         lines = text.splitlines(keepends=True)
-        restored = f"{APP_COLOR_SCHEME_KEY}={entry.get('value', '')}\n"
+        restored = f"{APP_COLOR_SCHEME_KEY}={value}\n"
         index, _ = find_ini_key(lines, APP_COLOR_SCHEME_GROUP, APP_COLOR_SCHEME_KEY)
         if index is not None:
             lines[index] = restored
@@ -5015,31 +5195,28 @@ def rewrite_pear_themes(chosen):
     atomic_write(path, json.dumps(config, indent="\t") + "\n")
 
 
-def captured_pear_themes(snapshot_dir, manifest):
-    entry = manifest.get("files", {}).get("pear_config", {})
-    if not entry.get("existed"):
-        return []
-    try:
-        backup = json.loads((snapshot_dir / entry["backup"]).read_text())
-    except (OSError, ValueError, RecursionError):
-        return None
-    options = backup.get("options") if isinstance(backup, dict) else None
-    themes = options.get("themes") if isinstance(options, dict) else None
-    return themes if isinstance(themes, list) else []
+def without_hyprchroma_themes(current):
+    """Pear's theme list with Hyprchroma's stylesheet taken out, and nothing
+    else changed: the sync only ever adds that one entry, so this is the list
+    as the user left it."""
+    return [entry for entry in current
+            if "hyprchroma" not in os.path.basename(str(entry)).lower()]
 
 
 def restore_target_captured(snapshot_dir, manifest, target):
+    files = manifest.get("files", {})
+    files = files if isinstance(files, dict) else {}
     for key in TARGET_FILE_KEYS[target]:
         # Pear's config.json is edited in place rather than copied back whole.
         if key == "pear_config":
             continue
-        entry = manifest.get("files", {}).get(key)
+        entry = files.get(key)
         if entry is not None:
-            restore_file(snapshot_dir, entry)
+            restore_file(snapshot_dir, key, entry)
     if target == "pear":
-        captured = captured_pear_themes(snapshot_dir, manifest)
-        if captured is not None:
-            rewrite_pear_themes(lambda current: captured)
+        # The live list, less Hyprchroma's entry -- not a list read from the
+        # capture, which would put back whatever the state folder now says.
+        rewrite_pear_themes(without_hyprchroma_themes)
     elif target == "gtk":
         restore_gsettings(manifest.get("gsettings", {}))
         # Restoring the backup already drops our import, because the backup is
@@ -5068,10 +5245,7 @@ def restore_target_stock(snapshot_dir, manifest, target):
     for relative in STOCK_ABSENT_FILES[target]:
         safe_unlink(home / relative)
     if target == "pear":
-        rewrite_pear_themes(lambda current: [
-            entry for entry in current
-            if "hyprchroma" not in os.path.basename(str(entry)).lower()
-        ])
+        rewrite_pear_themes(without_hyprchroma_themes)
     elif target == "gtk":
         # Stock means Omarchy's own defaults, which include no import of ours.
         for directory in (".config/gtk-3.0", ".config/gtk-4.0"):
@@ -5140,6 +5314,43 @@ def restore(state_dir, data_dir, targets, mode):
         safe_unlink(path)
 
 
+PRESERVE_LIMIT = 1 << 20
+
+
+def preserve_file(source, into, name):
+    """Move source into the folder into, as name (readable by this user
+    only), and remove it where it was. A symlink is kept as a note of where
+    it pointed. True once it is safely kept; False, with source left exactly
+    where it is, for anything else -- a FIFO, a folder, a file too large to be
+    a hook -- or if the copy could not be made."""
+    source = Path(source)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name):
+        return False
+    try:
+        info = os.lstat(source)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            data = f"symlink to {os.readlink(source)}\n".encode("utf-8", "surrogateescape")
+        except OSError:
+            return False
+    elif stat.S_ISREG(info.st_mode):
+        data = read_capped_bytes(source, PRESERVE_LIMIT)
+        if data is None:
+            return False
+    else:
+        return False
+    try:
+        atomic_write(Path(into) / name, data, 0o600)
+        safe_unlink(source)
+    except OSError:
+        return False
+    return True
+
+
 WRITE_FILES_LIMIT = 64 << 20
 _WRITE_MODE = re.compile(r"[0-7]{3,4}")
 
@@ -5183,6 +5394,10 @@ def main():
     rest.add_argument("--target", default="all", choices=("all",) + TARGETS)
     rest.add_argument("--mode", default="captured", choices=("captured", "stock"))
     sub.add_parser("clear-app-color-schemes")
+    preserve = sub.add_parser("preserve-file")
+    preserve.add_argument("--path", required=True, type=Path)
+    preserve.add_argument("--into", required=True, type=Path)
+    preserve.add_argument("--name", required=True)
     sub.add_parser("sync-flatpak")
     browsers = sub.add_parser("sync-browsers")
     browsers.add_argument("--revert", action="store_true")
@@ -5274,6 +5489,9 @@ def main():
             snapshot(args.state_dir, args.data_dir, target)
     elif args.command == "clear-app-color-schemes":
         clear_app_color_schemes(args.state_dir)
+    elif args.command == "preserve-file":
+        if not preserve_file(args.path, args.into, args.name):
+            sys.exit(3)
     elif args.command == "sync-flatpak":
         print(sync_flatpak(args.state_dir, args.data_dir))
     elif args.command == "sync-browsers":

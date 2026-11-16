@@ -190,37 +190,38 @@ chk "...and says what it switched on" "$(grep -c '^Switching on:' <<<"$all_out")
 chk "...then still offers what they need: Reversal, and the Dark Reader links" \
   "$(grep -c 'from the AUR as reversal-icon-theme-git' <<<"$all_out"),$(grep -c 'Chrome Web Store' <<<"$all_out")" "1,1"
 
-# --- Pear Desktop is offered for install when wanted and missing ---------
+# --- Pear Desktop is themed when present; setup never installs it ---------
 # A real machine may already have pear-desktop, or a ~/.config/YouTube Music
 # from before -- this one running the suite does, in fact, have both -- so
 # both the command name and HOME are substituted, the same way the
 # dependency probe above fakes a missing adw-gtk-theme.
-pear_probe=$(mktemp); trap 'rm -f "$pear_probe"' EXIT
+pear_probe=$(mktemp)
 sed 's/command -v pear-desktop/command -v definitely-not-pear/' $S > "$pear_probe"
 chmod +x "$pear_probe"
-pear_home=$(mktemp -d); trap 'rm -rf "$pear_home"' EXIT
+pear_home=$(mktemp -d)
 # n: decline Thunderbird. y: include Pear. n: decline Dark Reader, so its
 # dependency never enters it. n: decline whatever is asked next. no: cancel
-# before the build. Answering yes to the Pear install offer would really try
-# to download and build it on this machine.
+# before the build.
+# Setup sets its own PATH, so the run is traced instead: bash -x records every
+# command it executes, which is what the last checks read. (sudo -k, which
+# setup runs on exit to forget any cached password, asks for nothing.)
+pear_trace=$(mktemp); trap 'rm -rf "$pear_home"; rm -f "$pear_probe" "$pear_trace"' EXIT
 pear_out=$(export HOME="$pear_home"
-           printf '\nn\nn\ny\nn\nn\nno\n' | timeout 30 "$pear_probe" 2>&1)
-chk "a missing, wanted Pear Desktop is named, with why, before the question" \
-  "$(grep -c 'you included Pear Desktop, but the app itself is not' <<<"$pear_out")" "1"
-chk "with what it downloads and that sudo comes first" \
-  "$(grep -cE 'about 110 MB|asked for before anything is downloaded' <<<"$pear_out")" "2"
-# -bin specifically, not the plain package: that one builds a full Electron
-# app from source, which is what took the terminal down earlier this session.
-chk "with the AUR package it comes from, the prebuilt one" \
-  "$(grep -c 'the AUR as pear-desktop-bin, the project.s own prebuilt release' <<<"$pear_out")" "1"
-chk "...and that, unlike Reversal, it is not pinned to a reviewed version" \
-  "$(grep -c 'not pinned to' <<<"$pear_out")" "1"
-chk "declining leaves it uninstalled and says so" \
-  "$(grep -c 'Skipped; nothing was downloaded. The panel themes Pear Desktop' <<<"$pear_out")" "1"
+           printf '\nn\nn\ny\nn\nn\nno\n' | timeout 30 bash -x "$pear_probe" 2>"$pear_trace")
+chk "a missing, wanted Pear Desktop is named, and themed once it is installed" \
+  "$(grep -c 'Pear Desktop is not installed here. The panel themes it once you install it.' <<<"$pear_out")" "1"
+chk "...with the exact app and package it means: Pear Desktop, pear-desktop-bin" \
+  "$(grep -c 'App:      Pear Desktop, https://github.com/pear-devs/pear-desktop' <<<"$pear_out"),$(grep -c 'Package:  pear-desktop-bin, from the AUR' <<<"$pear_out"),$(grep -c 'https://aur.archlinux.org/packages/pear-desktop-bin' <<<"$pear_out"),$(grep -c 'Setup does not install it; this is for reference only.' <<<"$pear_out")" "1,1,1,1"
+chk "...as information only: no question about it, no download, no build" \
+  "$(grep -ciE 'install Pear Desktop|about 110 MB|Packaging|Checking the package' <<<"$pear_out"),$(grep -c 'ask .*Pear' $S)" "0,1"
+chk "...printed by notes alone: the block runs nothing but its checks and printf" \
+  "$(awk '/command -v definitely-not-pear/{on=1} on && /head2 .What this installs/{exit} on' "$pear_trace" | sed -E 's/^\++ //' | awk '{print $1}' | sort -u | paste -sd' ' -)" "[[ command note printf"
+chk "...and the run fetches, builds, installs and asks for sudo for nothing, Pear included" \
+  "$(grep -E '^\++ (git|curl|wget|makepkg|sudo|run_sudo|authenticate_for|bwrap|in_sandbox|yay|paru|pacman -[SU])( |$)' "$pear_trace" | grep -cvx '+ sudo -k'),$(grep -c 'Setup cancelled; nothing was changed' <<<"$pear_out")" "0,1"
 # Reuses $out from the top of this file, where Pear was declined outright:
 # nothing about its install state should be checked or printed at all.
 chk "Pear's own check is skipped entirely when it was not wanted" \
-  "$(grep -c 'Pear Desktop is not installed' <<<"$out")" "0"
+  "$(grep -c 'Pear Desktop is not installed here' <<<"$out")" "0"
 
 # --- finishing tells the user what to restart, rather than doing it --------
 # omarchy restart shell was tried here and pulled back: live on this

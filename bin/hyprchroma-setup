@@ -522,7 +522,7 @@ framework_line() {
 framework_line "GTK and GNOME" "Always on: GTK 3/4 and GNOME apps (needs adw-gtk-theme)"
 framework_line "Qt and KDE" "Always on: Qt and KDE apps, their colors and icons"
 framework_line "Thunderbird" "Its own window; writes a stylesheet into mail profiles"
-framework_line "Pear Desktop" "YouTube Music app; offers it from the AUR if missing"
+framework_line "Pear Desktop" "YouTube Music app, themed once you install it"
 framework_line "Dark Reader" "Tints web pages via the extension (needs python-plyvel)"
 if [[ $has_flatpak == yes ]]; then
   framework_line "Flatpak apps" "Flatpak apps read your colors: four read-only permissions"
@@ -764,107 +764,19 @@ else
   note "Everything needed is already installed."
 fi
 
-# Pear Desktop itself is not a dependency in the sense above -- it is the
-# application being themed, not something this needs to run -- and it has no
-# package in the official repos to hand to pacman the way the others above
-# do. Same check bin/hyprchroma itself uses to decide whether Pear is worth
-# syncing at all, so this offers exactly when that would otherwise find
-# nothing to theme. pear-desktop-bin, not pear-desktop: both provide the same
-# pear-desktop binary the check above looks for, but the plain package builds
-# a full Electron app from source on install -- heavy enough, live on this
-# project's own 7.2GB test machine, to have pushed the whole session into
-# swap and taken the terminal down with it. -bin skips that build entirely.
-#
-# Built the way Reversal is -- in the sandbox, then checked and installed
-# with pacman -U -- but not pinned: its recipe moves with every upstream
-# release, faster than a review here could follow, and the user is told so.
-# What can be shown is: its install script, if it has one, is printed before
-# pacman asks.
-PEAR_AUR=pear-desktop-bin
-PEAR_AUR_URL=https://aur.archlinux.org/pear-desktop-bin.git
-build_pear() {
-  local recipe key value deps=() arch
-  local package_name='^[a-z0-9@_+][a-z0-9@._+-]*([<>]?=?[A-Za-z0-9.:_+~-]+)?$'
-  new_work_dir || { note "Could not create a build directory."; return 1; }
-  recipe=$work_dir/recipe
-  say "Downloading the AUR recipe from aur.archlinux.org..."
-  if ! shown in_sandbox --net "$work_dir" "$work_dir" "${SANDBOX_GIT[@]}" \
-         clone --quiet -- "$PEAR_AUR_URL" "$recipe"; then
-    note "The AUR could not be reached, so nothing was built."
-    return 1
-  fi
-  # The build tools it names, read from .SRCINFO as a capped plain file and
-  # taken only if each is a package name, so none can pass for an option.
-  arch=$(uname -m)
-  if [[ -f $recipe/.SRCINFO && ! -L $recipe/.SRCINFO ]]; then
-    while read -r key _ value; do
-      [[ $key == makedepends || $key == "makedepends_$arch" ]] || continue
-      if [[ ! $value =~ $package_name ]]; then
-        note "Its recipe names a build tool that is not a package name, so nothing was built."
-        return 1
-      fi
-      deps+=("$value")
-    done < <(head -c 65536 -- "$recipe/.SRCINFO")
-  fi
-  if (( ${#deps[@]} )) && ! install_build_tools "${deps[@]}"; then
-    note "What the build needs was not installed, so nothing was built."
-    return 1
-  fi
-  say "Downloading the app from the project's releases on GitHub (about 110 MB)..."
-  if ! shown in_sandbox --net "$work_dir" "$recipe" makepkg --verifysource --nocolor --noconfirm; then
-    note "The download did not finish, so nothing was built."
-    return 1
-  fi
-  # --nodeps: makepkg would refuse until the app's own dependencies are
-  # installed; pacman -U installs those from the official repositories, and
-  # lists them when it asks.
-  say "Packaging it, offline, in a sandbox that cannot use sudo..."
-  if ! shown in_sandbox "$work_dir" "$recipe" makepkg --nodeps --nocheck --holdver --nocolor --noconfirm ||
-     ! find_built "$PEAR_AUR"; then
-    note "Packaging did not finish, so nothing was installed."
-    return 1
-  fi
-  if ! check_built --name "$PEAR_AUR" --any-content; then
-    note "The package is not $PEAR_AUR, so it was not installed."
-    return 1
-  fi
-}
+# Pear Desktop is themed once it is installed; setup does not install it. It
+# is in neither Omarchy nor the official repositories, and its AUR recipe and
+# prebuilt release change with every version, so there is no reviewed source
+# this could build it from. Several YouTube Music desktop apps exist, so the
+# note names the one Hyprchroma themes and its package -- as text only: no
+# question follows, nothing is fetched, and no command is run for it.
 if [[ $want_pear == yes ]] && ! command -v pear-desktop >/dev/null &&
    [[ ! -d "$HOME/.config/YouTube Music" ]]; then
-  head2 "Pear Desktop app"
-  cat <<'PEARAUR'
-Why this is asked: you included Pear Desktop, but the app itself is not
-installed, so there is nothing for Hyprchroma to theme yet.
-
-It is not part of Omarchy or the official Arch repositories, so it comes from
-the AUR as pear-desktop-bin, the project's own prebuilt release. Installing it:
-  - downloads its AUR recipe from aur.archlinux.org, and the app itself
-    (about 110 MB) from the project's releases on GitHub
-  - packages it as you, in a sandbox that cannot use sudo
-  - installs it with pacman, which needs your password (sudo); that is
-    asked for before anything is downloaded, and pacman asks once more
-PEARAUR
-  if ! sandbox_works && [[ -n $(missing_tools bubblewrap) ]]; then
-    say "  - first installs bubblewrap from the official repositories, to build it"
-  fi
-  cat <<'PEARAUR'
-Its recipe changes with every release, so unlike Reversal it is not pinned to
-a reviewed version. If it has an install script, that is shown first.
-
-Removing it later:  sudo pacman -R pear-desktop-bin
-PEARAUR
-  say ""
-  if ask "Download and install Pear Desktop from the AUR"; then
-    if ! authenticate_for "pacman installs Pear Desktop at the end."; then
-      note "No password given, so nothing was downloaded."
-    elif ! ensure_sandbox; then
-      note "The build sandbox (bubblewrap) does not start here, so nothing was downloaded."
-    else
-      build_pear && install_built "$PEAR_AUR"
-    fi
-  else
-    note "Skipped; nothing was downloaded. The panel themes Pear Desktop once you install it."
-  fi
+  note "Pear Desktop is not installed here. The panel themes it once you install it."
+  note "  App:      Pear Desktop, https://github.com/pear-devs/pear-desktop"
+  note "  Package:  pear-desktop-bin, from the AUR"
+  note "            https://aur.archlinux.org/packages/pear-desktop-bin"
+  note "Setup does not install it; this is for reference only."
 fi
 
 # --- consent, then build --------------------------------------------------

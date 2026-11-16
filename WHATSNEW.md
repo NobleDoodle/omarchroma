@@ -1,7 +1,5 @@
-# What's new in 4.1.0
+# What's new in 4.1.1
 
-- Dismiss in the apps-to-close list (d): leave them on the old theme, and stop
-  counting them until the next theme change. Nothing closes.
-- Dismiss and Restart close the panel once you choose.
-- Theme changes apply faster: the frameworks are written side by side.
-- Security and performance improvements throughout.
+- Security improvements throughout.
+- Setup no longer installs Pear Desktop. When it is missing, setup names the
+  app and its package, pear-desktop-bin; it is themed once you install it.

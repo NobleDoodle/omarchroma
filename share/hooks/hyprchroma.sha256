@@ -1,0 +1,13 @@
+# SHA-256 of every theme-set/font-set hook a release of Omarchroma has installed
+# as hyprchroma. The daemon replaces a hook matching one of these as an update;
+# any other file there is the user's own, and is moved into the state folder
+# rather than overwritten. Each release that changes the hook adds its hash
+# (tests/test-hook-preserve.sh checks the shipped hook is listed).
+2bb2fb1bea32b2f8f657355d4a991c24f5dda0744cb9dc9ea9ccd7a43eb538ef
+3e82030c0fb44ba9f969c5b45dcebf61f878196f7353b82fc67f30c9d7122e5e
+4bde37ad17c68a8aa9a11cb82696eb037c86d8c6444341647b59cce44662138c
+567ce6b0f54e11c07909f17482ae10a85f0eb90c8f50435e67a1e92c4d2d345e
+5d2f660af7e7abeebef8945e27be8da21221be15115a069fcd19e4665843fedb
+a4b239f2fdb9d1a914a56ec45da70b9768eb7d9d7becf991e082f9f396f452d2
+b145105ce61dda215a02048b3450b44af7f2f38756105b105ca3ab424c05b131
+b74ff306a2497db0a9d5f6ba81846654dd5f4d814f55bb8afbd5c2a2751e950d

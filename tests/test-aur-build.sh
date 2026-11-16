@@ -292,14 +292,15 @@ bsdtar --zstd --uid 0 --gid 0 -cf "$pk/hard.pkg.tar.zst" -C "$pk/tree" .PKGINFO 
 chk "a hard link is refused" "$(verdict hard)" "refused"
 chk "...and the same tree without it is accepted" \
   "$(rm "$pk/tree/usr/share/icons/Reversal/b"; bsdtar --zstd --uid 0 --gid 0 -cf "$pk/soft.pkg.tar.zst" -C "$pk/tree" .PKGINFO usr; verdict soft)" "accepted"
-# Pear Desktop is not pinned: only its name is checked, and its install
-# script is shown rather than refused.
+# There is no mode that checks the name alone: an install script is refused
+# whatever the package is called.
 printf 'pkgname = pear-desktop-bin\npkgver = 1-1\n' >"$pk/PKGINFO"
 printf 'post_install() { echo hello; }\n' >"$pk/script"
 make_pkg pear "./.INSTALL type=file mode=644 uid=0 gid=0 contents=$pk/script"
-pear_out=$("$C" "$pk/pear.pkg.tar.zst" --name pear-desktop-bin --any-content)
-chk "with --any-content the install script is shown, not refused" \
-  "$?,$(grep -c 'post_install() { echo hello; }' <<<"$pear_out")" "0,1"
+"$C" "$pk/pear.pkg.tar.zst" --name pear-desktop-bin --any-content >/dev/null 2>&1; any=$?
+"$C" "$pk/pear.pkg.tar.zst" --name pear-desktop-bin >/dev/null 2>&1; named=$?
+chk "an install script is refused for any package name, and --any-content no longer exists" \
+  "$named,$any,$(grep -c 'any.content' "$REPO/packaging/check-package")" "1,2,0"
 
 # --- what setup is made of --------------------------------------------------------
 S=$REPO/bin/hyprchroma-setup

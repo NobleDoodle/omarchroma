@@ -89,16 +89,16 @@ chk "pacman is only asked to sync named packages, or install the checked build" 
   'run_sudo pacman -S --needed |run_sudo pacman -S --needed --asdeps -- |run_sudo pacman -U -- |run_sudo pacman -U --needed -- '
 chk "...and every -U installs the package that was just checked" \
   "$(code bin/hyprchroma-setup | grep -E 'run_sudo pacman -U' | grep -vc '"\$built_package"')" "0"
-chk "...Reversal's name is fixed" \
-  "$(grep -c '^REVERSAL_AUR=reversal-icon-theme-git$' bin/hyprchroma-setup),$(grep -c '^PEAR_AUR=pear-desktop-bin$' bin/hyprchroma-setup)" "1,1"
+chk "...Reversal's name is fixed, and nothing else is built from the AUR" \
+  "$(grep -c '^REVERSAL_AUR=reversal-icon-theme-git$' bin/hyprchroma-setup),$(grep -c 'PEAR_AUR\|build_pear' bin/hyprchroma-setup),$(grep 'pear-desktop-bin' bin/hyprchroma-setup | grep -cv '^  note "')" "1,0,0"
 
 # Nothing is fetched outside the build sandbox, and nothing fetched runs
-# outside it: the AUR recipes and Reversal's source are fetched by git in the
-# sandbox, Pear Desktop's release by makepkg --verifysource in the sandbox,
-# and every build runs there offline. hyprchroma builds from the checkout.
+# outside it: Reversal's AUR recipe and its source are fetched by git in the
+# sandbox, and every build runs there offline. hyprchroma builds from the
+# checkout.
 chk "setup has no downloader of its own" "$(code bin/hyprchroma-setup | grep -cE 'curl|wget')" "0"
-chk "every networked step is one of the four downloads, in the sandbox" \
-  "$(code bin/hyprchroma-setup | grep -cE 'in_sandbox --net ')" "4"
+chk "every networked step is one of Reversal's two downloads, in the sandbox" \
+  "$(code bin/hyprchroma-setup | grep -cE 'in_sandbox --net ')" "2"
 chk "it builds from its own location" \
   "$(grep -c 'realpath -- "\${BASH_SOURCE\[0\]}"' bin/hyprchroma-setup)" "1"
 

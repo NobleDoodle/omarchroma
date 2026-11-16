@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # What anything this account runs can plant -- status.json, OMARCHY_PATH, a
 # directory the nobody account owns -- met with the attack itself rather than
 # a grep for its fix. Each of these was found in the 2.9 review:

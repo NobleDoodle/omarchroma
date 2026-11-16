@@ -2120,6 +2120,15 @@ def set_folders(mode: str, apply_now: bool) -> dict:
     return write_status(palette, error="")
 
 
+def _saved_pointer(path: Path) -> str | None:
+    """A saved icons.theme as it may be put back: one icon theme name, as
+    Omarchy's own files hold. The backup sits in the state folder, which any
+    program running as this user can write, so anything else is not restored."""
+    text = _read(path, 4096)
+    name = text.strip()
+    return name + "\n" if _ICON_NAME.fullmatch(name) and len(name) <= 128 else None
+
+
 def revert() -> None:
     """Put every theme's icons.theme back as it was, and take the generated theme away.
 
@@ -2131,10 +2140,12 @@ def revert() -> None:
         for slug in manifest["files"]:
             if not valid_slug(slug):
                 continue
-            saved = backup / slug / "icons.theme"
+            saved = _saved_pointer(backup / slug / "icons.theme")
             destination = user_themes() / slug / "icons.theme"
-            if saved.is_file() and destination.parent.is_dir():
-                write_text(destination, _read(saved, 4096), 0o644)
+            if saved is not None and destination.parent.is_dir():
+                write_text(destination, saved, 0o644)
+            elif _read(destination).strip() == THEME_NAME:
+                remove_entry(destination)
         for slug in manifest["created"]:
             path = user_themes() / slug / "icons.theme"
             if valid_slug(slug) and _read(path).strip() == THEME_NAME:
@@ -2148,8 +2159,9 @@ def revert() -> None:
                     pass  # something else of the user's is in it now
         staged = omarchy_current() / "theme" / "icons.theme"
         if staged.parent.is_dir() and _read(staged).strip() == THEME_NAME:
-            if (backup / "staged-icons.theme").is_file():
-                write_text(staged, _read(backup / "staged-icons.theme", 4096), 0o644)
+            saved = _saved_pointer(backup / "staged-icons.theme")
+            if saved is not None:
+                write_text(staged, saved, 0o644)
             else:
                 remove_entry(staged)
         originals = read_json_file(state_dir() / "absolute-icons.json", {})

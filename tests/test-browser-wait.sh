@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # Dark Reader's settings live in each browser's own database, locked while the
 # browser runs, so a theme change made with a browser open waits for it to
 # exit. The waiter that did that looked the helper up in ~/.local/bin, where

@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """Check a built pacman package before setup hands it to pacman as root.
 
-Setup builds Reversal (and Pear Desktop, and hyprchroma itself) in a sandbox
+Setup builds Reversal (and hyprchroma itself) in a sandbox
 that cannot use sudo, then installs the result with "pacman -U". pacman runs
 as root, so the package is where a build that went wrong -- or a recipe or
 source that changed from the one reviewed -- would do its damage: a file in
@@ -23,9 +23,6 @@ refuses it unless:
     target is accepted only under --build-root, the directory the package was
     assembled in: upstream install scripts write a few such links, and they
     can only dangle once that directory is gone.
-
-With --any-content only the name is checked -- for Pear Desktop, whose
-recipe is not pinned -- and its install script, if it has one, is printed.
 
 Exit status: 0 accepted, 1 refused (reasons on stdout), 2 unreadable.
 """
@@ -126,7 +123,6 @@ def main():
     parser.add_argument("--commit")
     parser.add_argument("--root", action="append", default=[])
     parser.add_argument("--build-root")
-    parser.add_argument("--any-content", action="store_true")
     args = parser.parse_args()
 
     refused = []
@@ -167,9 +163,8 @@ def main():
         match = re.fullmatch(r"r[0-9]+\.([0-9a-f]{7,40})-[0-9]+", version)
         if not match or not args.commit.startswith(match.group(1)):
             refuse(".PKGINFO", f"version {printable(version)} is not built from {args.commit[:12]}")
-    if not args.any_content:
-        for key in sorted(set(info) - PKGINFO_KEYS):
-            refuse(".PKGINFO", f"unexpected key {printable(key)}")
+    for key in sorted(set(info) - PKGINFO_KEYS):
+        refuse(".PKGINFO", f"unexpected key {printable(key)}")
 
     # --- what it contains --------------------------------------------------
     paths = [entry[0] for entry in listed]
@@ -178,7 +173,6 @@ def main():
     if hard:
         refuse("(package)", f"{hard} hard link(s)")
     links = {entry[0] for entry in listed if entry[1] == "link"}
-    has_install = False
 
     roots = [r.strip("/") for r in args.root]
     debug = f"usr/src/debug/{args.name}"
@@ -194,12 +188,9 @@ def main():
             continue
         if "/" not in path and path.startswith("."):
             if path == ".INSTALL":
-                has_install = True
-                if not args.any_content:
-                    refuse(path, "an install script, which pacman runs as root")
+                refuse(path, "an install script, which pacman runs as root")
             elif path not in CONTROL:
-                if not args.any_content:
-                    refuse(path, "an unexpected control file")
+                refuse(path, "an unexpected control file")
             elif kind != "file":
                 refuse(path, "a control file that is not a file")
             continue
@@ -209,8 +200,6 @@ def main():
                 refuse(path, "inside a symbolic link of the package")
                 break
             parent = parent.rpartition("/")[0]
-        if args.any_content:
-            continue
         if kind not in ("file", "dir", "link"):
             refuse(path, f"a {kind or 'special file'}")
             continue
@@ -261,12 +250,6 @@ def main():
         if len(refused) > SHOWN:
             print(f"  ...and {len(refused) - SHOWN} more")
         return 1
-
-    if args.any_content and has_install:
-        script = bsdtar("-xOf", args.package, ".INSTALL", cap=TEXT_CAP)
-        print("It has an install script, which pacman runs as root:")
-        for line in script.decode("utf-8", "replace").splitlines()[:60]:
-            print("  | " + printable(line))
     return 0
 
 

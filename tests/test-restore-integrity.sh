@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # Two writes took their destination from a file anything able to write the
 # state directory could change -- not a privilege boundary for this account,
 # but one for anything less trusted that can write there, a sandboxed app with

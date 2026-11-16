@@ -47,8 +47,10 @@ access to your home folder), checks the result, and only then hands it to
 way, from the checkout. Reversal is built from the AUR recipe commit and
 the upstream source commit reviewed for this release, never the newest, and
 is refused unless the package holds only its two icon folders and no
-install script. Pear Desktop's recipe changes with every release, so it is
-not pinned; its install script, if any, is shown before pacman asks.
+install script. Pear Desktop is themed once you install it; setup does not
+install it, since its recipe and release change with every version. When it
+is missing, setup names the app and its package, `pear-desktop-bin`, for
+reference.
 
 **Standalone (service only):**
 
@@ -250,7 +252,7 @@ stops and changes nothing.
 | `adw-gtk-theme` | GTK 3 applications | GTK 3 apps keep system defaults |
 | `python-plyvel` | Dark Reader in Chromium | Chromium browsers are skipped |
 | [Dark Reader](https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh) | Browser page theming | Web pages won't be themed |
-| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Setup offers to build it from the AUR (not pinned) |
+| [Pear Desktop](https://aur.archlinux.org/packages/pear-desktop-bin) | YouTube Music theming | Install it yourself; it is themed once present |
 | Thunderbird | Mail window theming | Not offered; off until switched on |
 | `flatpak` | Flatpak app theming | Not offered |
 | `yaru-icon-theme` | Icons with Yaru | Ships with Omarchy |
@@ -268,7 +270,11 @@ pacman installation requires sudo).
 * **GTK:** Injects a single `@import` line at the top of `gtk.css` to load
   generated colors from `hyprchroma.css`. Custom overrides remain intact.
 * **KDE:** Edits `kdeglobals` in place, touching only the color sections
-  Omarchroma manages.
+  Omarchroma manages. Switching it off takes those back out and puts your own
+  values for them back; the rest of the file stays as it is.
+* **Hooks:** a theme-set or font-set hook of your own that is already named
+  `hyprchroma` is moved to `~/.local/state/hyprchroma/replaced-hooks/`, not
+  overwritten.
 * **Flatpak apps** (only when switched on): adds four read-only grants to your
   user's global Flatpak override, so every Flatpak app can read the theme files
   above, and keeps `GTK_THEME` out of the sandbox. Nothing of hyprchroma's own

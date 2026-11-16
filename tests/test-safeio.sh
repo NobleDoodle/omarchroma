@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Safe to run directly as well as through tests/run: never the real XDG
+# folders or session bus, whatever the caller's environment holds.
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME DBUS_SESSION_BUS_ADDRESS
 # Regression cover for the three findings remediated in 1.11.0:
 #   1. the sync lock was opened with a truncating, symlink-following redirect
 #   2. writes made the temporary name exclusive but resolved the destination
