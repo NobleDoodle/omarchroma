@@ -339,11 +339,19 @@ kde_icon_theme sync-qt-kde-theme
 # One Python start merges kdeglobals and hands the helper everything that
 # changed -- the scheme, the icon theme's files and kdeglobals -- in one
 # write-files request. It is given the scheme as
-# composed here rather than reading back the file it is about to write. It
-# prints whether kdeglobals changed, then the ConfigChanged payload.
-merge_output=$(
+# composed here rather than reading back the file it is about to write.
+# Nothing it prints is wanted: the sync parses this script's own output.
+#
+# No signal follows to ask running KDE apps to re-read kdeglobals; they take
+# the new colors when they restart. KConfigWatcher's ConfigChanged carries
+# a{saay}, and the a{sas} gdbus sent instead made Qt's decoder loop and allocate
+# without bound in any app watching kdeglobals -- EasyEffects grew 0.5 GB a
+# second until killed (issue #7). KGlobalSettings.notifyChange, the signal
+# that does repaint, reaches only apps on the KDE platform theme, which Omarchy
+# does not use. Do not add either back without testing against a real
+# KConfigWatcher; tests/test-kde-signal.sh fails if one is sent.
   HYPRCHROMA_SCHEME_TEXT="$scheme_content"$'\n' /usr/bin/python3 -I - "$HYPRCHROMA_LIB/hyprchroma-state" \
-    "$scheme_file" "$kdeglobals" "$kde_icon_name" "$scheme_changed" "${changed_files[@]}" <<'PY'
+    "$scheme_file" "$kdeglobals" "$kde_icon_name" "$scheme_changed" "${changed_files[@]}" >/dev/null <<'PY'
 import sys; HELPER = sys.argv.pop(1)  # this installation's own helper, handed over by the shell
 import hashlib
 import os
@@ -482,57 +490,4 @@ if writes:
                        for path, mode, content in writes),
         check=True,
     )
-print(1 if globals_changed else 0)
-
-# The ConfigChanged payload: every key of every group the scheme sets.
-groups = {}
-current = None
-for line in scheme_text.splitlines():
-    line = line.strip()
-    if line.startswith("[") and line.endswith("]"):
-        # "[Colors:Header][Inactive]" is a subgroup; watchers key off the parent.
-        current = line[1:-1].split("][", 1)[0]
-        groups.setdefault(current, set())
-    elif current and "=" in line:
-        groups[current].add(line.split("=", 1)[0])
-groups.setdefault("General", set()).update({"ColorScheme", "ColorSchemeHash"})
-groups.setdefault("KDE", set()).add("contrast")
-
-
-def quote(value):
-    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-print("{" + ", ".join(
-    f"{quote(group)}: [{', '.join(quote(key) for key in sorted(keys))}]"
-    for group, keys in sorted(groups.items()) if keys
-) + "}")
 PY
-)
-globals_changed=${merge_output%%$'\n'*}
-notify_payload=${merge_output#*$'\n'}
-
-# Ask running apps to re-read kdeglobals, best effort.
-#
-# The KF5-era org.kde.KGlobalSettings.notifyChange this used to send has no
-# implementation left in KF6, so nothing could have been receiving it. Its
-# documented replacement is KConfigWatcher, which listens for ConfigChanged on
-# org.kde.kconfig.notify at the config's object path, and that is what is sent
-# below.
-#
-# It is not known to work. A real KConfigWatcher registers exactly the match
-# rule this emits against, yet none was seen reacting to it on a session without
-# Plasma -- with the group's keys sent as an array of strings or as the array of
-# byte arrays a QByteArrayList marshals to, and whether or not the file had just
-# changed. So do not count on this repainting anything: KDE apps may still need
-# a restart to pick up a new palette. It is left in because it is the correct
-# mechanism, costs one signal, and a Plasma session may well act on it.
-#
-# dbus-send cannot express the dictionary argument at all, and gdbus only infers
-# an array of strings when the value is bare rather than wrapped in a variant,
-# so the payload below must stay unwrapped.
-if (( scheme_changed || globals_changed )) && \
-   [[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] && command -v gdbus >/dev/null; then
-  gdbus emit --session --object-path /kdeglobals \
-    --signal org.kde.kconfig.notify.ConfigChanged "$notify_payload" >/dev/null 2>&1 || true
-fi
