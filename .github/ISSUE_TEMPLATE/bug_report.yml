@@ -8,6 +8,8 @@ body:
       value: |
         Thanks for taking the time to report this. The more of the fields below you can fill in, the faster it can be fixed.
 
+        For security problems, use [private vulnerability reporting](https://github.com/NobleDoodle/omarchroma/security/advisories/new) instead.
+
   - type: textarea
     id: what-happened
     attributes:

@@ -393,6 +393,13 @@ omarchy plugin remove io.github.nobledoodle.omarchroma
 
 Thanks also to [@Crucialjun](https://github.com/Crucialjun) ([#4](https://github.com/NobleDoodle/omarchroma/issues/4)) and [@BlueElectivire](https://github.com/BlueElectivire) ([#5](https://github.com/NobleDoodle/omarchroma/issues/5)) for reports that led to fixes.
 
+## Security
+
+Please report security problems privately through
+[private vulnerability reporting](https://github.com/NobleDoodle/omarchroma/security/advisories/new),
+not as a public issue. See [SECURITY.md](SECURITY.md) for what to include and
+what is in scope.
+
 ## License
 
 [MIT](LICENSE)

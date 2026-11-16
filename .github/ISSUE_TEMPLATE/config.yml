@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/NobleDoodle/omarchroma/security/advisories/new
+    about: Report security problems privately here, not as a public issue.
   - name: README
     url: https://github.com/NobleDoodle/omarchroma#readme
     about: Install steps, keys, what each framework touches, and known limits.
